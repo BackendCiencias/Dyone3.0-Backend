@@ -33,14 +33,15 @@ app.set('trust proxy', 1);
 
 const allowedOrigins = [
   'https://dyone3-frontend.vercel.app',
+  'https://www.cienciasperu.edu.pe',
 ];
 
 function isAllowedOrigin(origin) {
-  if (!origin) return true; // Postman/Server-to-server
+  if (!origin) return true; // Postman / server-to-server
+
   if (allowedOrigins.includes(origin)) return true;
 
-  // Permite previews de Vercel: https://<algo>.vercel.app
-  // (si tuvieras otro proyecto, ajusta el patrón)
+  // Previews de Vercel: https://<algo>.vercel.app
   const vercelPreview = /^https:\/\/.*\.vercel\.app$/;
   return vercelPreview.test(origin);
 }
@@ -57,7 +58,7 @@ app.use(
   })
 );
 
-// Importante para preflight
+// Preflight
 app.options('*', cors());
 
 app.use(express.json());

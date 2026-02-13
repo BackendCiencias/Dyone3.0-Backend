@@ -25,6 +25,7 @@ export const searchStudent = asyncHandler(async (req, res) => {
 
 export const listStudents = asyncHandler(async (req, res) => {
   const data = await searchStudentsService(req.query);
+  console.log(data)
   res.json(data);
 });
 

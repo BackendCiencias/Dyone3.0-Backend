@@ -10,6 +10,5 @@ export const login = asyncHandler(async (req, res) => {
 
 export const me = asyncHandler(async (req, res) => {
   const data = await meService(req.user);
-  console.log(data)
   res.json(data);
 });

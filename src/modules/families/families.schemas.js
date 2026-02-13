@@ -23,3 +23,25 @@ export const familyCreateSchema = z.object({
 export const familySearchSchema = z.object({
   dni: z.string().min(1),
 });
+
+const guardianSchema = z.object({
+  dni: z.string().optional(),
+  names: z.string().min(1),
+  lastNames: z.string().min(1),
+  phone: z.string().optional(),
+  email: z.string().email().optional(),
+  relationship: z.enum(['PADRE', 'MADRE', 'TUTOR', 'APODERADO', 'Padre', 'Madre', 'Apoderado', 'Otro']),
+});
+
+export const familyLinkStudentSchema = z.object({
+  studentId: z.string().min(1),
+  familyId: z.string().optional(),
+  family: z.object({
+    address: z.string().optional(),
+    campusId: z.string().optional(),
+    guardians: z.array(guardianSchema).min(1),
+  }).optional(),
+}).refine((data) => data.familyId || data.family, {
+  message: 'Debes enviar familyId o family para crear y vincular',
+  path: ['familyId'],
+});

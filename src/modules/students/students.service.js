@@ -7,6 +7,9 @@ import { Classroom } from '../../models/classroom.model.js';
 import { Cycle } from '../../models/cycle.model.js';
 import { StudentCycle } from '../../models/studentCycle.model.js';
 import { Vacancy } from '../../models/vacancy.model.js';
+import { Tutor } from '../../models/tutor.model.js';
+import { Payment } from '../../models/payment.model.js';
+import { Charge } from '../../models/charge.model.js';
 import { ApiError } from '../../utils/errors.js';
 
 function normalizeDni(dni) {
@@ -82,6 +85,23 @@ async function resolveOrCreatePerson(person, session) {
   }
 
   return personDoc;
+}
+
+function escapeRegExp(value) {
+  return value.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+}
+
+function toNumber(value, fallback) {
+  const parsed = Number(value);
+  return Number.isFinite(parsed) ? parsed : fallback;
+}
+
+function toMoney(value) {
+  if (value === null || value === undefined) return 0;
+  if (typeof value === 'number') return value;
+  if (typeof value === 'string') return Number(value);
+  if (typeof value === 'object' && value.toString) return Number(value.toString());
+  return 0;
 }
 
 export async function createStudentService({ person, familyId, classroomId, entryDate, notes }) {
@@ -176,4 +196,141 @@ export async function findStudentByDniService(dni) {
   if (!person) return null;
   const student = await Student.findOne({ personId: person._id }).populate('personId').populate('familyId');
   return student;
+}
+
+export async function searchStudentsService({ q, limit = 20, cursor }) {
+  const term = String(q || '').trim();
+  if (!term) throw new ApiError(400, 'q es requerido');
+
+  const normalizedLimit = Math.max(1, Math.min(50, toNumber(limit, 20)));
+  const regex = new RegExp(escapeRegExp(term), 'i');
+
+  const people = await Person.find({
+    $or: [{ dni: regex }, { names: regex }, { lastNames: regex }],
+  }).select('_id').lean();
+
+  const where = {
+    $or: [
+      { internalCode: regex },
+      ...(people.length ? [{ personId: { $in: people.map((p) => p._id) } }] : []),
+    ],
+  };
+
+  if (cursor) {
+    if (!mongoose.Types.ObjectId.isValid(cursor)) {
+      throw new ApiError(400, 'cursor inválido');
+    }
+    where._id = { $gt: cursor };
+  }
+
+  const rows = await Student.find(where)
+    .sort({ _id: 1 })
+    .limit(normalizedLimit + 1)
+    .populate('personId')
+    .lean();
+
+  const hasMore = rows.length > normalizedLimit;
+  const selected = hasMore ? rows.slice(0, normalizedLimit) : rows;
+
+  const studentIds = selected.map((row) => row._id);
+  const vacancies = await Vacancy.find({ studentId: { $in: studentIds } })
+    .sort({ startDate: -1 })
+    .populate({ path: 'classroomId', populate: { path: 'campusId' } })
+    .lean();
+
+  const vacancyByStudent = new Map();
+  for (const vacancy of vacancies) {
+    const key = String(vacancy.studentId);
+    if (!vacancyByStudent.has(key)) vacancyByStudent.set(key, vacancy);
+  }
+
+  const items = selected.map((student) => {
+    const person = student.personId;
+    const vacancy = vacancyByStudent.get(String(student._id));
+    const classroom = vacancy?.classroomId;
+    const campus = classroom?.campusId;
+
+    return {
+      id: student._id.toString(),
+      dni: person?.dni || null,
+      names: person?.names || null,
+      lastNames: person?.lastNames || null,
+      code: student.internalCode || null,
+      campusCode: campus?.code || null,
+      lastKnownGrade: classroom?.grade || null,
+      isActive: student.isActive,
+    };
+  });
+
+  return {
+    items,
+    nextCursor: hasMore ? selected[selected.length - 1]._id.toString() : null,
+  };
+}
+
+export async function getStudentSummaryService(studentId) {
+  if (!mongoose.Types.ObjectId.isValid(studentId)) throw new ApiError(400, 'id inválido');
+
+  const student = await Student.findById(studentId).populate('personId').populate('familyId').lean();
+  if (!student) throw new ApiError(404, 'Estudiante no encontrado');
+
+  const person = student.personId;
+
+  const primaryTutor = await Tutor.findOne({ studentId: student._id, isPrimary: true })
+    .populate('tutorPersonId')
+    .lean();
+
+  const latestCycle = await StudentCycle.findOne({ studentId: student._id })
+    .sort({ updatedAt: -1 })
+    .lean();
+
+  const latestVacancy = await Vacancy.findOne({ studentId: student._id })
+    .sort({ startDate: -1 })
+    .populate({ path: 'classroomId', populate: { path: 'campusId' } })
+    .lean();
+
+  const charges = await Charge.find({ studentId: student._id, status: { $in: ['OPEN', 'PARTIAL'] } }).lean();
+  const now = new Date();
+  let pendingTotal = 0;
+  let overdueTotal = 0;
+  for (const charge of charges) {
+    const outstanding = toMoney(charge.outstandingAmount);
+    pendingTotal += outstanding;
+    if (charge.dueDate && charge.dueDate < now) overdueTotal += outstanding;
+  }
+
+  const lastPayment = student.familyId
+    ? await Payment.findOne({ familyId: student.familyId._id }).sort({ paidAt: -1 }).lean()
+    : null;
+
+  const mainGuardian = primaryTutor?.tutorPersonId
+    ? `${primaryTutor.tutorPersonId.names} ${primaryTutor.tutorPersonId.lastNames}`.trim()
+    : null;
+
+  return {
+    student: {
+      id: student._id.toString(),
+      dni: person?.dni || null,
+      names: person?.names || null,
+      lastNames: person?.lastNames || null,
+      birthDate: person?.birthDate || null,
+      campusCode: latestVacancy?.classroomId?.campusId?.code || null,
+      isActive: student.isActive,
+    },
+    familyLink: {
+      familyId: student.familyId?._id?.toString() || null,
+      familyName: mainGuardian,
+      mainGuardian,
+    },
+    enrollmentStatus: {
+      currentCycleId: latestCycle?.cycleId?.toString() || null,
+      currentClassroomId: latestVacancy?.classroomId?.toString() || null,
+      status: latestCycle?.status || 'ABSENT',
+    },
+    debtsSummary: {
+      pendingTotal,
+      overdueTotal,
+      lastPaymentAt: lastPayment?.paidAt || null,
+    },
+  };
 }

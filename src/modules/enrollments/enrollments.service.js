@@ -9,6 +9,8 @@ import { ContractSnapshot } from '../../models/contractSnapshot.model.js';
 import { Charge } from '../../models/charge.model.js';
 import { Cycle } from '../../models/cycle.model.js';
 import { Campus } from '../../models/campus.model.js';
+import { Classroom } from '../../models/classroom.model.js';
+import { StudentCycle } from '../../models/studentCycle.model.js';
 import { ApiError } from '../../utils/errors.js';
 
 // Encuentra o crea una persona en sesión
@@ -20,7 +22,95 @@ async function findOrCreatePersonSession(personData, session) {
   return person;
 }
 
-export async function createEnrollmentService(data, createdByUserId) {
+async function createQuickEnrollmentService(data, createdByUserId) {
+  const session = await mongoose.startSession();
+  session.startTransaction();
+
+  try {
+    const student = await Student.findById(data.studentId).session(session);
+    if (!student) throw new ApiError(404, 'Estudiante no encontrado');
+
+    const cycle = await Cycle.findById(data.cycleId).session(session);
+    if (!cycle) throw new ApiError(404, 'Ciclo no encontrado');
+
+    const classroom = await Classroom.findById(data.classroomId).session(session);
+    if (!classroom) throw new ApiError(404, 'Classroom no encontrado');
+
+    if (!student.familyId) throw new ApiError(400, 'El estudiante no tiene familia vinculada');
+
+    const existing = await Matricula.findOne({
+      cycleId: cycle._id,
+      studentIds: student._id,
+      status: 'CONFIRMED',
+    }).session(session);
+
+    if (existing) throw new ApiError(409, 'El estudiante ya tiene matrícula confirmada en este ciclo');
+
+    const matricula = new Matricula({
+      familyId: student.familyId,
+      cycleId: cycle._id,
+      campusId: classroom.campusId,
+      studentIds: [student._id],
+      enrolledAt: new Date(),
+      status: 'CONFIRMED',
+      createdByUserId,
+      originSchool: data.source,
+      notes: data.notes || undefined,
+    });
+
+    await matricula.save({ session });
+
+    await Vacancy.updateOne(
+      { studentId: student._id, cycleId: cycle._id },
+      {
+        $set: {
+          classroomId: classroom._id,
+          endDate: null,
+          notes: data.notes || undefined,
+        },
+        $setOnInsert: {
+          studentId: student._id,
+          cycleId: cycle._id,
+          startDate: new Date(),
+        },
+      },
+      { upsert: true, session }
+    );
+
+    await StudentCycle.updateOne(
+      { studentId: student._id, cycleId: cycle._id, campusId: classroom.campusId },
+      {
+        $set: {
+          status: 'ENROLLED',
+          enrolledAt: new Date(),
+          matriculaId: matricula._id,
+          notes: data.notes || undefined,
+        },
+      },
+      { upsert: true, session }
+    );
+
+    await session.commitTransaction();
+
+    return {
+      enrollment: {
+        id: matricula._id.toString(),
+        studentId: student._id.toString(),
+        cycleId: cycle._id.toString(),
+        classroomId: classroom._id.toString(),
+        status: 'CONFIRMED',
+        createdAt: matricula.enrolledAt,
+      },
+    };
+  } catch (err) {
+    await session.abortTransaction();
+    throw err;
+  } finally {
+    session.endSession();
+  }
+}
+
+async function createLegacyEnrollmentService(data, createdByUserId) {
   const session = await mongoose.startSession();
   session.startTransaction();
   try {
@@ -125,6 +215,13 @@ export async function createEnrollmentService(data, createdByUserId) {
   } finally {
     session.endSession();
   }
+}
+
+export async function createEnrollmentService(data, createdByUserId) {
+  if (data.studentId) {
+    return createQuickEnrollmentService(data, createdByUserId);
+  }
+  return createLegacyEnrollmentService(data, createdByUserId);
 }
 
 export async function getEnrollmentService(id) {

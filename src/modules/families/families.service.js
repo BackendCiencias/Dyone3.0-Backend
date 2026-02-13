@@ -1,6 +1,8 @@
+import mongoose from 'mongoose';
 import { Family } from '../../models/family.model.js';
 import { Person } from '../../models/person.model.js';
 import { Student } from '../../models/student.model.js';
+import { Tutor } from '../../models/tutor.model.js';
 import { ApiError } from '../../utils/errors.js';
 
 // Encuentra o crea una persona por DNI
@@ -11,6 +13,12 @@ async function findOrCreatePerson(personData) {
   }
   const person = new Person(personData);
   return person.save();
+}
+
+function mapRelationship(value) {
+  if (value === 'PADRE' || value === 'Padre') return 'Padre';
+  if (value === 'MADRE' || value === 'Madre') return 'Madre';
+  return 'Apoderado';
 }
 
 export async function createFamilyService({ tutors, students, notes }) {
@@ -26,10 +34,7 @@ export async function createFamilyService({ tutors, students, notes }) {
   }
   // Procesar tutores (solo crear personas, no crea Tutor docs aquí)
   for (const tut of tutors) {
-    const person = await findOrCreatePerson(tut);
-    // No se crea Tutor aquí; se guardará en matrícula
-    // Pero se podría almacenar referencia a persona para saber quién es tutor
-    // No agregamos a tutorIds en este servicio
+    await findOrCreatePerson(tut);
   }
   await family.save();
   // Devolver la familia con estudiantes poblados
@@ -49,4 +54,123 @@ export async function searchFamiliesByDniService(dni) {
   // Buscar familias que contengan estos estudiantes
   const families = await Family.find({ studentIds: { $in: students.map((s) => s._id) } }).populate({ path: 'studentIds', populate: { path: 'personId' } });
   return families;
+}
+
+export async function linkStudentFamilyService({ studentId, familyId, family }) {
+  const session = await mongoose.startSession();
+  session.startTransaction();
+
+  try {
+    if (!mongoose.Types.ObjectId.isValid(studentId)) throw new ApiError(400, 'studentId inválido');
+
+    const student = await Student.findById(studentId).session(session);
+    if (!student) throw new ApiError(404, 'Estudiante no encontrado');
+
+    let familyDoc;
+    let created = false;
+
+    if (familyId) {
+      if (!mongoose.Types.ObjectId.isValid(familyId)) throw new ApiError(400, 'familyId inválido');
+      familyDoc = await Family.findById(familyId).session(session);
+      if (!familyDoc) throw new ApiError(404, 'Familia no encontrada');
+    } else {
+      const notes = [family?.address ? `Dirección: ${family.address}` : null, family?.campusId ? `Campus: ${family.campusId}` : null]
+        .filter(Boolean)
+        .join(' | ');
+      familyDoc = new Family({
+        tutorIds: [],
+        studentIds: [],
+        ...(notes ? { notes } : {}),
+      });
+      await familyDoc.save({ session });
+      created = true;
+    }
+
+    await Student.updateOne(
+      { _id: student._id },
+      { $set: { familyId: familyDoc._id } },
+      { session }
+    );
+
+    await Family.updateOne(
+      { _id: familyDoc._id },
+      { $addToSet: { studentIds: student._id } },
+      { session }
+    );
+
+    if (family?.guardians?.length) {
+      let isPrimaryAssigned = false;
+      for (const guardian of family.guardians) {
+        let person = null;
+        if (guardian.dni) {
+          person = await Person.findOne({ dni: guardian.dni.trim() }).session(session);
+        }
+
+        if (!person) {
+          person = await Person.create([
+            {
+              names: guardian.names,
+              lastNames: guardian.lastNames,
+              dni: guardian.dni?.trim() || undefined,
+              gender: 'Masculino',
+              phone: guardian.phone,
+              email: guardian.email,
+            },
+          ], { session }).then((docs) => docs[0]);
+        }
+
+        const relationship = mapRelationship(guardian.relationship);
+        const tutor = await Tutor.findOneAndUpdate(
+          { studentId: student._id, tutorPersonId: person._id, relationship },
+          {
+            $set: {
+              studentId: student._id,
+              tutorPersonId: person._id,
+              relationship,
+              isPrimary: !isPrimaryAssigned,
+              livesWithStudent: true,
+            },
+          },
+          { upsert: true, new: true, session }
+        );
+
+        isPrimaryAssigned = true;
+
+        await Family.updateOne(
+          { _id: familyDoc._id },
+          { $addToSet: { tutorIds: tutor._id } },
+          { session }
+        );
+      }
+    }
+
+    await session.commitTransaction();
+
+    const hydratedFamily = await Family.findById(familyDoc._id)
+      .populate({ path: 'tutorIds', populate: { path: 'tutorPersonId' } })
+      .populate('studentIds')
+      .lean();
+
+    const mainTutor = hydratedFamily?.tutorIds?.find((t) => t.isPrimary);
+    const guardianName = mainTutor?.tutorPersonId
+      ? `${mainTutor.tutorPersonId.names} ${mainTutor.tutorPersonId.lastNames}`.trim()
+      : null;
+
+    return {
+      created,
+      familyId: familyDoc._id.toString(),
+      family: {
+        id: familyDoc._id.toString(),
+        familyName: guardianName,
+        mainGuardian: guardianName,
+        guardiansCount: hydratedFamily?.tutorIds?.length || 0,
+        studentIds: hydratedFamily?.studentIds?.map((s) => s._id.toString()) || [],
+      },
+    };
+  } catch (error) {
+    await session.abortTransaction();
+    throw error;
+  } finally {
+    session.endSession();
+  }
 }

@@ -1,5 +1,11 @@
 import { asyncHandler } from '../../utils/asyncHandler.js';
-import { createStudentService, findStudentByDniService } from './students.service.js';
+import {
+  createStudentService,
+  findStudentByDniService,
+  searchStudentsService,
+  getStudentSummaryService,
+  listStudentsByCampusService,
+} from './students.service.js';
 
 export const createStudent = asyncHandler(async (req, res) => {
   const student = await createStudentService(req.validated);
@@ -16,4 +22,23 @@ export const searchStudent = asyncHandler(async (req, res) => {
     return res.status(404).json({ message: 'Estudiante no encontrado' });
   }
   res.json(student);
+});
+
+export const listStudents = asyncHandler(async (req, res) => {
+  const data = await searchStudentsService(req.query);
+  res.json(data);
+});
+
+export const listStudentsByCampus = asyncHandler(async (req, res) => {
+  const data = await listStudentsByCampusService({
+    campus: req.params.campus,
+    roles: req.user?.roles || [],
+    ...req.query,
+  });
+  res.json(data);
+});
+
+export const studentSummary = asyncHandler(async (req, res) => {
+  const data = await getStudentSummaryService(req.params.id);
+  res.json(data);
 });

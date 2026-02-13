@@ -4,6 +4,7 @@ import { Student } from '../../models/student.model.js';
 import { Family } from '../../models/family.model.js';
 import { Counter } from '../../models/counter.model.js';
 import { Classroom } from '../../models/classroom.model.js';
+import { Campus } from '../../models/campus.model.js';
 import { Cycle } from '../../models/cycle.model.js';
 import { StudentCycle } from '../../models/studentCycle.model.js';
 import { Vacancy } from '../../models/vacancy.model.js';
@@ -102,6 +103,87 @@ function toMoney(value) {
   if (typeof value === 'string') return Number(value);
   if (typeof value === 'object' && value.toString) return Number(value.toString());
   return 0;
+}
+
+
+const CAMPUS_ALIAS = {
+  CIMAS: ['CIMAS'],
+  CIENCIAS: ['CIENCIAS_PRI', 'CIENCIAS_SEC'],
+  CIENCIAS_APLICADAS: ['CIENCIAS_SEC'],
+};
+
+const CAMPUS_ACCESS_BY_ROLE = {
+  SECRETARY_CIMAS: ['CIMAS'],
+  SECRETARY_CIENCIAS_SEC: ['CIENCIAS'],
+  SECRETARY_CIENCIAS_PRIM: ['CIENCIAS'],
+  SECRETARY_CIENCIAS: ['CIENCIAS'],
+  SECRETARY_APLICADAS: ['CIENCIAS_APLICADAS'],
+};
+
+export function getAllowedCampusesFromRoles(roles = []) {
+  const normalizedRoles = Array.isArray(roles) ? roles : [];
+
+  if (normalizedRoles.includes('ADMIN') || normalizedRoles.includes('PROMOTER')) return ['*'];
+  if (normalizedRoles.includes('SECRETARY')) return ['*'];
+
+  const campuses = new Set();
+  for (const role of normalizedRoles) {
+    const roleCampuses = CAMPUS_ACCESS_BY_ROLE[role];
+    if (roleCampuses) {
+      for (const campus of roleCampuses) campuses.add(campus);
+    }
+  }
+
+  return [...campuses];
+}
+
+function ensureCampusAccess({ campus, roles }) {
+  const allowedCampuses = getAllowedCampusesFromRoles(roles);
+  if (allowedCampuses.includes('*')) return;
+  if (!allowedCampuses.includes(campus)) {
+    throw new ApiError(403, 'No autorizado para consultar este campus');
+  }
+}
+
+function resolveCampusCodes(campus) {
+  const normalized = String(campus || '').trim().toUpperCase();
+  const codes = CAMPUS_ALIAS[normalized];
+  if (!codes) {
+    throw new ApiError(400, 'campus inválido. Usa CIENCIAS, CIMAS o CIENCIAS_APLICADAS');
+  }
+  return { normalized, codes };
+}
+
+async function buildStudentResponse(items) {
+  const studentIds = items.map((row) => row._id);
+  const vacancies = await Vacancy.find({ studentId: { $in: studentIds } })
+    .sort({ startDate: -1 })
+    .populate({ path: 'classroomId', populate: { path: 'campusId' } })
+    .lean();
+
+  const vacancyByStudent = new Map();
+  for (const vacancy of vacancies) {
+    const key = String(vacancy.studentId);
+    if (!vacancyByStudent.has(key)) vacancyByStudent.set(key, vacancy);
+  }
+
+  return items.map((student) => {
+    const person = student.personId;
+    const vacancy = vacancyByStudent.get(String(student._id));
+    const classroom = vacancy?.classroomId;
+    const campus = classroom?.campusId;
+
+    return {
+      id: student._id.toString(),
+      dni: person?.dni || null,
+      names: person?.names || null,
+      lastNames: person?.lastNames || null,
+      code: student.internalCode || null,
+      campusCode: campus?.code || null,
+      lastKnownGrade: classroom?.grade || null,
+      isActive: student.isActive,
+    };
+  });
 }
 
 export async function createStudentService({ person, familyId, classroomId, entryDate, notes }) {
@@ -232,35 +314,7 @@ export async function searchStudentsService({ q, limit = 20, cursor }) {
   const hasMore = rows.length > normalizedLimit;
   const selected = hasMore ? rows.slice(0, normalizedLimit) : rows;
 
-  const studentIds = selected.map((row) => row._id);
-  const vacancies = await Vacancy.find({ studentId: { $in: studentIds } })
-    .sort({ startDate: -1 })
-    .populate({ path: 'classroomId', populate: { path: 'campusId' } })
-    .lean();
-
-  const vacancyByStudent = new Map();
-  for (const vacancy of vacancies) {
-    const key = String(vacancy.studentId);
-    if (!vacancyByStudent.has(key)) vacancyByStudent.set(key, vacancy);
-  }
-
-  const items = selected.map((student) => {
-    const person = student.personId;
-    const vacancy = vacancyByStudent.get(String(student._id));
-    const classroom = vacancy?.classroomId;
-    const campus = classroom?.campusId;
-
-    return {
-      id: student._id.toString(),
-      dni: person?.dni || null,
-      names: person?.names || null,
-      lastNames: person?.lastNames || null,
-      code: student.internalCode || null,
-      campusCode: campus?.code || null,
-      lastKnownGrade: classroom?.grade || null,
-      isActive: student.isActive,
-    };
-  });
+  const items = await buildStudentResponse(selected);
 
   return {
     items,
@@ -332,5 +386,72 @@ export async function getStudentSummaryService(studentId) {
       overdueTotal,
       lastPaymentAt: lastPayment?.paidAt || null,
     },
+  };
+}
+
+
+export async function listStudentsByCampusService({ campus, q = '', limit = 20, cursor, roles = [] }) {
+  const { normalized, codes } = resolveCampusCodes(campus);
+  ensureCampusAccess({ campus: normalized, roles });
+  const normalizedLimit = Math.max(1, Math.min(50, toNumber(limit, 20)));
+
+  const campuses = await Campus.find({ code: { $in: codes } }).select('_id').lean();
+  if (!campuses.length) {
+    return { campus: normalized, items: [], nextCursor: null };
+  }
+
+  const cycles = await StudentCycle.find({ campusId: { $in: campuses.map((c) => c._id) } })
+    .sort({ updatedAt: -1 })
+    .select('studentId')
+    .lean();
+
+  const studentIdSet = new Set();
+  const studentIds = [];
+  for (const row of cycles) {
+    const key = String(row.studentId);
+    if (!studentIdSet.has(key)) {
+      studentIdSet.add(key);
+      studentIds.push(row.studentId);
+    }
+  }
+
+  if (!studentIds.length) {
+    return { campus: normalized, items: [], nextCursor: null };
+  }
+
+  const term = String(q || '').trim();
+  const where = { _id: { $in: studentIds } };
+
+  if (term) {
+    const regex = new RegExp(escapeRegExp(term), 'i');
+    const people = await Person.find({
+      $or: [{ dni: regex }, { names: regex }, { lastNames: regex }],
+    }).select('_id').lean();
+
+    where.$or = [
+      { internalCode: regex },
+      ...(people.length ? [{ personId: { $in: people.map((p) => p._id) } }] : []),
+    ];
+  }
+
+  if (cursor) {
+    if (!mongoose.Types.ObjectId.isValid(cursor)) throw new ApiError(400, 'cursor inválido');
+    where._id.$gt = cursor;
+  }
+
+  const rows = await Student.find(where)
+    .sort({ _id: 1 })
+    .limit(normalizedLimit + 1)
+    .populate('personId')
+    .lean();
+
+  const hasMore = rows.length > normalizedLimit;
+  const selected = hasMore ? rows.slice(0, normalizedLimit) : rows;
+  const items = await buildStudentResponse(selected);
+
+  return {
+    campus: normalized,
+    items,
+    nextCursor: hasMore ? selected[selected.length - 1]._id.toString() : null,
   };
 }

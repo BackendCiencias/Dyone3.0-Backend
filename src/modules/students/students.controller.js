@@ -4,6 +4,7 @@ import {
   findStudentByDniService,
   searchStudentsService,
   getStudentSummaryService,
+  listStudentsByCampusService,
 } from './students.service.js';
 
 export const createStudent = asyncHandler(async (req, res) => {
@@ -25,7 +26,15 @@ export const searchStudent = asyncHandler(async (req, res) => {
 
 export const listStudents = asyncHandler(async (req, res) => {
   const data = await searchStudentsService(req.query);
-  console.log(data)
+  res.json(data);
+});
+
+export const listStudentsByCampus = asyncHandler(async (req, res) => {
+  const data = await listStudentsByCampusService({
+    campus: req.params.campus,
+    roles: req.user?.roles || [],
+    ...req.query,
+  });
   res.json(data);
 });
 

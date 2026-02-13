@@ -23,7 +23,7 @@ const router = Router();
 
 // Middleware de autenticación y roles comunes para todas las rutas de administración
 router.use(authMiddleware);
-router.use(requireRoles(['SECRETARY', 'DIRECTOR', 'PROMOTER']));
+router.use(requireRoles(['SECRETARY','SECRETARY_CIENCIAS_SEC', 'DIRECTOR', 'PROMOTER','ADMIN']));
 
 // Campuses
 router.get('/campuses', getCampuses);

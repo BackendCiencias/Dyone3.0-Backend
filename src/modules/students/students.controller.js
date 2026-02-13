@@ -7,6 +7,9 @@ import {
   listStudentsByCampusService,
 } from './students.service.js';
 
+const ENABLE_STUDENTS_BY_CAMPUS_DEBUG =
+  process.env.STUDENTS_BY_CAMPUS_DEBUG === 'true' || process.env.NODE_ENV !== 'production';
+
 export const createStudent = asyncHandler(async (req, res) => {
   const student = await createStudentService(req.validated);
   res.status(201).json(student);
@@ -30,12 +33,25 @@ export const listStudents = asyncHandler(async (req, res) => {
 });
 
 export const listStudentsByCampus = asyncHandler(async (req, res) => {
+  const { campus } = req.params;
+  const { q, limit, cursor } = req.query;
+
+  if (ENABLE_STUDENTS_BY_CAMPUS_DEBUG) {
+    console.log('[studentsByCampus] campus=', campus, 'q=', q, 'limit=', limit, 'cursor=', cursor);
+  }
+
   const data = await listStudentsByCampusService({
-    campus: req.params.campus,
+    campus,
     roles: req.user?.roles || [],
-    ...req.query,
+    q,
+    limit,
+    cursor,
   });
-  console.log(data)
+
+  if (ENABLE_STUDENTS_BY_CAMPUS_DEBUG) {
+    console.log('[studentsByCampus] items=', data.items.length, 'nextCursor=', data.nextCursor);
+  }
+
   res.json(data);
 });
 

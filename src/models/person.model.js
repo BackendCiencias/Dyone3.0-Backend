@@ -3,7 +3,7 @@ import mongoose from 'mongoose';
 const personSchema = new mongoose.Schema({
   names: { type: String, required: true },
   lastNames: { type: String, required: true },
-  dni: { type: String, unique: true },
+  dni: { type: String, unique: true, sparse: true, index: true },
   gender: { type: String, enum: ['Masculino', 'Femenino'], required: true },
   birthDate: { type: Date },
   phone: { type: String },

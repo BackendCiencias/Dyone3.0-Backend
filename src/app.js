@@ -34,6 +34,7 @@ app.set('trust proxy', 1);
 const allowedOrigins = [
   'https://dyone3-frontend.vercel.app',
   'https://www.cienciasperu.edu.pe',
+  'http://localhost:5173',
 ];
 
 function isAllowedOrigin(origin) {

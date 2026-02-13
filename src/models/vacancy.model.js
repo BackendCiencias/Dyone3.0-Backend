@@ -9,4 +9,6 @@ const vacancySchema = new mongoose.Schema({
   notes: { type: String },
 });
 
+vacancySchema.index({ studentId: 1, cycleId: 1 }, { unique: true });
+
 export const Vacancy = mongoose.model('Vacancy', vacancySchema);

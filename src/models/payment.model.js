@@ -6,6 +6,7 @@ const paymentSchema = new mongoose.Schema({
   paidAt: { type: Date, default: Date.now },
   totalAmount: { type: mongoose.Types.Decimal128, required: true },
   method: { type: String, enum: ['CASH', 'YAPE', 'TRANSFER'], required: true },
+  voucherNumber: { type: String, required: true },
   createdByUserId: { type: mongoose.Schema.Types.ObjectId, ref: 'User', required: true },
   notes: { type: String },
 });

@@ -38,8 +38,7 @@ const enrollmentStudentSchema = z.object({
   charges: z.array(chargeSchema).optional(),
 });
 
-// Esquema principal de matrícula
-export const enrollmentCreateSchema = z.object({
+const legacyEnrollmentSchema = z.object({
   campusId: z.string().min(1),
   cycleId: z.string().min(1),
   originSchool: z.string().min(1),
@@ -47,3 +46,15 @@ export const enrollmentCreateSchema = z.object({
   contractNumber: z.string().optional(),
   notes: z.string().optional(),
 });
+
+const quickEnrollmentSchema = z.object({
+  studentId: z.string().min(1),
+  cycleId: z.string().min(1),
+  classroomId: z.string().min(1),
+  source: z.enum(['RENEWAL', 'NEW', 'TRANSFER']),
+  discounts: z.array(z.object({ name: z.string(), amount: z.number() })).optional(),
+  notes: z.string().optional(),
+});
+
+// Esquema principal de matrícula
+export const enrollmentCreateSchema = z.union([quickEnrollmentSchema, legacyEnrollmentSchema]);

@@ -35,6 +35,7 @@ export const listStudentsByCampus = asyncHandler(async (req, res) => {
     roles: req.user?.roles || [],
     ...req.query,
   });
+  console.log(data)
   res.json(data);
 });
 

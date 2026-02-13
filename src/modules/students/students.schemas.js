@@ -1,9 +1,11 @@
 import { z } from 'zod';
 
+const nullableString = z.string().trim().optional().or(z.literal(''));
+
 const personSchema = z.object({
-  names: z.string().min(1),
-  lastNames: z.string().min(1),
-  dni: z.string().min(1),
+  names: z.string().trim().min(1),
+  lastNames: z.string().trim().min(1),
+  dni: nullableString,
   gender: z.enum(['Masculino', 'Femenino']),
   birthDate: z.string().optional(),
   phone: z.string().optional(),
@@ -15,7 +17,8 @@ const personSchema = z.object({
 
 export const studentCreateSchema = z.object({
   person: personSchema,
-  familyId: z.string().min(1),
+  classroomId: z.string().min(1),
+  familyId: z.string().optional(),
   entryDate: z.string().optional(),
   notes: z.string().optional(),
 });

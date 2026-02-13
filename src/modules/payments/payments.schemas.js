@@ -5,7 +5,7 @@ export const paymentCreateSchema = z.object({
   campusId: z.string().min(1),
   paidAt: z.string().optional(),
   method: z.enum(['CASH', 'YAPE', 'TRANSFER']),
-  totalAmount: z.number().positive(),
+  voucherNumber: z.string().min(1),
   allocations: z.array(
     z.object({
       chargeId: z.string().min(1),

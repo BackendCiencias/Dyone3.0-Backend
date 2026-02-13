@@ -4,17 +4,17 @@ import { requireRoles } from '../../middlewares/roles.js';
 import { validate } from '../../middlewares/validate.js';
 import { studentCreateSchema } from './students.schemas.js';
 import { createStudent, searchStudent } from './students.controller.js';
+import { tutorCreateSchema } from '../tutors/tutors.schemas.js';
+import { upsertTutor } from '../tutors/tutors.controller.js';
 
 const router = Router();
 
-// Aplicar autenticación y roles a todas las rutas de estudiantes
 router.use(authMiddleware);
-router.use(requireRoles(['SECRETARY', 'DIRECTOR', 'PROMOTER']));
+router.use(requireRoles(['ADMIN', 'SECRETARY', 'DIRECTOR', 'PROMOTER', 'SECRETARY_CIENCIAS_SEC', 'SECRETARY_CIENCIAS_PRIM', 'SECRETARY_CIMAS']));
 
-// Crear estudiante
 router.post('/', validate(studentCreateSchema), createStudent);
 
-// Buscar estudiante por DNI
+router.post('/:studentId/tutors', (req, _res, next) => { req.body.studentId = req.params.studentId; next(); }, validate(tutorCreateSchema), upsertTutor);
 router.get('/search', searchStudent);
 
 export default router;

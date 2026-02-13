@@ -38,16 +38,6 @@ async function seed() {
     console.log("🔌 Conectando a la base de datos...");
     await mongoose.connect(MONGO_URI);
 
-    
-
-    console.log('🧹 Eliminando usuarios...');
-    await User.deleteMany({});
-
-
-    console.log('🧹 Eliminando personas...');
-    await Person.deleteMany({});
-
-
     const passwordHash = await bcrypt.hash(PASSWORD, 10);
 
     for (const u of usersToSeed) {

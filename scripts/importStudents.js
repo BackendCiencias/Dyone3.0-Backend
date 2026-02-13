@@ -14,7 +14,7 @@ import { StudentCycle } from '../src/models/studentCycle.model.js';
 import { Vacancy } from '../src/models/vacancy.model.js';
 
 const rowSchema = z.object({
-  internalCode: z.string().trim().optional().or(z.literal('')),
+  internalCode: z.string().trim().min(1, 'Código interno es obligatorio'),
   lastNames: z.string().min(1, 'Apellidos es obligatorio'),
   names: z.string().min(1, 'Nombres es obligatorio'),
   dni: z.string().trim().optional().or(z.literal('')),
@@ -75,13 +75,13 @@ function parseCSV(content) {
   const commaCount = count(headerLine, ',');
   const semiCount = count(headerLine, ';');
 
-  // Elegir el delimitador más probable por frecuencia en el header
+
   let delimiter = ',';
   const max = Math.max(tabCount, commaCount, semiCount);
 
   if (max === tabCount) delimiter = '\t';
   else if (max === semiCount) delimiter = ';';
-  else delimiter = ',';
+  
 
   const headers = splitLine(headerLine, delimiter).map(normalizeHeader);
 
@@ -100,13 +100,25 @@ function parseCSV(content) {
   });
 }
 
+function normalizeDni(value) {
+  const normalized = String(value || '').trim();
+  if (!normalized) return undefined;
+
+  const lowered = normalized.toLowerCase();
+  if (['null', 'undefined', 'n/a', 'na', '-'].includes(lowered)) {
+    return undefined;
+  }
+
+  return normalized;
+}
+
 
 function mapRow(rawRow) {
   return {
     internalCode: (rawRow.internalcode || '').trim(),
     lastNames: (rawRow.apellidos || '').trim(),
     names: (rawRow.nombres || '').trim(),
-    dni: (rawRow.dni || '').trim(),
+    dni: normalizeDni(rawRow.dni),
     campusText: (rawRow.sede || '').trim(),
     grade: String(rawRow.grado || '').trim(),
     section: String(rawRow.seccion || '').trim().toUpperCase(),
@@ -129,19 +141,14 @@ async function resolveCampusAndCycle({ campusArg, cycleArg, campusText, level, g
     if (!campusText) throw new Error('No se pudo resolver Campus: falta Sede o parámetro --campus');
     const normalized = campusText.toUpperCase();
 
-    // 1) Primero intenta por code exacto
     campus = await Campus.findOne({ code: normalized });
 
-    // 2) Fallback por name
     if (!campus) {
       campus = await Campus.findOne({ name: new RegExp(`^${campusText}$`, 'i') });
     }
 
-    // 3) (Opcional) si de verdad manejas alias internos, ponlos aquí
     if (!campus) {
-      const aliases = {
-        // 'CIENCIAS': 'CIENCIAS_SEC', // solo si REALMENTE existe en tu DB
-      };
+      const aliases = {};
 
       const alias = aliases[normalized];
       if (alias) {
@@ -150,7 +157,6 @@ async function resolveCampusAndCycle({ campusArg, cycleArg, campusText, level, g
     }
 
     if (!campus) throw new Error(`No se encontró campus para Sede="${campusText}"`);
-
   }
 
   if (cycleArg) {
@@ -190,57 +196,6 @@ async function ensureFamilyStub(studentId, notes = '') {
   return family;
 }
 
-async function generateNextInternalCode() {
-  const students = await Student.find({ internalCode: /^COD_A\d{5}$/ }, { internalCode: 1 }).lean();
-
-  let max = 0;
-  for (const student of students) {
-    const current = Number(String(student.internalCode).replace('COD_A', ''));
-    if (!Number.isNaN(current) && current > max) max = current;
-  }
-
-  return `COD_A${String(max + 1).padStart(5, '0')}`;
-}
-
-async function purgeImportData() {
-  console.log('===== PURGE START =====');
-
-  const countsBefore = {
-    people: await Person.countDocuments(),
-    families: await Family.countDocuments(),
-    students: await Student.countDocuments(),
-    studentCycles: await StudentCycle.countDocuments(),
-    vacancies: await Vacancy.countDocuments(),
-    campuses: await Campus.countDocuments(),
-    cycles: await Cycle.countDocuments(),
-    classrooms: await Classroom.countDocuments(),
-  };
-
-  console.log('Antes purge:', countsBefore);
-
-  // Borra en orden para evitar referencias colgando
-  await Vacancy.deleteMany({});
-  await StudentCycle.deleteMany({});
-  await Student.deleteMany({});
-  await Family.deleteMany({});
-  await Person.deleteMany({});
-
-  const countsAfter = {
-    people: await Person.countDocuments(),
-    families: await Family.countDocuments(),
-    students: await Student.countDocuments(),
-    studentCycles: await StudentCycle.countDocuments(),
-    vacancies: await Vacancy.countDocuments(),
-    campuses: await Campus.countDocuments(),
-    cycles: await Cycle.countDocuments(),
-    classrooms: await Classroom.countDocuments(),
-  };
-
-  console.log('Después purge:', countsAfter);
-  console.log('===== PURGE END =====');
-}
-
-
 async function run() {
   const args = parseArgs(process.argv);
 
@@ -257,16 +212,7 @@ async function run() {
 
   await connectDB();
 
-  console.log('DB:', mongoose.connection.name);
-  console.log('Host:', mongoose.connection.host);
-  console.log('Campus count:', await Campus.countDocuments());
   console.log('Campus codes:', (await Campus.find({}, { code: 1 }).lean()).map(c => c.code));
-
-  // ⚠️ Purge total (excepto campus/cycle/classroom)
-  // Para evitar borrados accidentales, lo activas solo si pasas --purge
-  if (args.purge) {
-    await purgeImportData();
-  }
 
 
   const report = {
@@ -323,16 +269,9 @@ async function run() {
           throw new Error('Classroom no existe para campus + cycle + level + grade + section');
         }
 
-        let student = null;
+        let student = await Student.findOne({ internalCode: data.internalCode });
         let createdSomething = false;
         let updatedSomething = false;
-
-        let resolvedInternalCode = data.internalCode;
-        if (resolvedInternalCode) {
-          student = await Student.findOne({ internalCode: resolvedInternalCode });
-        } else {
-          resolvedInternalCode = await generateNextInternalCode();
-        }
 
         let person = null;
         if (data.dni) {
@@ -347,19 +286,32 @@ async function run() {
           person = await Person.create({
             names: data.names,
             lastNames: data.lastNames,
-            dni: data.dni || undefined,
+            ...(data.dni ? { dni: data.dni } : {}),
             gender: 'Masculino',
             notes: data.notes || undefined,
           });
           createdSomething = true;
         } else {
-          const personUpdates = {};
-          if (person.names !== data.names) personUpdates.names = data.names;
-          if (person.lastNames !== data.lastNames) personUpdates.lastNames = data.lastNames;
-          if (data.notes && person.notes !== data.notes) personUpdates.notes = data.notes;
+          const personSetUpdates = {};
+          const personUnsetUpdates = {};
 
-          if (Object.keys(personUpdates).length) {
-            await Person.updateOne({ _id: person._id }, { $set: personUpdates });
+          if (person.names !== data.names) personSetUpdates.names = data.names;
+          if (person.lastNames !== data.lastNames) personSetUpdates.lastNames = data.lastNames;
+          if (data.notes && person.notes !== data.notes) personSetUpdates.notes = data.notes;
+
+          if (data.dni && person.dni !== data.dni) {
+            personSetUpdates.dni = data.dni;
+          }
+
+          if (!data.dni && (person.dni === null || typeof person.dni === 'string')) {
+            personUnsetUpdates.dni = '';
+          }
+
+          if (Object.keys(personSetUpdates).length || Object.keys(personUnsetUpdates).length) {
+            const updateDoc = {};
+            if (Object.keys(personSetUpdates).length) updateDoc.$set = personSetUpdates;
+            if (Object.keys(personUnsetUpdates).length) updateDoc.$unset = personUnsetUpdates;
+            await Person.updateOne({ _id: person._id }, updateDoc);
             updatedSomething = true;
           }
         }
@@ -370,7 +322,7 @@ async function run() {
           student = await Student.create({
             personId: person._id,
             familyId: family._id,
-            internalCode: resolvedInternalCode,
+            internalCode: data.internalCode,
             notes: data.notes || undefined,
           });
 
@@ -442,7 +394,7 @@ async function run() {
 
         successRows.push({
           rowNumber: row.rowNumber,
-          internalCode: resolvedInternalCode,
+          internalCode: data.internalCode,
           studentId: student._id,
           personId: person._id,
           classroomId: classroom._id,

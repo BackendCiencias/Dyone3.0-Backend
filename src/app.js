@@ -12,6 +12,8 @@ import adminRouter from './modules/admin/admin.routes.js';
 import familiesRouter from './modules/families/families.routes.js';
 import studentsRouter from './modules/students/students.routes.js';
 import paymentsRouter from './modules/payments/payments.routes.js';
+import tutorsRouter from './modules/tutors/tutors.routes.js';
+import chargesRouter from './modules/charges/charges.routes.js';
 import enrollmentsRouter from './modules/enrollments/enrollments.routes.js';
 // Empty modules export routers but currently they are TODO
 import attendanceRouter from './modules/attendance/attendance.routes.js';
@@ -77,6 +79,8 @@ app.use('/api/admin', adminRouter);
 app.use('/api/families', familiesRouter);
 app.use('/api/students', studentsRouter);
 app.use('/api/payments', paymentsRouter);
+app.use('/api/tutors', tutorsRouter);
+app.use('/api/charges', chargesRouter);
 app.use('/api/enrollments', enrollmentsRouter);
 // Rutas vacías por ahora
 app.use('/api/attendance', attendanceRouter);

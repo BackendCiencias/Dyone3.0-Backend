@@ -187,6 +187,8 @@ async function buildStudentResponse(items) {
       code: student.internalCode || null,
       campusCode: campus?.code || null,
       lastKnownGrade: classroom?.grade || null,
+      lastKnownSection: classroom?.section || null,
+      classroomName:classroom?.displayName || null,
       isActive: student.isActive,
     };
   });
@@ -339,6 +341,12 @@ export async function getStudentSummaryService(studentId) {
   const primaryTutor = await Tutor.findOne({ studentId: student._id, isPrimary: true })
     .populate('tutorPersonId')
     .lean();
+  // console.log('[primaryTutor][dbg] content=', primaryTutor);
+
+  const otherTutors = await Tutor.find({ studentId: student._id, isPrimary: false })
+    .populate('tutorPersonId')
+    .lean();
+
 
   const latestCycle = await StudentCycle.findOne({ studentId: student._id })
     .sort({ updatedAt: -1 })
@@ -363,28 +371,45 @@ export async function getStudentSummaryService(studentId) {
     ? await Payment.findOne({ familyId: student.familyId._id }).sort({ paidAt: -1 }).lean()
     : null;
 
-  const mainGuardian = primaryTutor?.tutorPersonId
-    ? `${primaryTutor.tutorPersonId.names} ${primaryTutor.tutorPersonId.lastNames}`.trim()
-    : null;
+  const sendStudent = {
+    id: student._id.toString(),
+    dni: person?.dni || null,
+    internalCode: student?.internalCode || null,
+    names: person?.names || null,
+    lastNames: person?.lastNames || null,
+    birthDate: person?.birthDate || null,
+    campusCode: latestVacancy?.classroomId?.campusId?.code || null,
+    isActive: student.isActive,
+  }
+  const sendFamily = {
+    familyId: student.familyId?._id?.toString() || null,
+    primaryTutor_send: primaryTutor? {
+          lastNames: primaryTutor.tutorPersonId?.lastNames || null,
+          names: primaryTutor.tutorPersonId?.names || null,
+          phone: primaryTutor.tutorPersonId?.phone || null,
+          relationship: primaryTutor.relationship || null,
+          livesWithStudent: primaryTutor.livesWithStudent ?? null
+        }
+      : null,
+    otherTutors_send: (otherTutors || []).map(tutor => ({
+      lastNames: tutor.tutorPersonId?.lastNames || null,
+      names: tutor.tutorPersonId?.names || null,
+      phone: primaryTutor.tutorPersonId?.phone || null,
+      relationship: tutor.relationship || null,
+      livesWithStudent: tutor.livesWithStudent ?? null
+    }))
+  };
+  // console.log('[sendStudent][dbg] content=', sendStudent);
+  console.log('[sendFamily][dbg] content=', sendFamily);
+  // console.log('[Family][dbg] content=', sendFamily);
 
   return {
-    student: {
-      id: student._id.toString(),
-      dni: person?.dni || null,
-      names: person?.names || null,
-      lastNames: person?.lastNames || null,
-      birthDate: person?.birthDate || null,
-      campusCode: latestVacancy?.classroomId?.campusId?.code || null,
-      isActive: student.isActive,
-    },
-    familyLink: {
-      familyId: student.familyId?._id?.toString() || null,
-      familyName: mainGuardian,
-      mainGuardian,
-    },
+    student: sendStudent,
+    familyLink: sendFamily,
     enrollmentStatus: {
       currentCycleId: latestCycle?.cycleId?.toString() || null,
       currentClassroomId: latestVacancy?.classroomId?.toString() || null,
+      currentClassroom: latestVacancy || null,
       status: latestCycle?.status || 'ABSENT',
     },
     debtsSummary: {
@@ -458,10 +483,12 @@ export async function listStudentsByCampusService({ campus, q = '', limit = 20, 
     .populate('personId')
     .lean();
   console.log('[studentsByCampus][dbg] studentsFound=', rows.length);
-
+  // console.log('[studentsByCampus][dbg] studentsOne=', rows[0]);
+  
   const hasMore = rows.length > normalizedLimit;
   const selected = hasMore ? rows.slice(0, normalizedLimit) : rows;
   const items = await buildStudentResponse(selected);
+  console.log('[items][dbg] itemsOne=', items[0]);
 
   return {
     campus: normalized,

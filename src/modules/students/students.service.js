@@ -108,8 +108,13 @@ function toMoney(value) {
 
 const CAMPUS_ALIAS = {
   CIMAS: ['CIMAS'],
-  CIENCIAS: ['CIENCIAS_PRI', 'CIENCIAS_SEC'],
-  CIENCIAS_APLICADAS: ['CIENCIAS_SEC'],
+  CIENCIAS: ['CIENCIAS'],
+  CIENCIAS_APLICADAS: ['CIENCIAS_APLICADAS'],
+};
+
+const CAMPUS_LEGACY_NORMALIZATION = {
+  CIENCIAS_PRI: 'CIENCIAS',
+  CIENCIAS_SEC: 'CIENCIAS',
 };
 
 const CAMPUS_ACCESS_BY_ROLE = {
@@ -146,7 +151,8 @@ function ensureCampusAccess({ campus, roles }) {
 }
 
 function resolveCampusCodes(campus) {
-  const normalized = String(campus || '').trim().toUpperCase();
+  const raw = String(campus || '').trim().toUpperCase();
+  const normalized = CAMPUS_LEGACY_NORMALIZATION[raw] || raw;
   const codes = CAMPUS_ALIAS[normalized];
   if (!codes) {
     throw new ApiError(400, 'campus inválido. Usa CIENCIAS, CIMAS o CIENCIAS_APLICADAS');
@@ -392,18 +398,23 @@ export async function getStudentSummaryService(studentId) {
 
 export async function listStudentsByCampusService({ campus, q = '', limit = 20, cursor, roles = [] }) {
   const { normalized, codes } = resolveCampusCodes(campus);
+  console.log('[studentsByCampus][dbg] normalized=', normalized, 'codes=', codes);
   ensureCampusAccess({ campus: normalized, roles });
+  console.log('[studentsByCampus][dbg] accessGrantedFor=', normalized, 'roles=', roles);
   const normalizedLimit = Math.max(1, Math.min(50, toNumber(limit, 20)));
 
   const campuses = await Campus.find({ code: { $in: codes } }).select('_id').lean();
+  console.log('[studentsByCampus][dbg] campusesFound=', campuses.length, campuses.map((c) => c._id));
   if (!campuses.length) {
     return { campus: normalized, items: [], nextCursor: null };
   }
 
   const cycles = await StudentCycle.find({ campusId: { $in: campuses.map((c) => c._id) } })
     .sort({ updatedAt: -1 })
-    .select('studentId')
+    .select('studentId campusId')
     .lean();
+  console.log('[studentsByCampus][dbg] studentCyclesFound=', cycles.length);
+  console.log('[studentsByCampus][dbg] sampleCycle=', cycles[0]);
 
   const studentIdSet = new Set();
   const studentIds = [];
@@ -414,6 +425,7 @@ export async function listStudentsByCampusService({ campus, q = '', limit = 20, 
       studentIds.push(row.studentId);
     }
   }
+  console.log('[studentsByCampus][dbg] uniqueStudentIds=', studentIds.length);
 
   if (!studentIds.length) {
     return { campus: normalized, items: [], nextCursor: null };
@@ -438,12 +450,14 @@ export async function listStudentsByCampusService({ campus, q = '', limit = 20, 
     if (!mongoose.Types.ObjectId.isValid(cursor)) throw new ApiError(400, 'cursor inválido');
     where._id.$gt = cursor;
   }
+  // console.log('[studentsByCampus][dbg] where=', JSON.stringify(where));
 
   const rows = await Student.find(where)
     .sort({ _id: 1 })
     .limit(normalizedLimit + 1)
     .populate('personId')
     .lean();
+  console.log('[studentsByCampus][dbg] studentsFound=', rows.length);
 
   const hasMore = rows.length > normalizedLimit;
   const selected = hasMore ? rows.slice(0, normalizedLimit) : rows;

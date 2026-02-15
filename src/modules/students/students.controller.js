@@ -18,6 +18,14 @@ export const createStudent = asyncHandler(async (req, res) => {
   res.status(201).json(student);
 });
 
+export const createStudentWithPerson = asyncHandler(async (req, res) => {
+  const student = await createStudentService(req.validated);
+  res.status(201).json({
+    studentId: student._id,
+    student,
+  });
+});
+
 export const searchStudent = asyncHandler(async (req, res) => {
   const { dni } = req.query;
   if (!dni) {

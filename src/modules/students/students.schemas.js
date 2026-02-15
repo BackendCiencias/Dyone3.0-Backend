@@ -24,6 +24,8 @@ export const studentCreateSchema = z.object({
   notes: z.string().optional(),
 });
 
+export const studentCreateWithPersonSchema = studentCreateSchema;
+
 export const studentIdParamsSchema = z.object({
   id: objectIdSchema,
 });

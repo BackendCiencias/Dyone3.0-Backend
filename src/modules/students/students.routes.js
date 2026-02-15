@@ -9,6 +9,7 @@ import {
   studentDetailQuerySchema,
   studentCycleStatusSchema,
   studentClassroomSchema,
+  studentCreateWithPersonSchema,
 } from './students.schemas.js';
 import {
   createStudent,
@@ -19,6 +20,7 @@ import {
   getStudentDetail,
   updateStudentCycleStatus,
   changeStudentClassroom,
+  createStudentWithPerson,
 } from './students.controller.js';
 import { tutorCreateSchema } from '../tutors/tutors.schemas.js';
 import { upsertTutor } from '../tutors/tutors.controller.js';
@@ -56,6 +58,7 @@ router.patch(
   validateRequest({ params: studentIdParamsSchema, body: studentClassroomSchema }),
   changeStudentClassroom
 );
+router.post('/with-person', requireRoles(['ADMIN', 'SECRETARY', 'DIRECTOR', 'PROMOTER', ...coreSecretaryRoles]), validate(studentCreateWithPersonSchema), createStudentWithPerson);
 router.post('/', requireRoles(['ADMIN', 'SECRETARY', 'DIRECTOR', 'PROMOTER', ...coreSecretaryRoles]), validate(studentCreateSchema), createStudent);
 
 router.post(

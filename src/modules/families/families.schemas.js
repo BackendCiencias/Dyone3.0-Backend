@@ -23,7 +23,9 @@ export const familyCreateSchema = z.object({
 });
 
 export const familySearchSchema = z.object({
-  dni: z.string().min(1),
+  q: z.string().trim().min(1),
+  limit: z.coerce.number().int().min(1).max(50).optional(),
+  cursor: objectIdSchema.optional(),
 });
 
 const guardianSchema = z.object({
@@ -33,6 +35,40 @@ const guardianSchema = z.object({
   phone: z.string().optional(),
   email: z.string().email().optional(),
   relationship: z.enum(['PADRE', 'MADRE', 'TUTOR', 'APODERADO', 'Padre', 'Madre', 'Apoderado', 'Otro']),
+});
+
+const relationshipSchema = z.enum(['PADRE', 'MADRE', 'TUTOR', 'APODERADO', 'Padre', 'Madre', 'Apoderado', 'Otro']);
+
+const tutorPersonPayloadSchema = z.object({
+  names: z.string().trim().min(1),
+  lastNames: z.string().trim().min(1),
+  dni: z.string().trim().optional(),
+  phone: z.string().trim().optional(),
+  email: z.string().trim().email().optional(),
+  gender: z.enum(['Masculino', 'Femenino']).optional(),
+});
+
+export const familyAddTutorSchema = z.object({
+  mode: z.enum(['create', 'linkExisting']).optional().default('create'),
+  tutorId: objectIdSchema.optional(),
+  personId: objectIdSchema.optional(),
+  person: tutorPersonPayloadSchema.optional(),
+  studentId: objectIdSchema.optional(),
+  relationship: relationshipSchema,
+  livesWithStudent: z.boolean().optional(),
+  isPrimary: z.boolean().optional(),
+}).superRefine((data, ctx) => {
+  if (data.mode === 'create' && !data.person) {
+    ctx.addIssue({ code: z.ZodIssueCode.custom, message: 'person es requerido en modo create', path: ['person'] });
+  }
+
+  if (data.mode === 'linkExisting' && !data.tutorId && !data.personId) {
+    ctx.addIssue({ code: z.ZodIssueCode.custom, message: 'tutorId o personId es requerido en modo linkExisting', path: ['tutorId'] });
+  }
+});
+
+export const familySetPrimaryTutorSchema = z.object({
+  tutorId: objectIdSchema,
 });
 
 export const familyLinkStudentSchema = z.object({

@@ -2,8 +2,9 @@ import { Router } from 'express';
 import { authMiddleware } from '../../middlewares/auth.js';
 import { requireRoles } from '../../middlewares/roles.js';
 import { validate } from '../../middlewares/validate.js';
-import { familyCreateSchema, familyLinkStudentSchema } from './families.schemas.js';
-import { createFamily, searchFamily, linkStudentFamily } from './families.controller.js';
+import { validateRequest } from '../../middlewares/validateRequest.js';
+import { familyCreateSchema, familyLinkStudentSchema, familyIdParamsSchema } from './families.schemas.js';
+import { createFamily, searchFamily, linkStudentFamily, getFamilyById } from './families.controller.js';
 
 const router = Router();
 
@@ -17,5 +18,6 @@ router.post('/link-student', validate(familyLinkStudentSchema), linkStudentFamil
 
 // Buscar familias por DNI
 router.get('/search', searchFamily);
+router.get('/:id', validateRequest({ params: familyIdParamsSchema }), getFamilyById);
 
 export default router;

@@ -2,13 +2,23 @@ import { Router } from 'express';
 import { authMiddleware } from '../../middlewares/auth.js';
 import { requireRoles } from '../../middlewares/roles.js';
 import { validate } from '../../middlewares/validate.js';
-import { studentCreateSchema } from './students.schemas.js';
+import { validateRequest } from '../../middlewares/validateRequest.js';
+import {
+  studentCreateSchema,
+  studentIdParamsSchema,
+  studentDetailQuerySchema,
+  studentCycleStatusSchema,
+  studentClassroomSchema,
+} from './students.schemas.js';
 import {
   createStudent,
   searchStudent,
   listStudents,
   studentSummary,
   listStudentsByCampus,
+  getStudentDetail,
+  updateStudentCycleStatus,
+  changeStudentClassroom,
 } from './students.controller.js';
 import { tutorCreateSchema } from '../tutors/tutors.schemas.js';
 import { upsertTutor } from '../tutors/tutors.controller.js';
@@ -24,9 +34,28 @@ const coreSecretaryRoles = [
 
 router.use(authMiddleware);
 
+router.get('/search', requireRoles(['ADMIN', 'SECRETARY', 'DIRECTOR', 'PROMOTER', ...coreSecretaryRoles]), searchStudent);
 router.get('/', requireRoles(['ADMIN', 'PROMOTER']), listStudents);
 router.get('/campus/:campus', requireRoles(['ADMIN', 'PROMOTER', 'DIRECTOR', ...coreSecretaryRoles]), listStudentsByCampus);
 router.get('/:id/summary', requireRoles(['ADMIN', 'PROMOTER', 'DIRECTOR', ...coreSecretaryRoles]), studentSummary);
+router.get(
+  '/:id',
+  requireRoles(['ADMIN', 'PROMOTER', 'DIRECTOR', ...coreSecretaryRoles]),
+  validateRequest({ params: studentIdParamsSchema, query: studentDetailQuerySchema }),
+  getStudentDetail
+);
+router.patch(
+  '/:id/cycle-status',
+  requireRoles(['ADMIN', 'SECRETARY', 'DIRECTOR', 'PROMOTER', ...coreSecretaryRoles]),
+  validateRequest({ params: studentIdParamsSchema, body: studentCycleStatusSchema }),
+  updateStudentCycleStatus
+);
+router.patch(
+  '/:id/classroom',
+  requireRoles(['ADMIN', 'SECRETARY', 'DIRECTOR', 'PROMOTER', ...coreSecretaryRoles]),
+  validateRequest({ params: studentIdParamsSchema, body: studentClassroomSchema }),
+  changeStudentClassroom
+);
 router.post('/', requireRoles(['ADMIN', 'SECRETARY', 'DIRECTOR', 'PROMOTER', ...coreSecretaryRoles]), validate(studentCreateSchema), createStudent);
 
 router.post(
@@ -36,6 +65,5 @@ router.post(
   validate(tutorCreateSchema),
   upsertTutor
 );
-router.get('/search', requireRoles(['ADMIN', 'SECRETARY', 'DIRECTOR', 'PROMOTER', ...coreSecretaryRoles]), searchStudent);
 
 export default router;

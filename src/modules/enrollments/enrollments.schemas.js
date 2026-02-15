@@ -1,5 +1,7 @@
 import { z } from 'zod';
 
+const objectIdSchema = z.string().regex(/^[a-fA-F0-9]{24}$/, 'ObjectId inválido');
+
 // Schema de persona reutilizable
 const personSchema = z.object({
   names: z.string().min(1),
@@ -58,3 +60,20 @@ const quickEnrollmentSchema = z.object({
 
 // Esquema principal de matrícula
 export const enrollmentCreateSchema = z.union([quickEnrollmentSchema, legacyEnrollmentSchema]);
+
+
+export const enrollmentIdParamsSchema = z.object({
+  id: objectIdSchema,
+});
+
+export const enrollmentConfirmSchema = z.object({
+  cycleId: objectIdSchema,
+  campusId: objectIdSchema,
+  students: z.array(z.object({
+    studentId: objectIdSchema,
+    monthlyAmount: z.number().nonnegative(),
+  })).min(1),
+  discounts: z.string().optional(),
+  exemptions: z.string().optional(),
+  notes: z.string().optional(),
+});

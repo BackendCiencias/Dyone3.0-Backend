@@ -3,6 +3,7 @@ import {
   createFamilyService,
   searchFamiliesByDniService,
   linkStudentFamilyService,
+  getFamilyByIdService,
 } from './families.service.js';
 
 export const createFamily = asyncHandler(async (req, res) => {
@@ -22,4 +23,10 @@ export const searchFamily = asyncHandler(async (req, res) => {
 export const linkStudentFamily = asyncHandler(async (req, res) => {
   const result = await linkStudentFamilyService(req.validated);
   res.status(result.created ? 201 : 200).json(result);
+});
+
+
+export const getFamilyById = asyncHandler(async (req, res) => {
+  const data = await getFamilyByIdService(req.validatedParams.id);
+  res.json(data);
 });

@@ -145,14 +145,21 @@ async function createLegacyEnrollmentService(data, createdByUserId) {
     for (const stu of data.students) {
       // Crear o buscar persona del estudiante
       const personDoc = await findOrCreatePersonSession(stu.person, session);
-      // Crear estudiante
-      const student = new Student({
-        personId: personDoc._id,
-        familyId: family._id,
-        internalCode: await nextStudentCodeSession(session),
-        isActive: true,
-      });
-      await student.save({ session });
+      // Crear estudiante o reutilizar existente
+      let student = await Student.findOne({ personId: personDoc._id }).session(session);
+      if (!student) {
+        student = new Student({
+          personId: personDoc._id,
+          familyId: family._id,
+          internalCode: await nextStudentCodeSession(session),
+          isActive: true,
+        });
+        await student.save({ session });
+      } else if (!student.internalCode) {
+        student.internalCode = await nextStudentCodeSession(session);
+        student.familyId = family._id;
+        await student.save({ session });
+      }
       family.studentIds.push(student._id);
       // Procesar tutores
       for (const tut of stu.tutors) {
@@ -334,4 +341,102 @@ export async function getCampusCapacityService({ campusId, cycleId }) {
       availableCount: Math.max(totalCapacity - reservedCount, 0),
     };
   });
+}
+
+
+export async function confirmEnrollmentService({ enrollmentId, payload, userId }) {
+  const session = await mongoose.startSession();
+  session.startTransaction();
+
+  try {
+    const matricula = await Matricula.findById(enrollmentId).session(session);
+    if (!matricula) throw new ApiError(404, 'Matrícula no encontrada');
+
+    const alreadyConfirmed = matricula.status === 'CONFIRMED';
+    if (!alreadyConfirmed && matricula.status !== 'DRAFT') {
+      throw new ApiError(409, 'El estado actual de matrícula no permite confirmación');
+    }
+
+    const cycle = await Cycle.findById(payload.cycleId).session(session);
+    if (!cycle) throw new ApiError(404, 'Ciclo no encontrado');
+
+    const campus = await Campus.findById(payload.campusId).session(session);
+    if (!campus) throw new ApiError(404, 'Campus no encontrado');
+
+    const studentIds = payload.students.map((row) => row.studentId);
+    const studentCount = await Student.countDocuments({ _id: { $in: studentIds } }).session(session);
+    if (studentCount !== studentIds.length) throw new ApiError(404, 'Hay estudiantes que no existen');
+
+    let snapshot = await ContractSnapshot.findOne({ matriculaId: matricula._id }).session(session);
+
+    const snapshotData = {
+      cycleId: payload.cycleId,
+      campusId: payload.campusId,
+      students: payload.students,
+      discounts: payload.discounts || undefined,
+      exemptions: payload.exemptions || undefined,
+      notes: payload.notes || undefined,
+      confirmedByUserId: userId,
+      confirmedAt: new Date(),
+    };
+
+    if (!snapshot) {
+      snapshot = new ContractSnapshot({
+        matriculaId: matricula._id,
+        ...snapshotData,
+      });
+      await snapshot.save({ session });
+    } else {
+      await ContractSnapshot.updateOne({ _id: snapshot._id }, { $set: snapshotData }, { session });
+    }
+
+    if (!alreadyConfirmed) {
+      await Matricula.updateOne(
+        { _id: matricula._id },
+        {
+          $set: {
+            status: 'CONFIRMED',
+            enrolledAt: matricula.enrolledAt || new Date(),
+          },
+        },
+        { session }
+      );
+    }
+
+    for (const row of payload.students) {
+      const student = await Student.findById(row.studentId).session(session);
+      if (!student) continue;
+
+      await StudentCycle.findOneAndUpdate(
+        { studentId: row.studentId, cycleId: payload.cycleId, campusId: payload.campusId },
+        {
+          $set: {
+            status: 'ENROLLED',
+            enrolledAt: new Date(),
+            matriculaId: matricula._id,
+          },
+          $setOnInsert: {
+            studentId: row.studentId,
+            cycleId: payload.cycleId,
+            campusId: payload.campusId,
+          },
+        },
+        { upsert: true, new: true, session }
+      );
+    }
+
+    await session.commitTransaction();
+
+    return {
+      enrollmentId: matricula._id.toString(),
+      status: 'CONFIRMED',
+      snapshotSaved: true,
+      chargeGenerationPending: true,
+    };
+  } catch (error) {
+    await session.abortTransaction();
+    throw error;
+  } finally {
+    session.endSession();
+  }
 }

@@ -1,5 +1,7 @@
 import { z } from 'zod';
 
+const objectIdSchema = z.string().regex(/^[a-fA-F0-9]{24}$/, 'ObjectId inválido');
+
 // Esquema de persona básico
 const personSchema = z.object({
   names: z.string().min(1),
@@ -44,4 +46,9 @@ export const familyLinkStudentSchema = z.object({
 }).refine((data) => data.familyId || data.family, {
   message: 'Debes enviar familyId o family para crear y vincular',
   path: ['familyId'],
+});
+
+
+export const familyIdParamsSchema = z.object({
+  id: objectIdSchema,
 });

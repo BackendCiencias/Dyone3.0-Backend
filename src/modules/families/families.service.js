@@ -3,6 +3,7 @@ import { Family } from '../../models/family.model.js';
 import { Person } from '../../models/person.model.js';
 import { Student } from '../../models/student.model.js';
 import { Tutor } from '../../models/tutor.model.js';
+import { Counter } from '../../models/counter.model.js';
 import { ApiError } from '../../utils/errors.js';
 
 // Encuentra o crea una persona por DNI
@@ -13,6 +14,16 @@ async function findOrCreatePerson(personData) {
   }
   const person = new Person(personData);
   return person.save();
+}
+
+async function nextStudentCode() {
+  const counter = await Counter.findOneAndUpdate(
+    { key: 'student_internal_code' },
+    { $inc: { seq: 1 } },
+    { new: true, upsert: true }
+  );
+
+  return `COD_A${String(counter.seq).padStart(5, '0')}`;
 }
 
 function mapRelationship(value) {
@@ -28,7 +39,16 @@ export async function createFamilyService({ tutors, students, notes }) {
   // Crear estudiantes
   for (const stu of students) {
     const person = await findOrCreatePerson(stu);
-    const studentDoc = new Student({ personId: person._id, familyId: family._id, isActive: true });
+    const existingStudent = await Student.findOne({ personId: person._id });
+    const studentDoc = existingStudent || new Student({
+      personId: person._id,
+      familyId: family._id,
+      internalCode: await nextStudentCode(),
+      isActive: true,
+    });
+    if (!studentDoc.internalCode) {
+      studentDoc.internalCode = await nextStudentCode();
+    }
     await studentDoc.save();
     family.studentIds.push(studentDoc._id);
   }
@@ -173,4 +193,35 @@ export async function linkStudentFamilyService({ studentId, familyId, family }) 
   } finally {
     session.endSession();
   }
+}
+
+
+export async function getFamilyByIdService(familyId) {
+  if (!mongoose.Types.ObjectId.isValid(familyId)) throw new ApiError(400, 'familyId inválido');
+
+  const family = await Family.findById(familyId)
+    .populate({ path: 'studentIds', populate: { path: 'personId' } })
+    .populate({ path: 'tutorIds', populate: { path: 'tutorPersonId' } })
+    .lean();
+
+  if (!family) throw new ApiError(404, 'Familia no encontrada');
+
+  return {
+    family: {
+      _id: family._id,
+      notes: family.notes || null,
+    },
+    students: (family.studentIds || []).map((student) => ({
+      _id: student._id,
+      internalCode: student.internalCode || null,
+      person: student.personId || null,
+    })),
+    tutors: (family.tutorIds || []).map((tutor) => ({
+      _id: tutor._id,
+      relationship: tutor.relationship,
+      isPrimary: tutor.isPrimary,
+      livesWithStudent: tutor.livesWithStudent,
+      tutorPerson: tutor.tutorPersonId || null,
+    })),
+  };
 }

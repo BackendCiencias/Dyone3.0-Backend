@@ -9,6 +9,9 @@ const vacancySchema = new mongoose.Schema({
   notes: { type: String },
 });
 
-vacancySchema.index({ studentId: 1, cycleId: 1 }, { unique: true });
+vacancySchema.index(
+  { studentId: 1, cycleId: 1 },
+  { unique: true, partialFilterExpression: { endDate: null } }
+);
 
 export const Vacancy = mongoose.model('Vacancy', vacancySchema);

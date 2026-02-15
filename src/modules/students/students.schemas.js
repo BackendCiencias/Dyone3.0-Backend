@@ -1,6 +1,7 @@
 import { z } from 'zod';
 
 const nullableString = z.string().trim().optional().or(z.literal(''));
+const objectIdSchema = z.string().regex(/^[a-fA-F0-9]{24}$/, 'ObjectId inválido');
 
 const personSchema = z.object({
   names: z.string().trim().min(1),
@@ -21,4 +22,24 @@ export const studentCreateSchema = z.object({
   familyId: z.string().optional(),
   entryDate: z.string().optional(),
   notes: z.string().optional(),
+});
+
+export const studentIdParamsSchema = z.object({
+  id: objectIdSchema,
+});
+
+export const studentDetailQuerySchema = z.object({
+  cycleId: objectIdSchema.optional(),
+});
+
+export const studentCycleStatusSchema = z.object({
+  cycleId: objectIdSchema,
+  status: z.enum(['ABSENT', 'ENROLLED', 'TRANSFERRED']),
+  reason: z.string().trim().min(1).optional(),
+});
+
+export const studentClassroomSchema = z.object({
+  cycleId: objectIdSchema,
+  classroomId: objectIdSchema,
+  reason: z.string().trim().min(1).optional(),
 });

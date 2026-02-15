@@ -4,6 +4,7 @@ import {
   getEnrollmentService,
   getClassroomCapacityService,
   getCampusCapacityService,
+  confirmEnrollmentService,
 } from './enrollments.service.js';
 
 export const createEnrollment = asyncHandler(async (req, res) => {
@@ -33,4 +34,15 @@ export const getCampusCapacity = asyncHandler(async (req, res) => {
   });
 
   res.json({ items: data });
+});
+
+
+export const confirmEnrollment = asyncHandler(async (req, res) => {
+  const data = await confirmEnrollmentService({
+    enrollmentId: req.validatedParams.id,
+    payload: req.validated,
+    userId: req.user.id,
+  });
+
+  res.json(data);
 });

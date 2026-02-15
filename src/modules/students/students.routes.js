@@ -3,6 +3,8 @@ import { authMiddleware } from '../../middlewares/auth.js';
 import { requireRoles } from '../../middlewares/roles.js';
 import { validate } from '../../middlewares/validate.js';
 import { validateRequest } from '../../middlewares/validateRequest.js';
+import { authorizeByCampusScope } from '../../shared/authorization.middleware.js';
+import { findStudentCampusById } from './repositories/students.repository.js';
 import {
   studentCreateSchema,
   studentIdParamsSchema,
@@ -10,6 +12,7 @@ import {
   studentCycleStatusSchema,
   studentClassroomSchema,
   studentCreateWithPersonSchema,
+  studentFinancialParamsSchema,
 } from './students.schemas.js';
 import {
   createStudent,
@@ -21,6 +24,9 @@ import {
   updateStudentCycleStatus,
   changeStudentClassroom,
   createStudentWithPerson,
+  getStudentAccountStatement,
+  getStudentCharges,
+  getStudentPayments,
 } from './students.controller.js';
 import { tutorCreateSchema } from '../tutors/tutors.schemas.js';
 import { upsertTutor } from '../tutors/tutors.controller.js';
@@ -40,6 +46,22 @@ router.get('/search', requireRoles(['ADMIN', 'SECRETARY', 'DIRECTOR', 'PROMOTER'
 router.get('/', requireRoles(['ADMIN', 'PROMOTER']), listStudents);
 router.get('/campus/:campus', requireRoles(['ADMIN', 'PROMOTER', 'DIRECTOR', ...coreSecretaryRoles]), listStudentsByCampus);
 router.get('/:id/summary', requireRoles(['ADMIN', 'PROMOTER', 'DIRECTOR', ...coreSecretaryRoles]), studentSummary);
+router.get('/:studentId/account-statement',
+  requireRoles(['ADMIN', 'SECRETARY', 'DIRECTOR', 'PROMOTER', ...coreSecretaryRoles]),
+  authorizeByCampusScope(async (req) => findStudentCampusById(req.params.studentId)),
+  validateRequest({ params: studentFinancialParamsSchema }),
+  getStudentAccountStatement
+);
+router.get('/:studentId/charges',
+  requireRoles(['ADMIN', 'SECRETARY', 'DIRECTOR', 'PROMOTER', ...coreSecretaryRoles]),
+  validateRequest({ params: studentFinancialParamsSchema }),
+  getStudentCharges
+);
+router.get('/:studentId/payments',
+  requireRoles(['ADMIN', 'SECRETARY', 'DIRECTOR', 'PROMOTER', ...coreSecretaryRoles]),
+  validateRequest({ params: studentFinancialParamsSchema }),
+  getStudentPayments
+);
 router.get(
   '/:id',
   requireRoles(['ADMIN', 'PROMOTER', 'DIRECTOR', ...coreSecretaryRoles]),
@@ -55,6 +77,7 @@ router.patch(
 router.patch(
   '/:id/classroom',
   requireRoles(['ADMIN', 'SECRETARY', 'DIRECTOR', 'PROMOTER', ...coreSecretaryRoles]),
+  authorizeByCampusScope(async (req) => findStudentCampusById(req.params.id, req.body?.cycleId)),
   validateRequest({ params: studentIdParamsSchema, body: studentClassroomSchema }),
   changeStudentClassroom
 );

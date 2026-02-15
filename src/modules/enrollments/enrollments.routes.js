@@ -3,13 +3,16 @@ import { authMiddleware } from '../../middlewares/auth.js';
 import { requireRoles } from '../../middlewares/roles.js';
 import { validate } from '../../middlewares/validate.js';
 import { validateRequest } from '../../middlewares/validateRequest.js';
-import { enrollmentCreateSchema, enrollmentConfirmSchema, enrollmentIdParamsSchema } from './enrollments.schemas.js';
+import { attachCampusScope, authorizeByCampusScope } from '../../shared/authorization.middleware.js';
+import { findEnrollmentCampusById } from './repositories/enrollments.repository.js';
+import { enrollmentCreateSchema, enrollmentConfirmSchema, enrollmentIdParamsSchema, enrollmentListQuerySchema } from './enrollments.schemas.js';
 import {
   createEnrollment,
   getEnrollmentById,
   getClassroomCapacity,
   getCampusCapacity,
   confirmEnrollment,
+  listEnrollments,
 } from './enrollments.controller.js';
 
 const coreSecretaryRoles = [
@@ -26,7 +29,12 @@ router.use(authMiddleware);
 router.use(requireRoles(['ADMIN', 'SECRETARY', 'DIRECTOR', 'PROMOTER', ...coreSecretaryRoles]));
 
 router.post('/', validate(enrollmentCreateSchema), createEnrollment);
-router.post('/:id/confirm', validateRequest({ params: enrollmentIdParamsSchema, body: enrollmentConfirmSchema }), confirmEnrollment);
+router.post('/:id/confirm',
+  authorizeByCampusScope(async (req) => findEnrollmentCampusById(req.params.id)),
+  validateRequest({ params: enrollmentIdParamsSchema, body: enrollmentConfirmSchema }),
+  confirmEnrollment
+);
+router.get('/', attachCampusScope(), validateRequest({ query: enrollmentListQuerySchema }), listEnrollments);
 router.get('/classrooms/:classroomId/capacity', getClassroomCapacity);
 router.get('/capacity', getCampusCapacity);
 router.get('/:id', getEnrollmentById);

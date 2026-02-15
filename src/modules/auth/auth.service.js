@@ -21,6 +21,7 @@ export async function loginService(email, password) {
   const payload = {
     id: user._id.toString(),
     roles: user.roles,
+    campusScope: user.campusScope || [],
   };
   // console.log(payload)
   const token = jwt.sign(payload, env.JWT_SECRET, { expiresIn: '8h' });
@@ -51,5 +52,6 @@ export async function meService(jwtUser) {
       isActive: user.isActive,
     },
     roles: user.roles || [],
+    campusScope: user.campusScope || [],
   };
 }

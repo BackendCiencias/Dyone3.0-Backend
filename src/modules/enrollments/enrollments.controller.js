@@ -5,6 +5,7 @@ import {
   getClassroomCapacityService,
   getCampusCapacityService,
   confirmEnrollmentService,
+  listEnrollmentsService,
 } from './enrollments.service.js';
 
 export const createEnrollment = asyncHandler(async (req, res) => {
@@ -44,5 +45,10 @@ export const confirmEnrollment = asyncHandler(async (req, res) => {
     userId: req.user.id,
   });
 
+  res.json(data);
+});
+
+export const listEnrollments = asyncHandler(async (req, res) => {
+  const data = await listEnrollmentsService({ ...(req.validatedQuery || req.query), campusScope: req.campusScope });
   res.json(data);
 });

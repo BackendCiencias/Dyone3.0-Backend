@@ -3,6 +3,7 @@ import { Student } from '../../models/student.model.js';
 import { BillingConcept } from '../../models/billingConcept.model.js';
 import { Charge } from '../../models/charge.model.js';
 import { ApiError } from '../../utils/errors.js';
+import { registerAuditLog } from '../../shared/audit.service.js';
 
 async function resolveStudent({ studentId, studentCod }, session) {
   if (studentId) {
@@ -21,7 +22,7 @@ async function resolveStudent({ studentId, studentCod }, session) {
   throw new ApiError(400, 'Debes enviar studentId o studentCod');
 }
 
-export async function createChargeService({ studentId, studentCod, cycleId, conceptName, description, amount, dueDate, notes }) {
+export async function createChargeService({ studentId, studentCod, cycleId, conceptName, description, amount, dueDate, notes, createdByUserId = null }) {
   const session = await mongoose.startSession();
   session.startTransaction();
 
@@ -52,10 +53,23 @@ export async function createChargeService({ studentId, studentCod, cycleId, conc
 
     await session.commitTransaction();
 
-    return Charge.findById(charge[0]._id)
+    const createdCharge = await Charge.findById(charge[0]._id)
       .populate({ path: 'studentId', populate: { path: 'personId' } })
       .populate('conceptId')
       .populate('cycleId');
+
+    if (createdByUserId) {
+      await registerAuditLog({
+        entityType: 'CHARGE',
+        entityId: createdCharge._id,
+        action: 'CHARGE_CREATED',
+        performedBy: createdByUserId,
+        campusId: null,
+        payloadSnapshot: { amount, conceptName, cycleId },
+      });
+    }
+
+    return createdCharge;
   } catch (error) {
     await session.abortTransaction();
     throw error;

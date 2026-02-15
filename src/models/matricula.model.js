@@ -10,6 +10,13 @@ const matriculaSchema = new mongoose.Schema({
   createdByUserId: { type: mongoose.Schema.Types.ObjectId, ref: 'User', required: true },
   originSchool: { type: String, required: true },
   notes: { type: String },
-});
+}, { timestamps: true });
+
+matriculaSchema.index({ studentIds: 1 });
+matriculaSchema.index({ cycleId: 1 });
+matriculaSchema.index({ campusId: 1 });
+matriculaSchema.index({ status: 1 });
+matriculaSchema.index({ createdAt: 1 });
+matriculaSchema.index({ campusId: 1, cycleId: 1, status: 1, createdAt: 1 });
 
 export const Matricula = mongoose.model('Matricula', matriculaSchema);

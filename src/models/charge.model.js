@@ -12,4 +12,8 @@ const chargeSchema = new mongoose.Schema({
   notes: { type: String },
 });
 
+chargeSchema.index({ studentId: 1 });
+chargeSchema.index({ dueDate: 1 });
+chargeSchema.index({ outstandingAmount: 1 });
+
 export const Charge = mongoose.model('Charge', chargeSchema);

@@ -45,3 +45,7 @@ export const studentClassroomSchema = z.object({
   classroomId: objectIdSchema,
   reason: z.string().trim().min(1).optional(),
 });
+
+export const studentFinancialParamsSchema = z.object({
+  studentId: objectIdSchema,
+});

@@ -62,6 +62,17 @@ const quickEnrollmentSchema = z.object({
 export const enrollmentCreateSchema = z.union([quickEnrollmentSchema, legacyEnrollmentSchema]);
 
 
+
+export const enrollmentListQuerySchema = z.object({
+  q: z.string().optional(),
+  campus: z.string().optional(),
+  cycleId: objectIdSchema.optional(),
+  status: z.enum(['ABSENT', 'ENROLLED', 'TRANSFERRED']).optional(),
+  classroomId: objectIdSchema.optional(),
+  limit: z.coerce.number().int().min(1).max(100).optional(),
+  cursor: objectIdSchema.optional(),
+});
+
 export const enrollmentIdParamsSchema = z.object({
   id: objectIdSchema,
 });

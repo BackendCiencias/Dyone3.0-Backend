@@ -11,8 +11,11 @@ import { Vacancy } from '../../models/vacancy.model.js';
 import { Tutor } from '../../models/tutor.model.js';
 import { Payment } from '../../models/payment.model.js';
 import { Charge } from '../../models/charge.model.js';
+import { PaymentAllocation } from '../../models/paymentAllocation.model.js';
 import { ApiError } from '../../utils/errors.js';
 import { getClassroomCapacityService } from '../enrollments/enrollments.service.js';
+import { runInTransaction } from '../../shared/dbSession.js';
+import { registerAuditLog } from '../../shared/audit.service.js';
 
 function normalizeDni(dni) {
   const normalized = String(dni || '').trim();
@@ -605,7 +608,7 @@ export async function getStudentDetailService(studentId, cycleId) {
   };
 }
 
-export async function updateStudentCycleStatusService(studentId, { cycleId, status, reason }) {
+export async function updateStudentCycleStatusService(studentId, { cycleId, status, reason }, userId = null) {
   const student = await Student.findById(studentId).lean();
   if (!student) throw new ApiError(404, 'Estudiante no encontrado');
 
@@ -613,6 +616,19 @@ export async function updateStudentCycleStatusService(studentId, { cycleId, stat
   if (!cycle) throw new ApiError(404, 'Ciclo no encontrado');
 
   const now = new Date();
+  const enforceNoDebtOnTransfer = process.env.ALLOW_TRANSFER_WITH_DEBT !== 'true';
+  if (status === 'TRANSFERRED' && enforceNoDebtOnTransfer) {
+    const debtRows = await Charge.find({
+      studentId,
+      outstandingAmount: { $gt: mongoose.Types.Decimal128.fromString('0') },
+      status: { $ne: 'CANCELLED' },
+    }).select('_id').lean();
+
+    if (debtRows.length) {
+      throw new ApiError(409, 'No se puede trasladar al estudiante con deuda pendiente');
+    }
+  }
+
   const campusId = await resolveCampusForCycleStatus(studentId, cycleId);
   if (!campusId) throw new ApiError(400, 'No se pudo determinar campus para el estado del ciclo');
 
@@ -644,6 +660,17 @@ export async function updateStudentCycleStatusService(studentId, { cycleId, stat
 
   const updated = await StudentCycle.findOne({ studentId, cycleId, campusId }).lean();
 
+  if (status === 'TRANSFERRED' && userId) {
+    await registerAuditLog({
+      entityType: 'TRANSFER',
+      entityId: updated?._id || studentId,
+      action: 'STUDENT_TRANSFERRED',
+      performedBy: userId,
+      campusId,
+      payloadSnapshot: { studentId, cycleId, reason: reason || null },
+    });
+  }
+
   return {
     studentId,
     cycleId,
@@ -652,66 +679,186 @@ export async function updateStudentCycleStatusService(studentId, { cycleId, stat
   };
 }
 
-export async function changeStudentClassroomService(studentId, { cycleId, classroomId, reason }) {
-  const student = await Student.findById(studentId).lean();
-  if (!student) throw new ApiError(404, 'Estudiante no encontrado');
+export async function changeStudentClassroomService(studentId, { cycleId, classroomId, reason }, userId = null) {
+  const payload = await runInTransaction(async (session) => {
+    const student = await Student.findById(studentId).session(session).lean();
+    if (!student) throw new ApiError(404, 'Estudiante no encontrado');
 
-  const classroom = await Classroom.findById(classroomId).lean();
-  if (!classroom) throw new ApiError(404, 'Aula no encontrada');
+    const classroom = await Classroom.findById(classroomId).session(session).lean();
+    if (!classroom) throw new ApiError(404, 'Aula no encontrada');
 
-  if (String(classroom.cycleId) !== String(cycleId)) {
-    throw new ApiError(400, 'El aula no pertenece al ciclo indicado');
-  }
-
-  const activeVacancy = await Vacancy.findOne({ studentId, cycleId, endDate: null }).lean();
-
-  if (!activeVacancy || String(activeVacancy.classroomId) !== String(classroomId)) {
-    const capacity = await getClassroomCapacityService({ classroomId, cycleId });
-    if (capacity.reservedCount >= capacity.totalCapacity) {
-      throw new ApiError(409, 'No hay vacantes disponibles en el aula seleccionada');
+    if (String(classroom.cycleId) !== String(cycleId)) {
+      throw new ApiError(400, 'El aula no pertenece al ciclo indicado');
     }
-  }
 
-  const now = new Date();
-  if (activeVacancy && String(activeVacancy.classroomId) !== String(classroomId)) {
-    await Vacancy.updateOne(
-      { _id: activeVacancy._id },
-      { $set: { endDate: now, notes: composeNotes(activeVacancy.notes, reason) } }
+    const activeVacancy = await Vacancy.findOne({ studentId, cycleId, endDate: null }).session(session).lean();
+
+    if (!activeVacancy || String(activeVacancy.classroomId) !== String(classroomId)) {
+      const capacity = await getClassroomCapacityService({ classroomId, cycleId });
+      if (capacity.reservedCount >= capacity.totalCapacity) {
+        throw new ApiError(409, 'No hay vacantes disponibles en el aula seleccionada');
+      }
+    }
+
+    const now = new Date();
+    if (activeVacancy && String(activeVacancy.classroomId) !== String(classroomId)) {
+      await Vacancy.updateOne(
+        { _id: activeVacancy._id },
+        { $set: { endDate: now, notes: composeNotes(activeVacancy.notes, reason) } },
+        { session }
+      );
+    }
+
+    let vacancy = activeVacancy;
+    if (!activeVacancy || String(activeVacancy.classroomId) !== String(classroomId)) {
+      const [createdVacancy] = await Vacancy.create([
+        {
+          studentId,
+          cycleId,
+          classroomId,
+          startDate: now,
+          endDate: null,
+          notes: composeNotes(undefined, reason),
+        },
+      ], { session });
+      vacancy = createdVacancy;
+    }
+
+    const existingCycle = await StudentCycle.findOne({ studentId, cycleId }).session(session).lean();
+
+    await StudentCycle.updateOne(
+      { studentId, cycleId, campusId: classroom.campusId },
+      {
+        $setOnInsert: { studentId, cycleId, campusId: classroom.campusId },
+        $set: { status: existingCycle?.status || 'ABSENT' },
+      },
+      { upsert: true, session }
     );
-  }
 
-  let vacancy = activeVacancy;
-  if (!activeVacancy || String(activeVacancy.classroomId) !== String(classroomId)) {
-    vacancy = await Vacancy.create({
-      studentId,
-      cycleId,
-      classroomId,
-      startDate: now,
-      endDate: null,
-      notes: composeNotes(undefined, reason),
+    const hydratedVacancy = await Vacancy.findById(vacancy._id)
+      .populate({ path: 'classroomId', populate: { path: 'campusId' } })
+      .session(session)
+      .lean();
+
+    return { hydratedVacancy, campusId: classroom.campusId };
+  });
+
+  if (userId) {
+    await registerAuditLog({
+      entityType: 'CLASSROOM_CHANGE',
+      entityId: payload.hydratedVacancy._id,
+      action: 'STUDENT_CLASSROOM_CHANGED',
+      performedBy: userId,
+      campusId: payload.campusId,
+      payloadSnapshot: { studentId, cycleId, classroomId, reason: reason || null },
     });
   }
 
-  const existingCycle = await StudentCycle.findOne({ studentId, cycleId }).lean();
+  return payload.hydratedVacancy;
+}
 
-  await StudentCycle.updateOne(
-    { studentId, cycleId, campusId: classroom.campusId },
-    {
-      $setOnInsert: {
-        studentId,
-        cycleId,
-        campusId: classroom.campusId,
-      },
-      $set: {
-        status: existingCycle?.status || 'ABSENT',
-      },
-    },
-    { upsert: true }
-  );
 
-  const hydratedVacancy = await Vacancy.findById(vacancy._id)
-    .populate({ path: 'classroomId', populate: { path: 'campusId' } })
+
+function money(value) {
+  if (value === null || value === undefined) return 0;
+  if (typeof value === 'number') return value;
+  return Number(value.toString());
+}
+
+function roundMoney(value) {
+  return Math.round((value + Number.EPSILON) * 100) / 100;
+}
+
+function mapChargeStatus({ amount, outstandingAmount, dueDate }) {
+  if (outstandingAmount === 0) return 'PAID';
+  if (outstandingAmount > 0 && outstandingAmount < amount) return 'PARTIAL';
+  if (outstandingAmount > 0 && dueDate && dueDate < new Date()) return 'OVERDUE';
+  return 'PENDING';
+}
+
+async function buildStudentFinancialSnapshot(studentId) {
+  if (!mongoose.Types.ObjectId.isValid(studentId)) throw new ApiError(400, 'studentId inválido');
+
+  const student = await Student.findById(studentId).populate('personId').lean();
+  if (!student) throw new ApiError(404, 'Estudiante no encontrado');
+
+  const chargesDb = await Charge.find({ studentId: student._id, status: { $ne: 'CANCELLED' } })
+    .populate('conceptId', 'name')
+    .sort({ dueDate: 1, _id: 1 })
     .lean();
 
-  return hydratedVacancy;
+  const chargeIds = chargesDb.map((charge) => charge._id);
+  const allocations = chargeIds.length
+    ? await PaymentAllocation.find({ chargeId: { $in: chargeIds } })
+      .populate('paymentId')
+      .sort({ createdAt: -1, _id: -1 })
+      .lean()
+    : [];
+
+  const paymentById = new Map();
+  for (const allocation of allocations) {
+    if (!allocation.paymentId) continue;
+    const key = String(allocation.paymentId._id);
+    const previous = paymentById.get(key) || {
+      id: key,
+      amount: 0,
+      date: allocation.paymentId.paidAt,
+      method: allocation.paymentId.method,
+      note: allocation.paymentId.notes || null,
+    };
+    previous.amount = roundMoney(previous.amount + money(allocation.amount));
+    paymentById.set(key, previous);
+  }
+
+  const charges = chargesDb.map((charge) => {
+    const amount = roundMoney(money(charge.totalAmount));
+    const outstandingAmount = roundMoney(money(charge.outstandingAmount));
+    const status = mapChargeStatus({ amount, outstandingAmount, dueDate: charge.dueDate });
+
+    return {
+      id: charge._id.toString(),
+      concept: charge.conceptId?.name || charge.description,
+      amount,
+      outstandingAmount,
+      dueDate: charge.dueDate || null,
+      status,
+    };
+  });
+
+  const totals = charges.reduce((acc, charge) => {
+    const paid = roundMoney(charge.amount - charge.outstandingAmount);
+    acc.paid = roundMoney(acc.paid + Math.max(paid, 0));
+    if (charge.outstandingAmount > 0) {
+      acc.pending = roundMoney(acc.pending + charge.outstandingAmount);
+      if (charge.status === 'OVERDUE') acc.overdue = roundMoney(acc.overdue + charge.outstandingAmount);
+    }
+    return acc;
+  }, { pending: 0, overdue: 0, paid: 0 });
+
+  return {
+    student: {
+      id: student._id.toString(),
+      names: student.personId?.names || null,
+      lastNames: student.personId?.lastNames || null,
+      dni: student.personId?.dni || null,
+      code: student.internalCode || null,
+    },
+    totals,
+    charges,
+    payments: Array.from(paymentById.values()).sort((a, b) => new Date(b.date) - new Date(a.date)),
+  };
+}
+
+export async function getStudentAccountStatementService(studentId) {
+  return buildStudentFinancialSnapshot(studentId);
+}
+
+export async function getStudentChargesService(studentId) {
+  const snapshot = await buildStudentFinancialSnapshot(studentId);
+  return snapshot.charges;
+}
+
+export async function getStudentPaymentsService(studentId) {
+  const snapshot = await buildStudentFinancialSnapshot(studentId);
+  return snapshot.payments;
 }

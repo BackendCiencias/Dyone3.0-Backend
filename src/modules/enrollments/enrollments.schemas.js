@@ -82,9 +82,22 @@ export const enrollmentConfirmSchema = z.object({
   campusId: objectIdSchema,
   students: z.array(z.object({
     studentId: objectIdSchema,
-    monthlyAmount: z.number().nonnegative(),
+    monthlyAmount: z.number().nonnegative().optional(),
+    classroomId: objectIdSchema.optional(),
+    pensionMonthlyAmounts: z.array(z.number().min(-1)).length(10).optional(),
+    notes: z.string().optional(),
   })).min(1),
   discounts: z.string().optional(),
   exemptions: z.string().optional(),
   notes: z.string().optional(),
+}).superRefine((data, ctx) => {
+  for (const [index, student] of data.students.entries()) {
+    if (student.monthlyAmount === undefined && student.pensionMonthlyAmounts === undefined) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ['students', index],
+        message: 'Cada estudiante debe enviar monthlyAmount o pensionMonthlyAmounts',
+      });
+    }
+  }
 });

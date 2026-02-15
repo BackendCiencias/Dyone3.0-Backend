@@ -12,6 +12,7 @@ import {
   getBillingConcepts,
   postBillingConcept,
   getEndpointsCatalog,
+  getModelsCatalog,
 } from './admin.controller.js';
 import {
   campusCreateSchema,
@@ -43,5 +44,6 @@ router.get('/billing-concepts', getBillingConcepts);
 router.post('/billing-concepts', validate(billingConceptCreateSchema), postBillingConcept);
 
 router.get('/endpoints', requireRoles(['ADMIN']), getEndpointsCatalog);
+router.get('/models', requireRoles(['ADMIN']), getModelsCatalog);
 
 export default router;

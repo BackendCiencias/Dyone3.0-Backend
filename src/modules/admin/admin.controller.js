@@ -8,6 +8,7 @@ import {
   createBillingConcept,
   listBillingConcepts,
   listAvailableEndpoints,
+  listModelsCatalog,
 } from './admin.service.js';
 import { asyncHandler } from '../../utils/asyncHandler.js';
 
@@ -56,4 +57,9 @@ export const postBillingConcept = asyncHandler(async (req, res) => {
 export const getEndpointsCatalog = asyncHandler(async (req, res) => {
   const endpoints = await listAvailableEndpoints(req.app);
   res.json({ items: endpoints });
+});
+
+export const getModelsCatalog = asyncHandler(async (_req, res) => {
+  const models = await listModelsCatalog();
+  res.json({ items: models });
 });

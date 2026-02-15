@@ -12,13 +12,19 @@ const studentCycleSchema = new mongoose.Schema({
     index: true,
   },
 
-  // opcional pero útil
   enrolledAt: { type: Date },
   transferredAt: { type: Date },
-  matriculaId: { type: mongoose.Schema.Types.ObjectId, ref: 'Matricula' }, // si llegó a matricularse
+  enrollmentId: { type: mongoose.Schema.Types.ObjectId, ref: 'Enrollment' },
+  matriculaId: { type: mongoose.Schema.Types.ObjectId, ref: 'Enrollment' },
   notes: { type: String },
 }, { timestamps: true });
 
 studentCycleSchema.index({ studentId: 1, cycleId: 1, campusId: 1 }, { unique: true });
+
+studentCycleSchema.pre('save', function syncEnrollmentIds(next) {
+  if (!this.enrollmentId && this.matriculaId) this.enrollmentId = this.matriculaId;
+  if (!this.matriculaId && this.enrollmentId) this.matriculaId = this.enrollmentId;
+  next();
+});
 
 export const StudentCycle = mongoose.model('StudentCycle', studentCycleSchema);

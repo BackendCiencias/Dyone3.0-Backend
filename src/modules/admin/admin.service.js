@@ -1,3 +1,7 @@
+import mongoose from 'mongoose';
+import { readdir } from 'node:fs/promises';
+import path from 'node:path';
+import { fileURLToPath, pathToFileURL } from 'node:url';
 import { Campus } from '../../models/campus.model.js';
 import { Cycle } from '../../models/cycle.model.js';
 import { Classroom } from '../../models/classroom.model.js';
@@ -104,4 +108,61 @@ export async function listAvailableEndpoints(app) {
   });
 
   return items;
+}
+
+async function loadAllModelFiles() {
+  const currentFilePath = fileURLToPath(import.meta.url);
+  const modelsDir = path.resolve(path.dirname(currentFilePath), '../../models');
+  const files = await readdir(modelsDir);
+
+  const modelFiles = files.filter((fileName) => fileName.endsWith('.model.js'));
+
+  for (const fileName of modelFiles) {
+    const absolutePath = path.join(modelsDir, fileName);
+    await import(pathToFileURL(absolutePath).href);
+  }
+}
+
+function getFieldMetadata(schemaType) {
+  const options = schemaType.options || {};
+  const baseMetadata = {
+    type: schemaType.instance || 'Mixed',
+    required: Boolean(options.required),
+    unique: Boolean(options.unique),
+    index: Boolean(options.index),
+    ref: options.ref || null,
+    enum: options.enum || null,
+    default: options.default === undefined ? null : options.default,
+  };
+
+  if (schemaType.instance === 'Array') {
+    const itemType = schemaType.caster?.instance || 'Mixed';
+    baseMetadata.type = `Array<${itemType}>`;
+    baseMetadata.ref = schemaType.caster?.options?.ref || options.ref || null;
+  }
+
+  return baseMetadata;
+}
+
+export async function listModelsCatalog() {
+  await loadAllModelFiles();
+
+  const models = mongoose.modelNames().map((modelName) => {
+    const model = mongoose.model(modelName);
+
+    const attributes = Object.entries(model.schema.paths)
+      .map(([fieldName, schemaType]) => ({
+        name: fieldName,
+        ...getFieldMetadata(schemaType),
+      }))
+      .sort((a, b) => a.name.localeCompare(b.name));
+
+    return {
+      model: model.modelName,
+      collection: model.collection.collectionName,
+      attributes,
+    };
+  });
+
+  return models.sort((a, b) => a.model.localeCompare(b.model));
 }

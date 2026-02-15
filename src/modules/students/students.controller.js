@@ -8,6 +8,9 @@ import {
   getStudentDetailService,
   updateStudentCycleStatusService,
   changeStudentClassroomService,
+  getStudentAccountStatementService,
+  getStudentChargesService,
+  getStudentPaymentsService,
 } from './students.service.js';
 
 const ENABLE_STUDENTS_BY_CAMPUS_DEBUG =
@@ -77,11 +80,26 @@ export const getStudentDetail = asyncHandler(async (req, res) => {
 });
 
 export const updateStudentCycleStatus = asyncHandler(async (req, res) => {
-  const data = await updateStudentCycleStatusService(req.validatedParams.id, req.validated);
+  const data = await updateStudentCycleStatusService(req.validatedParams.id, req.validated, req.user.id);
   res.json(data);
 });
 
 export const changeStudentClassroom = asyncHandler(async (req, res) => {
-  const data = await changeStudentClassroomService(req.validatedParams.id, req.validated);
+  const data = await changeStudentClassroomService(req.validatedParams.id, req.validated, req.user.id);
+  res.json(data);
+});
+
+export const getStudentAccountStatement = asyncHandler(async (req, res) => {
+  const data = await getStudentAccountStatementService(req.validatedParams.studentId);
+  res.json(data);
+});
+
+export const getStudentCharges = asyncHandler(async (req, res) => {
+  const data = await getStudentChargesService(req.validatedParams.studentId);
+  res.json(data);
+});
+
+export const getStudentPayments = asyncHandler(async (req, res) => {
+  const data = await getStudentPaymentsService(req.validatedParams.studentId);
   res.json(data);
 });

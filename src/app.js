@@ -3,8 +3,9 @@ import cors from 'cors';
 import helmet from 'helmet';
 import morgan from 'morgan';
 import cookieParser from 'cookie-parser';
+import mongoose from 'mongoose';
 import { errorHandler } from './middlewares/error.js';
-import { connectDB } from './config/db.js';
+import { connectDB, getDbStatus } from './config/db.js';
 
 // Import routers
 import authRouter from './modules/auth/auth.routes.js';
@@ -23,9 +24,9 @@ import reportsRouter from './modules/reports/reports.routes.js';
 
 const app = express();
 
-// Conecta a DB (cacheado en db.js, así no reconecta siempre)
+// Intento inicial de conexión; no bloquea el arranque.
 connectDB().catch((err) => {
-  console.error('Error conectando a MongoDB:', err);
+  console.error('DB init error:', err?.message || err);
 });
 
 // Configurar middlewares básicos
@@ -68,10 +69,39 @@ app.use(express.json());
 app.use(cookieParser());
 app.use(morgan('dev'));
 
+async function ensureDb(_req, _res, next) {
+  try {
+    if (mongoose.connection.readyState !== 1) {
+      await connectDB();
+    }
+    return next();
+  } catch (err) {
+    return next(err);
+  }
+}
+
 // Ruta de salud
 app.get('/health', (_req, res) => {
   res.json({ ok: true });
 });
+
+app.get('/health/db', async (_req, res) => {
+  try {
+    await connectDB();
+    return res.json({
+      ok: true,
+      db: getDbStatus(),
+    });
+  } catch (err) {
+    return res.status(503).json({
+      ok: false,
+      db: getDbStatus(),
+      error: err?.message || 'DB unavailable',
+    });
+  }
+});
+
+app.use('/api', ensureDb);
 
 // Montar rutas de la API
 const routeCatalogMounts = [
@@ -98,5 +128,5 @@ for (const mount of routeCatalogMounts) {
 // Manejador de errores global
 app.use(errorHandler);
 
-export default app;        // ✅ requerido por Vercel
-export { app };            // ✅ opcional (para usar en local/server.js si quieres)
+export default app; // ✅ requerido por Vercel
+export { app }; // ✅ opcional (para usar en local/server.js si quieres)

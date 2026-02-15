@@ -11,7 +11,18 @@ import { Cycle } from '../../models/cycle.model.js';
 import { Campus } from '../../models/campus.model.js';
 import { Classroom } from '../../models/classroom.model.js';
 import { StudentCycle } from '../../models/studentCycle.model.js';
+import { Counter } from '../../models/counter.model.js';
 import { ApiError } from '../../utils/errors.js';
+
+async function nextStudentCodeSession(session) {
+  const counter = await Counter.findOneAndUpdate(
+    { key: 'student_internal_code' },
+    { $inc: { seq: 1 } },
+    { new: true, upsert: true, session }
+  );
+
+  return `COD_A${String(counter.seq).padStart(5, '0')}`;
+}
 
 // Encuentra o crea una persona en sesión
 async function findOrCreatePersonSession(personData, session) {
@@ -135,7 +146,12 @@ async function createLegacyEnrollmentService(data, createdByUserId) {
       // Crear o buscar persona del estudiante
       const personDoc = await findOrCreatePersonSession(stu.person, session);
       // Crear estudiante
-      const student = new Student({ personId: personDoc._id, familyId: family._id, isActive: true });
+      const student = new Student({
+        personId: personDoc._id,
+        familyId: family._id,
+        internalCode: await nextStudentCodeSession(session),
+        isActive: true,
+      });
       await student.save({ session });
       family.studentIds.push(student._id);
       // Procesar tutores
@@ -236,4 +252,86 @@ export async function getEnrollmentService(id) {
     throw new ApiError(404, 'Matrícula no encontrada');
   }
   return mat;
+}
+
+export async function getClassroomCapacityService({ classroomId, cycleId }) {
+  if (!mongoose.Types.ObjectId.isValid(classroomId)) {
+    throw new ApiError(400, 'classroomId inválido');
+  }
+
+  if (!mongoose.Types.ObjectId.isValid(cycleId)) {
+    throw new ApiError(400, 'cycleId inválido');
+  }
+
+  const classroom = await Classroom.findById(classroomId).lean();
+  if (!classroom) {
+    throw new ApiError(404, 'Salón no encontrado');
+  }
+
+  if (String(classroom.cycleId) !== String(cycleId)) {
+    throw new ApiError(400, 'El salón no pertenece al ciclo indicado');
+  }
+
+  const reservedCount = await Vacancy.countDocuments({
+    classroomId: classroom._id,
+    cycleId,
+    endDate: null,
+  });
+
+  const totalCapacity = classroom.capacity;
+
+  return {
+    classroomId: classroom._id.toString(),
+    totalCapacity,
+    reservedCount,
+    availableCount: Math.max(totalCapacity - reservedCount, 0),
+  };
+}
+
+export async function getCampusCapacityService({ campusId, cycleId }) {
+  if (!mongoose.Types.ObjectId.isValid(campusId)) {
+    throw new ApiError(400, 'campusId inválido');
+  }
+
+  if (!mongoose.Types.ObjectId.isValid(cycleId)) {
+    throw new ApiError(400, 'cycleId inválido');
+  }
+
+  const classrooms = await Classroom.find({ campusId, cycleId, isActive: true })
+    .select('_id level grade section capacity')
+    .lean();
+
+  const reservedByClassroom = await Vacancy.aggregate([
+    {
+      $match: {
+        cycleId: new mongoose.Types.ObjectId(cycleId),
+        endDate: null,
+      },
+    },
+    {
+      $group: {
+        _id: '$classroomId',
+        reservedCount: { $sum: 1 },
+      },
+    },
+  ]);
+
+  const reservedMap = new Map(
+    reservedByClassroom.map((entry) => [String(entry._id), entry.reservedCount])
+  );
+
+  return classrooms.map((classroom) => {
+    const reservedCount = reservedMap.get(String(classroom._id)) || 0;
+    const totalCapacity = classroom.capacity;
+
+    return {
+      classroomId: classroom._id.toString(),
+      level: classroom.level,
+      grade: classroom.grade,
+      section: classroom.section,
+      totalCapacity,
+      reservedCount,
+      availableCount: Math.max(totalCapacity - reservedCount, 0),
+    };
+  });
 }

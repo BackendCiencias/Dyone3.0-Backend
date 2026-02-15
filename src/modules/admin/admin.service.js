@@ -45,3 +45,63 @@ export async function createBillingConcept(data) {
 export async function listBillingConcepts() {
   return BillingConcept.find();
 }
+
+function normalizePath(basePath, routePath) {
+  const rawRoutePath = Array.isArray(routePath) ? routePath.join('|') : String(routePath || '');
+  return `${basePath}${rawRoutePath === '/' ? '' : rawRoutePath}`;
+}
+
+function extractRouterEndpoints(mount) {
+  const entries = [];
+
+  for (const layer of mount.router.stack || []) {
+    if (!layer.route) continue;
+
+    const methods = Object.keys(layer.route.methods || {})
+      .filter((method) => layer.route.methods[method])
+      .map((method) => method.toUpperCase());
+
+    for (const method of methods) {
+      entries.push({
+        method,
+        path: normalizePath(mount.basePath, layer.route.path),
+        module: mount.module || 'unknown',
+        authRequired: mount.authRequired ?? null,
+        rolesAllowed: mount.rolesAllowed ?? null,
+        description: `${method} ${normalizePath(mount.basePath, layer.route.path)}`,
+        requestSchema: null,
+        responseSchema: null,
+      });
+    }
+  }
+
+  return entries;
+}
+
+export async function listAvailableEndpoints(app) {
+  const mounts = app?.locals?.routeCatalogMounts || [];
+
+  const items = [
+    {
+      method: 'GET',
+      path: '/health',
+      module: 'core',
+      authRequired: false,
+      rolesAllowed: null,
+      description: 'Health check',
+      requestSchema: null,
+      responseSchema: { ok: 'boolean' },
+    },
+  ];
+
+  for (const mount of mounts) {
+    items.push(...extractRouterEndpoints(mount));
+  }
+
+  items.sort((a, b) => {
+    if (a.path === b.path) return a.method.localeCompare(b.method);
+    return a.path.localeCompare(b.path);
+  });
+
+  return items;
+}

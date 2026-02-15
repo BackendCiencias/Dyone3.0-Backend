@@ -74,19 +74,26 @@ app.get('/health', (_req, res) => {
 });
 
 // Montar rutas de la API
-app.use('/api/auth', authRouter);
-app.use('/api/admin', adminRouter);
-app.use('/api/families', familiesRouter);
-app.use('/api/students', studentsRouter);
-app.use('/api/payments', paymentsRouter);
-app.use('/api/tutors', tutorsRouter);
-app.use('/api/charges', chargesRouter);
-app.use('/api/enrollments', enrollmentsRouter);
-// Rutas vacías por ahora
-app.use('/api/attendance', attendanceRouter);
-app.use('/api/grades', gradesRouter);
-app.use('/api/club', clubRouter);
-app.use('/api/reports', reportsRouter);
+const routeCatalogMounts = [
+  { basePath: '/api/auth', module: 'auth', router: authRouter, authRequired: null, rolesAllowed: null },
+  { basePath: '/api/admin', module: 'admin', router: adminRouter, authRequired: true, rolesAllowed: null },
+  { basePath: '/api/families', module: 'families', router: familiesRouter, authRequired: true, rolesAllowed: null },
+  { basePath: '/api/students', module: 'students', router: studentsRouter, authRequired: true, rolesAllowed: null },
+  { basePath: '/api/payments', module: 'payments', router: paymentsRouter, authRequired: true, rolesAllowed: null },
+  { basePath: '/api/tutors', module: 'tutors', router: tutorsRouter, authRequired: true, rolesAllowed: null },
+  { basePath: '/api/charges', module: 'charges', router: chargesRouter, authRequired: true, rolesAllowed: null },
+  { basePath: '/api/enrollments', module: 'enrollments', router: enrollmentsRouter, authRequired: true, rolesAllowed: null },
+  { basePath: '/api/attendance', module: 'attendance', router: attendanceRouter, authRequired: true, rolesAllowed: null },
+  { basePath: '/api/grades', module: 'grades', router: gradesRouter, authRequired: true, rolesAllowed: null },
+  { basePath: '/api/club', module: 'club', router: clubRouter, authRequired: true, rolesAllowed: null },
+  { basePath: '/api/reports', module: 'reports', router: reportsRouter, authRequired: true, rolesAllowed: null },
+];
+
+app.locals.routeCatalogMounts = routeCatalogMounts;
+
+for (const mount of routeCatalogMounts) {
+  app.use(mount.basePath, mount.router);
+}
 
 // Manejador de errores global
 app.use(errorHandler);

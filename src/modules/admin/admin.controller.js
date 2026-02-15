@@ -7,6 +7,7 @@ import {
   listClassrooms,
   createBillingConcept,
   listBillingConcepts,
+  listAvailableEndpoints,
 } from './admin.service.js';
 import { asyncHandler } from '../../utils/asyncHandler.js';
 
@@ -50,4 +51,9 @@ export const getBillingConcepts = asyncHandler(async (_req, res) => {
 export const postBillingConcept = asyncHandler(async (req, res) => {
   const concept = await createBillingConcept(req.validated);
   res.status(201).json(concept);
+});
+
+export const getEndpointsCatalog = asyncHandler(async (req, res) => {
+  const endpoints = await listAvailableEndpoints(req.app);
+  res.json({ items: endpoints });
 });

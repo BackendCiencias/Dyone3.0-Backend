@@ -384,6 +384,7 @@ export async function getStudentSummaryService(studentId) {
   const sendStudent = {
     id: student._id.toString(),
     dni: person?.dni || null,
+    gender: person?.gender || null,
     internalCode: student?.internalCode || null,
     names: person?.names || null,
     lastNames: person?.lastNames || null,
@@ -410,18 +411,34 @@ export async function getStudentSummaryService(studentId) {
     }))
   };
   // console.log('[sendStudent][dbg] content=', sendStudent);
-  console.log('[sendFamily][dbg] content=', sendFamily);
+  // console.log('[Student][dbg] content=', student);
+  // console.log('[sendFamily][dbg] content=', sendFamily);
   // console.log('[Family][dbg] content=', sendFamily);
+
+  const sendEnrollmentStatus = {
+    cycle: {
+      id: latestCycle?.cycleId?._id?.toString() || null,
+      status: latestCycle?.status || null,
+    },
+    classroom: {
+      id: latestVacancy?.classroomId?._id?.toString() || null,
+      displayName: latestVacancy?.classroomId?.displayName || null,
+      grade: latestVacancy?.classroomId?.grade || null,
+      section: latestVacancy?.classroomId?.section || null,
+      level: latestVacancy?.classroomId?.level || null,
+    },
+    campus: {
+      code: latestVacancy?.classroomId?.campusId?.code || null,
+      name: latestVacancy?.classroomId?.campusId?.name || null,
+    },
+    // currentClassroom: latestVacancy || null,
+    // lastestCycle: latestCycle || null,
+  }
 
   return {
     student: sendStudent,
     familyLink: sendFamily,
-    enrollmentStatus: {
-      currentCycleId: latestCycle?.cycleId?.toString() || null,
-      currentClassroomId: latestVacancy?.classroomId?.toString() || null,
-      currentClassroom: latestVacancy || null,
-      status: latestCycle?.status || 'ABSENT',
-    },
+    enrollmentStatus: sendEnrollmentStatus,
     debtsSummary: {
       pendingTotal,
       overdueTotal,

@@ -9,7 +9,7 @@ const personSchema = new mongoose.Schema({
   phone: { type: String },
   address: { type: String },
   email: { type: String },
-  nationality: { type: String, default: 'Peruano' },
+  nationality: { type: String, default: 'Perú' },
   foreignIdNumber: { type: String },
   notes: { type: String },
 });

@@ -6,6 +6,7 @@ import { Family } from '../../models/family.model.js';
 import { Enrollment } from '../../models/enrollment.model.js';
 import { EnrollmentStudent, NO_APLICA_PENSION } from '../../models/enrollmentStudent.model.js';
 import { Vacancy } from '../../models/vacancy.model.js';
+import { getCapacityForClassroom } from './services/enrollmentsCapacity.service.js';
 import { ContractSnapshot } from '../../models/contractSnapshot.model.js';
 import { Charge } from '../../models/charge.model.js';
 import { Cycle } from '../../models/cycle.model.js';
@@ -383,14 +384,17 @@ export async function getClassroomCapacityService({ classroomId, cycleId }) {
   if (!classroom) throw new ApiError(404, 'Salón no encontrado');
   if (String(classroom.cycleId) !== String(cycleId)) throw new ApiError(400, 'El salón no pertenece al ciclo indicado');
 
-  const reservedCount = await Vacancy.countDocuments({ classroomId: classroom._id, cycleId, endDate: null });
-  const totalCapacity = classroom.capacity;
+  const metrics = await getCapacityForClassroom({
+    classroomId: classroom._id,
+    cycleId,
+    totalCapacity: classroom.capacity,
+  });
 
   return {
     classroomId: classroom._id.toString(),
-    totalCapacity,
-    reservedCount,
-    availableCount: Math.max(totalCapacity - reservedCount, 0),
+    totalCapacity: metrics.capacity,
+    reservedCount: metrics.occupied,
+    availableCount: metrics.available,
   };
 }
 

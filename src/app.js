@@ -16,6 +16,7 @@ import paymentsRouter from './modules/payments/payments.routes.js';
 import tutorsRouter from './modules/tutors/tutors.routes.js';
 import chargesRouter from './modules/charges/charges.routes.js';
 import enrollmentsRouter from './modules/enrollments/enrollments.routes.js';
+import classroomsRouter from './modules/classrooms/classrooms.routes.js';
 // Empty modules export routers but currently they are TODO
 import attendanceRouter from './modules/attendance/attendance.routes.js';
 import gradesRouter from './modules/grades/grades.routes.js';
@@ -114,6 +115,7 @@ const routeCatalogMounts = [
   { basePath: '/api/tutors', module: 'tutors', router: tutorsRouter, authRequired: true, rolesAllowed: null },
   { basePath: '/api/charges', module: 'charges', router: chargesRouter, authRequired: true, rolesAllowed: null },
   { basePath: '/api/enrollments', module: 'enrollments', router: enrollmentsRouter, authRequired: true, rolesAllowed: null },
+  { basePath: '/api/classrooms', module: 'classrooms', router: classroomsRouter, authRequired: true, rolesAllowed: null },
   { basePath: '/api/attendance', module: 'attendance', router: attendanceRouter, authRequired: true, rolesAllowed: null },
   { basePath: '/api/grades', module: 'grades', router: gradesRouter, authRequired: true, rolesAllowed: null },
   { basePath: '/api/club', module: 'club', router: clubRouter, authRequired: true, rolesAllowed: null },

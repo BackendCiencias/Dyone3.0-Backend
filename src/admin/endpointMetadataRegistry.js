@@ -4,6 +4,7 @@ import { moduleEndpointMetadata as enrollmentsMetadata } from '../modules/enroll
 import { moduleEndpointMetadata as paymentsMetadata } from '../modules/payments/payments.metadata.js';
 import { moduleEndpointMetadata as adminMetadata } from '../modules/admin/admin.metadata.js';
 import { moduleEndpointMetadata as tutorsMetadata } from '../modules/tutors/tutors.metadata.js';
+import { moduleEndpointMetadata as classroomsMetadata } from '../modules/classrooms/classrooms.metadata.js';
 
 export const allEndpointMetadata = [
   ...studentsMetadata,
@@ -12,6 +13,7 @@ export const allEndpointMetadata = [
   ...paymentsMetadata,
   ...adminMetadata,
   ...tutorsMetadata,
+  ...classroomsMetadata,
 ];
 
 export function validateEndpointMetadataShape(metadata = allEndpointMetadata) {

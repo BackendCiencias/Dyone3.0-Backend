@@ -13,6 +13,8 @@ import {
   studentClassroomSchema,
   studentCreateWithPersonSchema,
   studentFinancialParamsSchema,
+  studentIdentitySchema,
+  studentInternalNotesSchema,
 } from './students.schemas.js';
 import {
   createStudent,
@@ -27,6 +29,8 @@ import {
   getStudentAccountStatement,
   getStudentCharges,
   getStudentPayments,
+  updateStudentIdentity,
+  updateStudentInternalNotes,
 } from './students.controller.js';
 import { tutorCreateSchema } from '../tutors/tutors.schemas.js';
 import { upsertTutor } from '../tutors/tutors.controller.js';
@@ -80,6 +84,18 @@ router.patch(
   authorizeByCampusScope(async (req) => findStudentCampusById(req.params.id, req.body?.cycleId)),
   validateRequest({ params: studentIdParamsSchema, body: studentClassroomSchema }),
   changeStudentClassroom
+);
+router.patch(
+  '/:id/identity',
+  requireRoles(['ADMIN', 'SECRETARY', 'DIRECTOR', 'PROMOTER', ...coreSecretaryRoles]),
+  validateRequest({ params: studentIdParamsSchema, body: studentIdentitySchema }),
+  updateStudentIdentity
+);
+router.patch(
+  '/:id/internal-notes',
+  requireRoles(['ADMIN', 'SECRETARY', 'DIRECTOR', 'PROMOTER', ...coreSecretaryRoles]),
+  validateRequest({ params: studentIdParamsSchema, body: studentInternalNotesSchema }),
+  updateStudentInternalNotes
 );
 router.post('/with-person', requireRoles(['ADMIN', 'SECRETARY', 'DIRECTOR', 'PROMOTER', ...coreSecretaryRoles]), validate(studentCreateWithPersonSchema), createStudentWithPerson);
 router.post('/', requireRoles(['ADMIN', 'SECRETARY', 'DIRECTOR', 'PROMOTER', ...coreSecretaryRoles]), validate(studentCreateSchema), createStudent);

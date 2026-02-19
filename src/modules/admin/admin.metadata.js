@@ -1,0 +1,14 @@
+const ADMIN_BASE_ROLES = ['SECRETARY', 'SECRETARY_CIENCIAS_SEC', 'DIRECTOR', 'PROMOTER', 'ADMIN'];
+
+export const moduleEndpointMetadata = [
+  { method: 'GET', path: '/api/admin/campuses', module: 'admin', authRequired: true, rolesAllowed: ADMIN_BASE_ROLES, description: 'Listar campuses', requestSchema: null, responseSchema: 'Campus[]' },
+  { method: 'POST', path: '/api/admin/campuses', module: 'admin', authRequired: true, rolesAllowed: ADMIN_BASE_ROLES, description: 'Crear campus', requestSchema: { body: 'campusCreateSchema' }, responseSchema: 'Campus' },
+  { method: 'GET', path: '/api/admin/cycles', module: 'admin', authRequired: true, rolesAllowed: ADMIN_BASE_ROLES, description: 'Listar ciclos', requestSchema: null, responseSchema: 'Cycle[]' },
+  { method: 'POST', path: '/api/admin/cycles', module: 'admin', authRequired: true, rolesAllowed: ADMIN_BASE_ROLES, description: 'Crear ciclo', requestSchema: { body: 'cycleCreateSchema' }, responseSchema: 'Cycle' },
+  { method: 'GET', path: '/api/admin/classrooms', module: 'admin', authRequired: true, rolesAllowed: ADMIN_BASE_ROLES, description: 'Listar aulas', requestSchema: null, responseSchema: 'Classroom[]' },
+  { method: 'POST', path: '/api/admin/classrooms', module: 'admin', authRequired: true, rolesAllowed: ADMIN_BASE_ROLES, description: 'Crear aula', requestSchema: { body: 'classroomCreateSchema' }, responseSchema: 'Classroom' },
+  { method: 'GET', path: '/api/admin/billing-concepts', module: 'admin', authRequired: true, rolesAllowed: ADMIN_BASE_ROLES, description: 'Listar conceptos de cobro', requestSchema: null, responseSchema: 'BillingConcept[]' },
+  { method: 'POST', path: '/api/admin/billing-concepts', module: 'admin', authRequired: true, rolesAllowed: ADMIN_BASE_ROLES, description: 'Crear concepto de cobro', requestSchema: { body: 'billingConceptCreateSchema' }, responseSchema: 'BillingConcept' },
+  { method: 'GET', path: '/api/admin/endpoints', module: 'admin', authRequired: true, rolesAllowed: ['ADMIN'], description: 'Catálogo de endpoints de la API', requestSchema: null, responseSchema: { items: 'EndpointMetadata[]' } },
+  { method: 'GET', path: '/api/admin/models', module: 'admin', authRequired: true, rolesAllowed: ['ADMIN'], description: 'Catálogo de modelos Mongoose', requestSchema: null, responseSchema: { items: 'ModelCatalog[]' } },
+];

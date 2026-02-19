@@ -5,6 +5,7 @@ import { Student } from '../../models/student.model.js';
 import { Tutor } from '../../models/tutor.model.js';
 import { Counter } from '../../models/counter.model.js';
 import { ApiError } from '../../utils/errors.js';
+import { findFamiliesBase, findFamiliesForSearch } from './repositories/families.repository.js';
 
 // Encuentra o crea una persona por DNI
 async function findOrCreatePerson(personData) {
@@ -179,15 +180,45 @@ export async function createFamilyService({ tutors, students, notes }) {
   return Family.findById(family._id).populate({ path: 'studentIds', populate: { path: 'personId' } });
 }
 
-export async function searchFamiliesService({ q, limit = 20, cursor }) {
+export async function listFamiliesBaseService({ limit = 20, cursor, campus } = {}) {
+  const normalizedLimit = Math.max(1, Math.min(100, Number(limit) || 20));
+
+  const families = await findFamiliesBase({
+    limit: normalizedLimit,
+    cursor,
+    campus,
+  });
+
+  const hasMore = families.length > normalizedLimit;
+  const itemsSource = hasMore ? families.slice(0, normalizedLimit) : families;
+
+  const items = itemsSource.map((family) => {
+    const primaryTutor = (family.tutorIds || []).find((tutor) => tutor.isPrimary) || family.tutorIds?.[0] || null;
+
+    return {
+      familyId: String(family._id),
+      primaryTutor: primaryTutor ? {
+        name: [primaryTutor.tutorPersonId?.names, primaryTutor.tutorPersonId?.lastNames].filter(Boolean).join(' ') || null,
+        dni: primaryTutor.tutorPersonId?.dni || null,
+        phone: primaryTutor.tutorPersonId?.phone || null,
+      } : null,
+      studentsCount: family.studentIds?.length || 0,
+      tutorsCount: family.tutorIds?.length || 0,
+      updatedAt: family.updatedAt || family.createdAt || null,
+    };
+  });
+
+  return {
+    items,
+    nextCursor: hasMore ? String(itemsSource[itemsSource.length - 1]._id) : null,
+  };
+}
+
+export async function searchFamiliesService({ q, limit = 20, cursor, campus }) {
   const normalizedTerm = normalizeString(q);
   if (!normalizedTerm) throw new ApiError(400, 'q es requerido');
 
-  const families = await Family.find({})
-    .sort({ _id: 1 })
-    .populate({ path: 'studentIds', populate: { path: 'personId' } })
-    .populate({ path: 'tutorIds', populate: { path: 'tutorPersonId' } })
-    .lean();
+  const families = await findFamiliesForSearch({ campus });
 
   const filtered = families.filter((family) => {
     const fields = [

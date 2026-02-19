@@ -11,6 +11,8 @@ import {
   getStudentAccountStatementService,
   getStudentChargesService,
   getStudentPaymentsService,
+  updateStudentIdentityService,
+  updateStudentInternalNotesService,
 } from './students.service.js';
 
 const ENABLE_STUDENTS_BY_CAMPUS_DEBUG =
@@ -101,5 +103,19 @@ export const getStudentCharges = asyncHandler(async (req, res) => {
 
 export const getStudentPayments = asyncHandler(async (req, res) => {
   const data = await getStudentPaymentsService(req.validatedParams.studentId);
+  res.json(data);
+});
+
+export const updateStudentIdentity = asyncHandler(async (req, res) => {
+  const data = await updateStudentIdentityService(req.validatedParams.id, req.validated, req.user?.id);
+  res.json(data);
+});
+
+export const updateStudentInternalNotes = asyncHandler(async (req, res) => {
+  const data = await updateStudentInternalNotesService(
+    req.validatedParams.id,
+    req.validated.internalNotes,
+    req.user?.id
+  );
   res.json(data);
 });

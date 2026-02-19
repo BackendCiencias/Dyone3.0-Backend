@@ -26,6 +26,16 @@ export const familySearchSchema = z.object({
   q: z.string().trim().min(1),
   limit: z.coerce.number().int().min(1).max(50).optional(),
   cursor: objectIdSchema.optional(),
+  campus: z.enum(['CIENCIAS', 'CIMAS', 'CIENCIAS_APLICADAS']).optional(),
+});
+
+
+const campusSchema = z.enum(['CIENCIAS', 'CIMAS', 'CIENCIAS_APLICADAS']);
+
+export const familyListSchema = z.object({
+  limit: z.coerce.number().int().min(1).max(100).optional(),
+  cursor: objectIdSchema.optional(),
+  campus: campusSchema.optional(),
 });
 
 const guardianSchema = z.object({

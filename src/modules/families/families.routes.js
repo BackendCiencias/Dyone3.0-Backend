@@ -8,12 +8,14 @@ import {
   familyLinkStudentSchema,
   familyIdParamsSchema,
   familySearchSchema,
+  familyListSchema,
   familyAddTutorSchema,
   familySetPrimaryTutorSchema,
 } from './families.schemas.js';
 import {
   createFamily,
-  searchFamily,
+  listFamilies,
+  searchFamilies,
   linkStudentFamily,
   getFamilyById,
   addFamilyTutor,
@@ -37,8 +39,11 @@ router.use(requireRoles(['ADMIN', 'SECRETARY', 'DIRECTOR', 'PROMOTER', ...coreSe
 router.post('/', validate(familyCreateSchema), createFamily);
 router.post('/link-student', validate(familyLinkStudentSchema), linkStudentFamily);
 
+// Listado base de familias (dashboard)
+router.get('/', validateRequest({ query: familyListSchema }), listFamilies);
+
 // Buscar familias por datos de ventanilla
-router.get('/search', validateRequest({ query: familySearchSchema }), searchFamily);
+router.get('/search', validateRequest({ query: familySearchSchema }), searchFamilies);
 router.get('/:id', validateRequest({ params: familyIdParamsSchema }), getFamilyById);
 router.post('/:id/tutors', validateRequest({ params: familyIdParamsSchema, body: familyAddTutorSchema }), addFamilyTutor);
 router.patch('/:id/primary-tutor', validateRequest({ params: familyIdParamsSchema, body: familySetPrimaryTutorSchema }), setFamilyPrimaryTutor);

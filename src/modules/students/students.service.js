@@ -16,6 +16,12 @@ import { ApiError } from '../../utils/errors.js';
 import { getClassroomCapacityService } from '../enrollments/enrollments.service.js';
 import { runInTransaction } from '../../shared/dbSession.js';
 import { registerAuditLog } from '../../shared/audit.service.js';
+import {
+  findStudentWithPersonById,
+  findPersonByDni,
+  updatePersonById,
+  updateStudentById,
+} from './repositories/students.repository.js';
 
 function normalizeDni(dni) {
   const normalized = String(dni || '').trim();
@@ -861,4 +867,67 @@ export async function getStudentChargesService(studentId) {
 export async function getStudentPaymentsService(studentId) {
   const snapshot = await buildStudentFinancialSnapshot(studentId);
   return snapshot.payments;
+}
+
+export async function updateStudentIdentityService(studentId, payload, actor = null) {
+  const student = await findStudentWithPersonById(studentId);
+  if (!student) throw new ApiError(404, 'Estudiante no encontrado');
+  if (!student.personId?._id) throw new ApiError(400, 'El estudiante no tiene persona asociada');
+
+  const personUpdates = {};
+  const stringFields = ['names', 'lastNames', 'gender', 'phone', 'address'];
+  for (const key of stringFields) {
+    if (payload[key] !== undefined) personUpdates[key] = payload[key];
+  }
+
+  if (payload.birthDate !== undefined) {
+    personUpdates.birthDate = payload.birthDate ? new Date(payload.birthDate) : null;
+  }
+
+  if (payload.dni !== undefined) {
+    const normalizedDni = normalizeDni(payload.dni);
+    if (normalizedDni) {
+      const personWithDni = await findPersonByDni(normalizedDni);
+      if (personWithDni && String(personWithDni._id) !== String(student.personId._id)) {
+        throw new ApiError(409, 'El DNI ya está registrado por otra persona');
+      }
+    }
+    personUpdates.dni = normalizedDni;
+  }
+
+  if (!Object.keys(personUpdates).length) {
+    throw new ApiError(400, 'No se enviaron cambios de identidad válidos');
+  }
+
+  await updatePersonById(student.personId._id, { $set: personUpdates });
+
+  if (actor) {
+    await registerAuditLog({
+      entityType: 'STUDENT',
+      entityId: student._id,
+      action: 'STUDENT_IDENTITY_UPDATED',
+      performedBy: actor,
+      payloadSnapshot: { studentId, updates: personUpdates },
+    });
+  }
+
+  const updated = await Student.findById(student._id).populate('personId').populate('familyId');
+  return { ok: true, student: updated };
+}
+
+export async function updateStudentInternalNotesService(studentId, internalNotes, actor = null) {
+  const student = await updateStudentById(studentId, { $set: { internalNotes } });
+  if (!student) throw new ApiError(404, 'Estudiante no encontrado');
+
+  if (actor) {
+    await registerAuditLog({
+      entityType: 'STUDENT',
+      entityId: student._id,
+      action: 'STUDENT_INTERNAL_NOTES_UPDATED',
+      performedBy: actor,
+      payloadSnapshot: { studentId, internalNotes },
+    });
+  }
+
+  return { ok: true, student };
 }

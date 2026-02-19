@@ -6,6 +6,7 @@ import { Campus } from '../../models/campus.model.js';
 import { Cycle } from '../../models/cycle.model.js';
 import { Classroom } from '../../models/classroom.model.js';
 import { BillingConcept } from '../../models/billingConcept.model.js';
+import { allEndpointMetadata, validateEndpointMetadataShape, warnMetadataWithoutRoute } from '../../admin/endpointMetadataRegistry.js';
 
 // Servicios del módulo de administración
 
@@ -55,7 +56,7 @@ function normalizePath(basePath, routePath) {
   return `${basePath}${rawRoutePath === '/' ? '' : rawRoutePath}`;
 }
 
-function extractRouterEndpoints(mount) {
+function extractRouterEndpoints(mount, metadataByKey) {
   const entries = [];
 
   for (const layer of mount.router.stack || []) {
@@ -66,15 +67,27 @@ function extractRouterEndpoints(mount) {
       .map((method) => method.toUpperCase());
 
     for (const method of methods) {
+      const path = normalizePath(mount.basePath, layer.route.path);
+      const key = `${method} ${path}`;
+      const metadata = metadataByKey.get(key);
+
       entries.push({
         method,
-        path: normalizePath(mount.basePath, layer.route.path),
+        path,
         module: mount.module || 'unknown',
         authRequired: mount.authRequired ?? null,
-        rolesAllowed: mount.rolesAllowed ?? null,
-        description: `${method} ${normalizePath(mount.basePath, layer.route.path)}`,
+        rolesAllowed: null,
+        description: `${method} ${path}`,
         requestSchema: null,
         responseSchema: null,
+        ...(metadata ? {
+          module: metadata.module || mount.module || 'unknown',
+          authRequired: metadata.authRequired ?? (mount.authRequired ?? null),
+          rolesAllowed: metadata.rolesAllowed ?? null,
+          description: metadata.description || `${method} ${path}`,
+          requestSchema: metadata.requestSchema ?? null,
+          responseSchema: metadata.responseSchema ?? null,
+        } : { metadataMissing: true }),
       });
     }
   }
@@ -84,6 +97,11 @@ function extractRouterEndpoints(mount) {
 
 export async function listAvailableEndpoints(app) {
   const mounts = app?.locals?.routeCatalogMounts || [];
+
+  validateEndpointMetadataShape(allEndpointMetadata);
+  const metadataByKey = new Map(
+    allEndpointMetadata.map((entry) => [`${String(entry.method || '').toUpperCase()} ${entry.path}`, { ...entry, method: String(entry.method || '').toUpperCase() }])
+  );
 
   const items = [
     {
@@ -95,12 +113,15 @@ export async function listAvailableEndpoints(app) {
       description: 'Health check',
       requestSchema: null,
       responseSchema: { ok: 'boolean' },
+      metadataMissing: true,
     },
   ];
 
   for (const mount of mounts) {
-    items.push(...extractRouterEndpoints(mount));
+    items.push(...extractRouterEndpoints(mount, metadataByKey));
   }
+
+  warnMetadataWithoutRoute({ metadata: allEndpointMetadata, routeCatalog: items });
 
   items.sort((a, b) => {
     if (a.path === b.path) return a.method.localeCompare(b.method);

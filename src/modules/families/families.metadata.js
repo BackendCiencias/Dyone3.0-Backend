@@ -1,0 +1,11 @@
+const FAMILY_ROLES = ['ADMIN', 'SECRETARY', 'DIRECTOR', 'PROMOTER', 'SECRETARY_CIENCIAS_SEC', 'SECRETARY_CIENCIAS_PRIM', 'SECRETARY_CIMAS'];
+
+export const moduleEndpointMetadata = [
+  { method: 'POST', path: '/api/families', module: 'families', authRequired: true, rolesAllowed: FAMILY_ROLES, description: 'Crear familia', requestSchema: { body: 'familyCreateSchema' }, responseSchema: 'Family' },
+  { method: 'POST', path: '/api/families/link-student', module: 'families', authRequired: true, rolesAllowed: FAMILY_ROLES, description: 'Vincular estudiante a familia existente o nueva', requestSchema: { body: 'familyLinkStudentSchema' }, responseSchema: { created: 'boolean', familyId: 'ObjectId', family: 'object' } },
+  { method: 'GET', path: '/api/families', module: 'families', authRequired: true, rolesAllowed: FAMILY_ROLES, description: 'Listado base de familias para dashboard', requestSchema: { query: { limit: 'number?', cursor: 'ObjectId?', campus: 'string?' } }, responseSchema: { items: 'array', nextCursor: 'string|null' } },
+  { method: 'GET', path: '/api/families/search', module: 'families', authRequired: true, rolesAllowed: FAMILY_ROLES, description: 'Buscar familias (ventanilla, q requerido)', requestSchema: { query: { q: 'string', limit: 'number?', cursor: 'ObjectId?', campus: 'string?' } }, responseSchema: { items: 'array', nextCursor: 'string|null' } },
+  { method: 'GET', path: '/api/families/:id', module: 'families', authRequired: true, rolesAllowed: FAMILY_ROLES, description: 'Detalle de familia por id', requestSchema: { params: { id: 'ObjectId' } }, responseSchema: { family: 'object', students: 'array', tutors: 'array', primaryTutor: 'object|null' } },
+  { method: 'POST', path: '/api/families/:id/tutors', module: 'families', authRequired: true, rolesAllowed: FAMILY_ROLES, description: 'Agregar tutor a familia', requestSchema: { params: { id: 'ObjectId' }, body: 'familyAddTutorSchema' }, responseSchema: { familyId: 'ObjectId', tutorId: 'ObjectId', family: 'object' } },
+  { method: 'PATCH', path: '/api/families/:id/primary-tutor', module: 'families', authRequired: true, rolesAllowed: FAMILY_ROLES, description: 'Definir tutor principal de familia', requestSchema: { params: { id: 'ObjectId' }, body: { tutorId: 'ObjectId' } }, responseSchema: { familyId: 'ObjectId', primaryTutorId: 'ObjectId', family: 'object' } },
+];

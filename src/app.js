@@ -21,6 +21,7 @@ import attendanceRouter from './modules/attendance/attendance.routes.js';
 import gradesRouter from './modules/grades/grades.routes.js';
 import clubRouter from './modules/club/club.routes.js';
 import reportsRouter from './modules/reports/reports.routes.js';
+import { validateEndpointMetadataShape } from './admin/endpointMetadataRegistry.js';
 
 const app = express();
 
@@ -120,6 +121,7 @@ const routeCatalogMounts = [
 ];
 
 app.locals.routeCatalogMounts = routeCatalogMounts;
+validateEndpointMetadataShape();
 
 for (const mount of routeCatalogMounts) {
   app.use(mount.basePath, mount.router);

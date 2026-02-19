@@ -10,6 +10,7 @@ const studentSchema = new mongoose.Schema(
     isActive: { type: Boolean, default: true },
     entryDate: { type: Date },
     notes: { type: String },
+    internalNotes: { type: String },
   },
   { timestamps: true }
 );

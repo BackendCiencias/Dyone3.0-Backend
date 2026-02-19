@@ -46,6 +46,25 @@ export const studentClassroomSchema = z.object({
   reason: z.string().trim().min(1).optional(),
 });
 
+export const studentIdentitySchema = z.object({
+  names: z.string().trim().min(1).optional(),
+  lastNames: z.string().trim().min(1).optional(),
+  dni: z.union([
+    z.string().trim().regex(/^\d{8}$/, 'DNI inválido. Debe tener 8 dígitos'),
+    z.literal(''),
+  ]).optional(),
+  birthDate: z.string().datetime().optional(),
+  gender: z.enum(['Masculino', 'Femenino']).optional(),
+  phone: z.string().trim().min(1).optional(),
+  address: z.string().trim().min(1).optional(),
+}).refine((payload) => Object.keys(payload).length > 0, {
+  message: 'Debe enviar al menos un campo de identidad',
+});
+
+export const studentInternalNotesSchema = z.object({
+  internalNotes: z.string().trim().max(2000, 'internalNotes excede el máximo de 2000 caracteres'),
+});
+
 export const studentFinancialParamsSchema = z.object({
   studentId: objectIdSchema,
 });

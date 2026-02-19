@@ -1,6 +1,7 @@
 import { asyncHandler } from '../../utils/asyncHandler.js';
 import {
   createFamilyService,
+  listFamiliesBaseService,
   searchFamiliesService,
   linkStudentFamilyService,
   getFamilyByIdService,
@@ -13,7 +14,12 @@ export const createFamily = asyncHandler(async (req, res) => {
   res.status(201).json(family);
 });
 
-export const searchFamily = asyncHandler(async (req, res) => {
+export const listFamilies = asyncHandler(async (req, res) => {
+  const result = await listFamiliesBaseService(req.validatedQuery);
+  res.json(result);
+});
+
+export const searchFamilies = asyncHandler(async (req, res) => {
   const result = await searchFamiliesService(req.validatedQuery);
   res.json(result);
 });

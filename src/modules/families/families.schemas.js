@@ -98,3 +98,22 @@ export const familyLinkStudentSchema = z.object({
 export const familyIdParamsSchema = z.object({
   id: objectIdSchema,
 });
+
+
+export const familyTutorParamsSchema = z.object({
+  id: objectIdSchema,
+  tutorId: objectIdSchema,
+});
+
+export const familyUpdateTutorSchema = z.object({
+  relationship: relationshipSchema.optional(),
+  isPrimary: z.boolean().optional(),
+  livesWithStudent: z.boolean().optional(),
+  notes: z.string().trim().optional(),
+}).refine((payload) => Object.keys(payload).length > 0, {
+  message: 'Debe enviar al menos un campo para actualizar tutor',
+});
+
+export const familyUnlinkStudentSchema = z.object({
+  studentId: objectIdSchema,
+});

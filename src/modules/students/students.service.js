@@ -291,6 +291,71 @@ export async function findStudentByDniService(dni) {
   return student;
 }
 
+function normalizeSearchTerm(value) {
+  return String(value || '').trim().replace(/\s+/g, ' ');
+}
+
+function parseSearchLimit(limit) {
+  const parsed = Number(limit);
+  if (!Number.isFinite(parsed) || parsed <= 0) return 5;
+  return Math.min(10, Math.trunc(parsed));
+}
+
+function isNumericTerm(value) {
+  return /^\d+$/.test(value);
+}
+
+export async function searchStudentAutocompleteService({ q, dni, limit }) {
+  const normalizedDni = normalizeSearchTerm(dni);
+  const normalizedQ = normalizeSearchTerm(q);
+
+  const term = normalizedDni || normalizedQ;
+  if (!term) return [];
+
+  const normalizedLimit = parseSearchLimit(limit);
+
+  let personFilter;
+  if (normalizedDni) {
+    personFilter = normalizedDni.length === 8
+      ? { dni: normalizedDni }
+      : { dni: new RegExp(escapeRegExp(normalizedDni), 'i') };
+  } else if (isNumericTerm(normalizedQ)) {
+    personFilter = { dni: new RegExp(escapeRegExp(normalizedQ), 'i') };
+  } else {
+    const regex = new RegExp(escapeRegExp(normalizedQ), 'i');
+    personFilter = {
+      $or: [{ names: regex }, { lastNames: regex }],
+    };
+  }
+
+  const people = await Person.find(personFilter)
+    .select('_id')
+    .limit(normalizedLimit)
+    .lean();
+
+  if (!people.length) return [];
+
+  const students = await Student.find({ personId: { $in: people.map((person) => person._id) } })
+    .select('_id personId familyId')
+    .sort({ _id: 1 })
+    .limit(normalizedLimit)
+    .populate({ path: 'personId', select: 'names lastNames dni' })
+    .lean();
+
+  return students.map((student) => ({
+    _id: student._id,
+    personId: student.personId
+      ? {
+        _id: student.personId._id,
+        names: student.personId.names,
+        lastNames: student.personId.lastNames,
+        dni: student.personId.dni ?? null,
+      }
+      : null,
+    familyId: student.familyId || null,
+  }));
+}
+
 export async function searchStudentsService({ q, limit = 20, cursor }) {
   const term = String(q || '').trim();
   if (!term) throw new ApiError(400, 'q es requerido');

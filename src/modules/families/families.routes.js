@@ -11,6 +11,9 @@ import {
   familyListSchema,
   familyAddTutorSchema,
   familySetPrimaryTutorSchema,
+  familyTutorParamsSchema,
+  familyUpdateTutorSchema,
+  familyUnlinkStudentSchema,
 } from './families.schemas.js';
 import {
   createFamily,
@@ -20,6 +23,9 @@ import {
   getFamilyById,
   addFamilyTutor,
   setFamilyPrimaryTutor,
+  updateFamilyTutor,
+  deleteFamilyTutor,
+  unlinkFamilyStudent,
 } from './families.controller.js';
 
 const coreSecretaryRoles = [
@@ -47,5 +53,8 @@ router.get('/search', validateRequest({ query: familySearchSchema }), searchFami
 router.get('/:id', validateRequest({ params: familyIdParamsSchema }), getFamilyById);
 router.post('/:id/tutors', validateRequest({ params: familyIdParamsSchema, body: familyAddTutorSchema }), addFamilyTutor);
 router.patch('/:id/primary-tutor', validateRequest({ params: familyIdParamsSchema, body: familySetPrimaryTutorSchema }), setFamilyPrimaryTutor);
+router.patch('/:id/tutors/:tutorId', validateRequest({ params: familyTutorParamsSchema, body: familyUpdateTutorSchema }), updateFamilyTutor);
+router.delete('/:id/tutors/:tutorId', validateRequest({ params: familyTutorParamsSchema }), deleteFamilyTutor);
+router.post('/:id/unlink-student', validateRequest({ params: familyIdParamsSchema, body: familyUnlinkStudentSchema }), unlinkFamilyStudent);
 
 export default router;

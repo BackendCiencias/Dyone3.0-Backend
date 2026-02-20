@@ -6,6 +6,8 @@ import { Tutor } from '../../models/tutor.model.js';
 import { Counter } from '../../models/counter.model.js';
 import { ApiError } from '../../utils/errors.js';
 import { findFamiliesBase, findFamiliesForSearch } from './repositories/families.repository.js';
+import { runInTransaction } from '../../shared/dbSession.js';
+import { registerAuditLog } from '../../shared/audit.service.js';
 
 // Encuentra o crea una persona por DNI
 async function findOrCreatePerson(personData) {
@@ -511,6 +513,185 @@ export async function setFamilyPrimaryTutorService(familyId, tutorId) {
   } finally {
     session.endSession();
   }
+}
+
+
+export async function updateFamilyTutorService(familyId, tutorId, payload, userId = null) {
+  const normalizedPayload = {};
+  if (payload.relationship !== undefined) normalizedPayload.relationship = mapRelationship(payload.relationship);
+  if (payload.isPrimary !== undefined) normalizedPayload.isPrimary = payload.isPrimary;
+  if (payload.livesWithStudent !== undefined) normalizedPayload.livesWithStudent = payload.livesWithStudent;
+  if (payload.notes !== undefined) normalizedPayload.notes = payload.notes;
+
+  await runInTransaction(async (session) => {
+    const family = await Family.findById(familyId).session(session);
+    if (!family) throw new ApiError(404, 'Familia no encontrada');
+
+    if (!family.tutorIds.some((id) => String(id) === String(tutorId))) {
+      throw new ApiError(404, 'Tutor no pertenece a la familia');
+    }
+
+    const tutor = await Tutor.findById(tutorId).session(session);
+    if (!tutor) throw new ApiError(404, 'Tutor no encontrado');
+
+    await Tutor.updateOne({ _id: tutorId }, { $set: normalizedPayload }, { session });
+
+    if (payload.isPrimary === true) {
+      await Tutor.updateMany(
+        { _id: { $in: family.tutorIds.filter((id) => String(id) !== String(tutorId)) } },
+        { $set: { isPrimary: false } },
+        { session }
+      );
+    }
+  });
+
+  if (userId) {
+    await registerAuditLog({
+      entityType: 'FAMILY',
+      entityId: familyId,
+      action: 'TUTOR_UPDATED',
+      performedBy: userId,
+      payloadSnapshot: {
+        familyId,
+        tutorId,
+        changes: normalizedPayload,
+      },
+    });
+  }
+
+  return getFamilyByIdService(familyId);
+}
+
+export async function deleteFamilyTutorService(familyId, tutorId, userId = null) {
+  await runInTransaction(async (session) => {
+    const family = await Family.findById(familyId).session(session);
+    if (!family) throw new ApiError(404, 'Familia no encontrada');
+
+    if (!family.tutorIds.some((id) => String(id) === String(tutorId))) {
+      throw new ApiError(404, 'Tutor no pertenece a la familia');
+    }
+
+    const tutor = await Tutor.findById(tutorId).session(session);
+    if (!tutor) throw new ApiError(404, 'Tutor no encontrado');
+
+    await Family.updateOne({ _id: familyId }, { $pull: { tutorIds: tutor._id } }, { session });
+
+    const stillReferenced = await Family.exists({ tutorIds: tutor._id }).session(session);
+    if (!stillReferenced) {
+      await Tutor.deleteOne({ _id: tutor._id }, { session });
+    }
+
+    if (tutor.isPrimary) {
+      const updatedFamily = await Family.findById(familyId).session(session);
+      if (updatedFamily?.tutorIds?.length) {
+        const nextPrimaryId = updatedFamily.tutorIds[0];
+        await Tutor.updateMany(
+          { _id: { $in: updatedFamily.tutorIds } },
+          { $set: { isPrimary: false } },
+          { session }
+        );
+        await Tutor.updateOne({ _id: nextPrimaryId }, { $set: { isPrimary: true } }, { session });
+      }
+    }
+  });
+
+  if (userId) {
+    await registerAuditLog({
+      entityType: 'FAMILY',
+      entityId: familyId,
+      action: 'TUTOR_DELETED',
+      performedBy: userId,
+      payloadSnapshot: {
+        familyId,
+        tutorId,
+      },
+    });
+  }
+
+  return getFamilyByIdService(familyId);
+}
+
+export async function unlinkStudentFromFamilyService(familyId, studentId, userId = null) {
+  let newFamilyId = null;
+
+  await runInTransaction(async (session) => {
+    const family = await Family.findById(familyId).session(session);
+    if (!family) throw new ApiError(404, 'Familia no encontrada');
+
+    const student = await Student.findById(studentId).session(session);
+    if (!student) throw new ApiError(404, 'Estudiante no encontrado');
+
+    if (!family.studentIds.some((id) => String(id) === String(studentId))) {
+      throw new ApiError(404, 'Estudiante no pertenece a la familia');
+    }
+
+    const autoFamily = new Family({
+      tutorIds: [],
+      studentIds: [student._id],
+      notes: 'Familia creada automáticamente al desvincular estudiante.',
+    });
+    await autoFamily.save({ session });
+    newFamilyId = String(autoFamily._id);
+
+    await Family.updateOne({ _id: familyId }, { $pull: { studentIds: student._id } }, { session });
+    await Student.updateOne({ _id: student._id }, { $set: { familyId: autoFamily._id } }, { session });
+
+    const tutorsToRemove = await Tutor.find({
+      _id: { $in: family.tutorIds },
+      studentId: student._id,
+    }).select('_id').session(session).lean();
+
+    const tutorIdsToRemove = tutorsToRemove.map((tutor) => tutor._id);
+    if (tutorIdsToRemove.length) {
+      await Tutor.deleteMany({ _id: { $in: tutorIdsToRemove } }, { session });
+      await Family.updateOne(
+        { _id: familyId },
+        { $pull: { tutorIds: { $in: tutorIdsToRemove } } },
+        { session }
+      );
+
+      const refreshedFamily = await Family.findById(familyId).session(session);
+      if (refreshedFamily?.tutorIds?.length) {
+        const primaryExists = await Tutor.findOne({
+          _id: { $in: refreshedFamily.tutorIds },
+          isPrimary: true,
+        }).session(session).lean();
+
+        if (!primaryExists) {
+          const nextPrimaryId = refreshedFamily.tutorIds[0];
+          await Tutor.updateMany(
+            { _id: { $in: refreshedFamily.tutorIds } },
+            { $set: { isPrimary: false } },
+            { session }
+          );
+          await Tutor.updateOne({ _id: nextPrimaryId }, { $set: { isPrimary: true } }, { session });
+        }
+      }
+    }
+  });
+
+  if (userId) {
+    await registerAuditLog({
+      entityType: 'FAMILY',
+      entityId: familyId,
+      action: 'FAMILY_STUDENT_UNLINKED',
+      performedBy: userId,
+      payloadSnapshot: {
+        familyId,
+        studentId,
+        newFamilyId,
+      },
+    });
+  }
+
+  const family = await getFamilyByIdService(familyId);
+  return {
+    ok: true,
+    familyId,
+    studentId,
+    newFamilyId,
+    family,
+  };
 }
 
 export async function getFamilyByIdService(familyId) {

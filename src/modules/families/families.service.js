@@ -57,6 +57,7 @@ async function hydrateFamily(familyId) {
 }
 
 function mapFamilyDetail(family) {
+
   const tutors = (family.tutorIds || []).map((tutor) => ({
     _id: tutor._id,
     relationship: tutor.relationship,
@@ -67,26 +68,17 @@ function mapFamilyDetail(family) {
   }));
 
   const primaryTutor = tutors.find((tutor) => tutor.isPrimary) || null;
+  const otherTutors = tutors.find((tutor) => tutor.isPrimary == false) || null;
+
+  console.log(family.studentIds[0])
+
 
   return {
-    family: {
-      _id: family._id,
-      notes: family.notes || null,
-      studentsCount: family.studentIds?.length || 0,
-      tutorsCount: family.tutorIds?.length || 0,
-    },
-    students: (family.studentIds || []).map((student) => ({
-      _id: student._id,
-      internalCode: student.internalCode || null,
-      person: student.personId || null,
-      summary: student.personId ? {
-        names: student.personId.names,
-        lastNames: student.personId.lastNames,
-        dni: student.personId.dni || null,
-      } : null,
-    })),
-    tutors,
+    familyId: family?._id || null,
+    notes: family?.notes || null,
+    students: family?.studentIds || null,
     primaryTutor,
+    otherTutors,
   };
 }
 
@@ -198,7 +190,8 @@ export async function listFamiliesBaseService({ limit = 20, cursor, campus } = {
     return {
       familyId: String(family._id),
       primaryTutor: primaryTutor ? {
-        name: [primaryTutor.tutorPersonId?.names, primaryTutor.tutorPersonId?.lastNames].filter(Boolean).join(' ') || null,
+        names: primaryTutor.tutorPersonId?.names || null,
+        lastNames: primaryTutor.tutorPersonId?.lastNames || null,
         dni: primaryTutor.tutorPersonId?.dni || null,
         phone: primaryTutor.tutorPersonId?.phone || null,
       } : null,

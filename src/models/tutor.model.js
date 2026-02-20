@@ -9,4 +9,6 @@ const tutorSchema = new mongoose.Schema({
   notes: { type: String },
 });
 
+tutorSchema.index({ studentId: 1, tutorPersonId: 1 }, { unique: true });
+
 export const Tutor = mongoose.model('Tutor', tutorSchema);

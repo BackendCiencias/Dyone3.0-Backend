@@ -172,15 +172,13 @@ async function createQuickEnrollmentService(data, createdByUserId) {
     await Vacancy.updateOne(
       { studentId: student._id, cycleId: cycle._id },
       {
-        $set: {
-          classroomId: classroom._id,
-          endDate: null,
-          notes: data.notes || undefined,
-        },
         $setOnInsert: {
           studentId: student._id,
           cycleId: cycle._id,
-          startDate: new Date(),
+        },
+        $set: {
+          classroomId: classroom._id,
+          notes: data.notes || undefined,
         },
       },
       { upsert: true, session }
@@ -266,13 +264,17 @@ async function createLegacyEnrollmentService(data, createdByUserId) {
         family.tutorIds.push(tutorDoc._id);
       }
 
-      const vacancy = new Vacancy({
-        studentId: student._id,
-        cycleId: data.cycleId,
-        classroomId: stu.classroomId,
-        startDate: new Date(),
-      });
-      await vacancy.save({ session });
+      await Vacancy.updateOne(
+        { studentId: student._id, cycleId: data.cycleId },
+        {
+          $setOnInsert: {
+            studentId: student._id,
+            cycleId: data.cycleId,
+          },
+          $set: { classroomId: stu.classroomId },
+        },
+        { upsert: true, session }
+      );
 
       if (stu.charges) {
         for (const ch of stu.charges) {
@@ -407,7 +409,7 @@ export async function getCampusCapacityService({ campusId, cycleId }) {
     .lean();
 
   const reservedByClassroom = await Vacancy.aggregate([
-    { $match: { cycleId: new mongoose.Types.ObjectId(cycleId), endDate: null } },
+    { $match: { cycleId: new mongoose.Types.ObjectId(cycleId) } },
     { $group: { _id: '$classroomId', reservedCount: { $sum: 1 } } },
   ]);
 
@@ -641,7 +643,7 @@ export async function listEnrollmentsService({ q, campus, cycleId, status, class
   const [students, cycles, classrooms, studentCycles, snapshots] = await Promise.all([
     Student.find({ _id: { $in: allStudentIds } }).populate('personId').select('_id internalCode personId').lean(),
     Cycle.find({ _id: { $in: [...new Set(selected.map((row) => String(row.cycleId)))] } }).select('_id name').lean(),
-    Vacancy.find({ studentId: { $in: allStudentIds }, endDate: null, ...(classroomId ? { classroomId } : {}) })
+    Vacancy.find({ studentId: { $in: allStudentIds }, ...(classroomId ? { classroomId } : {}) })
       .populate('classroomId', '_id displayName')
       .select('studentId cycleId classroomId')
       .lean(),

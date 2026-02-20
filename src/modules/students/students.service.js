@@ -173,15 +173,10 @@ function resolveCampusCodes(campus) {
 async function buildStudentResponse(items) {
   const studentIds = items.map((row) => row._id);
   const vacancies = await Vacancy.find({ studentId: { $in: studentIds } })
-    .sort({ startDate: -1 })
     .populate({ path: 'classroomId', populate: { path: 'campusId' } })
     .lean();
 
-  const vacancyByStudent = new Map();
-  for (const vacancy of vacancies) {
-    const key = String(vacancy.studentId);
-    if (!vacancyByStudent.has(key)) vacancyByStudent.set(key, vacancy);
-  }
+  const vacancyByStudent = new Map(vacancies.map((vacancy) => [String(vacancy.studentId), vacancy]));
 
   return items.map((student) => {
     const person = student.personId;
@@ -264,15 +259,13 @@ export async function createStudentService({ person, familyId, classroomId, entr
     await Vacancy.updateOne(
       { studentId: studentDoc._id, cycleId: cycle._id },
       {
-        $set: {
-          classroomId: classroom._id,
-          endDate: null,
-          notes: notes || undefined,
-        },
         $setOnInsert: {
           studentId: studentDoc._id,
           cycleId: cycle._id,
-          startDate: new Date(),
+        },
+        $set: {
+          classroomId: classroom._id,
+          notes: notes || undefined,
         },
       },
       { upsert: true, session }
@@ -363,7 +356,6 @@ export async function getStudentSummaryService(studentId) {
     .lean();
 
   const latestVacancy = await Vacancy.findOne({ studentId: student._id })
-    .sort({ startDate: -1 })
     .populate({ path: 'classroomId', populate: { path: 'campusId' } })
     .lean();
 
@@ -553,11 +545,8 @@ async function resolveCampusForCycleStatus(studentId, cycleId) {
   const studentCycle = await StudentCycle.findOne({ studentId, cycleId }).lean();
   if (studentCycle?.campusId) return studentCycle.campusId;
 
-  const activeVacancy = await Vacancy.findOne({ studentId, cycleId, endDate: null }).populate('classroomId').lean();
-  if (activeVacancy?.classroomId?.campusId) return activeVacancy.classroomId.campusId;
-
-  const latestVacancy = await Vacancy.findOne({ studentId, cycleId }).sort({ startDate: -1 }).populate('classroomId').lean();
-  if (latestVacancy?.classroomId?.campusId) return latestVacancy.classroomId.campusId;
+  const vacancy = await Vacancy.findOne({ studentId, cycleId }).populate('classroomId').lean();
+  if (vacancy?.classroomId?.campusId) return vacancy.classroomId.campusId;
 
   return null;
 }
@@ -590,7 +579,7 @@ export async function getStudentDetailService(studentId, cycleId) {
     : null;
 
   const activeVacancy = cycle
-    ? await Vacancy.findOne({ studentId: student._id, cycleId: cycle._id, endDate: null })
+    ? await Vacancy.findOne({ studentId: student._id, cycleId: cycle._id })
       .populate({ path: 'classroomId', populate: { path: 'campusId' } })
       .lean()
     : null;
@@ -624,8 +613,6 @@ export async function getStudentDetailService(studentId, cycleId) {
       _id: activeVacancy._id,
       cycleId: activeVacancy.cycleId,
       classroomId: activeVacancy.classroomId,
-      startDate: activeVacancy.startDate,
-      endDate: activeVacancy.endDate || null,
       notes: activeVacancy.notes || null,
     } : null,
   };
@@ -656,14 +643,9 @@ export async function updateStudentCycleStatusService(studentId, { cycleId, stat
   if (!campusId) throw new ApiError(400, 'No se pudo determinar campus para el estado del ciclo');
 
   if (status === 'TRANSFERRED' || status === 'ABSENT') {
-    const activeVacancy = await Vacancy.findOne({ studentId, cycleId, endDate: null }).lean();
-    if (activeVacancy) {
-      await Vacancy.updateOne(
-        { _id: activeVacancy._id },
-        { $set: { endDate: now, notes: composeNotes(activeVacancy.notes, reason) } }
-      );
-    }
+    await Vacancy.deleteOne({ studentId, cycleId });
   }
+
 
   const existingCycle = await StudentCycle.findOne({ studentId, cycleId, campusId }).lean();
 
@@ -714,38 +696,38 @@ export async function changeStudentClassroomService(studentId, { cycleId, classr
       throw new ApiError(400, 'El aula no pertenece al ciclo indicado');
     }
 
-    const activeVacancy = await Vacancy.findOne({ studentId, cycleId, endDate: null }).session(session).lean();
+    const activeVacancy = await Vacancy.findOne({ studentId, cycleId }).session(session).lean();
+    const hasClassroomChange = !activeVacancy || String(activeVacancy.classroomId) !== String(classroomId);
 
-    if (!activeVacancy || String(activeVacancy.classroomId) !== String(classroomId)) {
-      const capacity = await getClassroomCapacityService({ classroomId, cycleId });
-      if (capacity.reservedCount >= capacity.totalCapacity) {
-        throw new ApiError(409, 'No hay vacantes disponibles en el aula seleccionada');
-      }
+    if (!hasClassroomChange) {
+      const hydratedVacancy = await Vacancy.findById(activeVacancy._id)
+        .populate({ path: 'classroomId', populate: { path: 'campusId' } })
+        .session(session)
+        .lean();
+
+      return { hydratedVacancy, campusId: classroom.campusId, changed: false };
     }
 
-    const now = new Date();
-    if (activeVacancy && String(activeVacancy.classroomId) !== String(classroomId)) {
-      await Vacancy.updateOne(
-        { _id: activeVacancy._id },
-        { $set: { endDate: now, notes: composeNotes(activeVacancy.notes, reason) } },
-        { session }
-      );
+    const capacity = await getClassroomCapacityService({ classroomId, cycleId });
+    if (capacity.reservedCount >= capacity.totalCapacity) {
+      throw new ApiError(409, 'No hay vacantes disponibles en el aula seleccionada');
     }
 
-    let vacancy = activeVacancy;
-    if (!activeVacancy || String(activeVacancy.classroomId) !== String(classroomId)) {
-      const [createdVacancy] = await Vacancy.create([
-        {
-          studentId,
-          cycleId,
+    const vacancy = await Vacancy.findOneAndUpdate(
+      { studentId, cycleId },
+      {
+        $setOnInsert: { studentId, cycleId },
+        $set: {
           classroomId,
-          startDate: now,
-          endDate: null,
-          notes: composeNotes(undefined, reason),
+          ...(reason ? { notes: composeNotes(activeVacancy?.notes, reason) } : {}),
         },
-      ], { session });
-      vacancy = createdVacancy;
-    }
+      },
+      {
+        new: true,
+        upsert: true,
+        session,
+      }
+    );
 
     const existingCycle = await StudentCycle.findOne({ studentId, cycleId }).session(session).lean();
 
@@ -763,10 +745,10 @@ export async function changeStudentClassroomService(studentId, { cycleId, classr
       .session(session)
       .lean();
 
-    return { hydratedVacancy, campusId: classroom.campusId };
+    return { hydratedVacancy, campusId: classroom.campusId, changed: true };
   });
 
-  if (userId) {
+  if (userId && payload.changed) {
     await registerAuditLog({
       entityType: 'CLASSROOM_CHANGE',
       entityId: payload.hydratedVacancy._id,

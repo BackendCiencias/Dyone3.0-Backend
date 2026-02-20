@@ -186,11 +186,11 @@ async function resolveCampusAndCycle({ campusArg, cycleArg, campusText, level, g
   return { campus, cycle };
 }
 
-async function ensureFamilyStub(studentId, notes = '') {
+async function ensureFamilyStub(studentId) {
   const family = await Family.create({
     tutorIds: [],
     studentIds: studentId ? [studentId] : [],
-    notes: notes ? `Stub import students. ${notes}` : 'Stub import students.',
+    notes: 'Creado automáticamente por importación inicial.',
   });
 
   return family;
@@ -266,7 +266,7 @@ async function run() {
         });
 
         if (!classroom) {
-          throw new Error('Classroom no existe para campus + cycle + level + grade + section');
+          throw new Error('No existe aula para campus + ciclo + nivel + grado + sección');
         }
 
         let student = await Student.findOne({ internalCode: data.internalCode });
@@ -288,7 +288,6 @@ async function run() {
             lastNames: data.lastNames,
             ...(data.dni ? { dni: data.dni } : {}),
             gender: 'Masculino',
-            notes: data.notes || undefined,
           });
           createdSomething = true;
         } else {
@@ -297,7 +296,6 @@ async function run() {
 
           if (person.names !== data.names) personSetUpdates.names = data.names;
           if (person.lastNames !== data.lastNames) personSetUpdates.lastNames = data.lastNames;
-          if (data.notes && person.notes !== data.notes) personSetUpdates.notes = data.notes;
 
           if (data.dni && person.dni !== data.dni) {
             personSetUpdates.dni = data.dni;
@@ -317,13 +315,13 @@ async function run() {
         }
 
         if (!student) {
-          const family = await ensureFamilyStub(null, data.notes);
+          const family = await ensureFamilyStub(null);
 
           student = await Student.create({
             personId: person._id,
             familyId: family._id,
             internalCode: data.internalCode,
-            notes: data.notes || undefined,
+            internalNotes: data.notes || undefined,
           });
 
           await Family.updateOne({ _id: family._id }, { $addToSet: { studentIds: student._id } });
@@ -331,7 +329,7 @@ async function run() {
         } else {
           const studentUpdates = {};
           if (String(student.personId) !== String(person._id)) studentUpdates.personId = person._id;
-          if (data.notes && student.notes !== data.notes) studentUpdates.notes = data.notes;
+          if (data.notes && student.internalNotes !== data.notes) studentUpdates.internalNotes = data.notes;
 
           if (Object.keys(studentUpdates).length) {
             await Student.updateOne({ _id: student._id }, { $set: studentUpdates });
@@ -340,7 +338,7 @@ async function run() {
         }
 
         if (!student.familyId) {
-          const family = await ensureFamilyStub(student._id, data.notes);
+          const family = await ensureFamilyStub(student._id);
           await Student.updateOne({ _id: student._id }, { $set: { familyId: family._id } });
           createdSomething = true;
         } else {
@@ -374,14 +372,11 @@ async function run() {
             studentId: student._id,
             cycleId: cycle._id,
             classroomId: classroom._id,
-            endDate: null,
-            notes: data.notes || undefined,
           });
           createdSomething = true;
         } else {
           const vacancyUpdates = {};
           if (String(vacancy.classroomId) !== String(classroom._id)) vacancyUpdates.classroomId = classroom._id;
-          if (vacancy.endDate !== null) vacancyUpdates.endDate = null;
 
           if (Object.keys(vacancyUpdates).length) {
             await Vacancy.updateOne({ _id: vacancy._id }, { $set: vacancyUpdates });

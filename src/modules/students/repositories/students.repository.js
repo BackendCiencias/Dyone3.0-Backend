@@ -20,7 +20,6 @@ export async function findStudentCampusById(studentId, cycleId = null) {
   if (latestCycle?.campusId) return hydrateCampus(latestCycle.campusId);
 
   const latestVacancy = await Vacancy.findOne({ studentId, ...cycleFilter })
-    .sort({ startDate: -1 })
     .populate({ path: 'classroomId', select: 'campusId' })
     .lean();
 

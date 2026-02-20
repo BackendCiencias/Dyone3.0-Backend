@@ -198,6 +198,35 @@ async function resolveTutorPerson(data, normalizedPhones) {
   return { person, created, updated };
 }
 
+
+async function findFamilyByTutorPersonId(tutorPersonId) {
+  const tutors = await Tutor.find({ tutorPersonId }).select('_id').lean();
+  if (!tutors.length) return null;
+
+  return Family.findOne({ tutorIds: { $in: tutors.map((row) => row._id) } });
+}
+
+async function linkStudentToFamily(student, family, previousFamilyId = null) {
+  await Student.updateOne({ _id: student._id }, { $set: { familyId: family._id } });
+
+  await Family.updateOne(
+    { _id: family._id },
+    { $addToSet: { studentIds: student._id } }
+  );
+
+  if (!previousFamilyId || String(previousFamilyId) === String(family._id)) return;
+
+  await Family.updateOne(
+    { _id: previousFamilyId },
+    { $pull: { studentIds: student._id } }
+  );
+
+  const previousFamily = await Family.findById(previousFamilyId).lean();
+  if (previousFamily && (!previousFamily.studentIds || previousFamily.studentIds.length === 0) && (!previousFamily.tutorIds || previousFamily.tutorIds.length === 0)) {
+    await Family.deleteOne({ _id: previousFamilyId });
+  }
+}
+
 async function run() {
   const args = parseArgs(process.argv);
 
@@ -291,7 +320,6 @@ async function run() {
         let tutor = await Tutor.findOne({
           studentId: student._id,
           tutorPersonId: person._id,
-          relationship,
         });
 
         let createdSomething = false;
@@ -336,12 +364,33 @@ async function run() {
           { $set: { isPrimary: false } }
         );
 
-        if (student.familyId) {
-          await Family.updateOne(
-            { _id: student.familyId },
-            { $addToSet: { tutorIds: tutor._id } }
-          );
+        let targetFamily = null;
+        const familyByTutor = await findFamilyByTutorPersonId(person._id);
+
+        if (familyByTutor) {
+          targetFamily = familyByTutor;
+          if (!student.familyId || String(student.familyId) !== String(familyByTutor._id)) {
+            await linkStudentToFamily(student, familyByTutor, student.familyId || null);
+            student.familyId = familyByTutor._id;
+          }
+        } else if (student.familyId) {
+          targetFamily = await Family.findById(student.familyId);
         }
+
+        if (!targetFamily) {
+          targetFamily = await Family.create({
+            tutorIds: [],
+            studentIds: [student._id],
+            notes: 'Creado automáticamente por importación inicial.',
+          });
+          await Student.updateOne({ _id: student._id }, { $set: { familyId: targetFamily._id } });
+          student.familyId = targetFamily._id;
+        }
+
+        await Family.updateOne(
+          { _id: targetFamily._id },
+          { $addToSet: { tutorIds: tutor._id, studentIds: student._id } }
+        );
 
         if (createdSomething) report.created += 1;
         else if (updatedSomething) report.updated += 1;
@@ -389,7 +438,7 @@ async function run() {
     console.log(`Total filas: ${report.totalRows}`);
     console.log(`Creados: ${report.created}`);
     console.log(`Actualizados: ${report.updated}`);
-    console.log(`Skipped: ${report.skipped}`);
+    console.log(`Omitidos: ${report.skipped}`);
     console.log(`Errores: ${report.errors}`);
     console.log(`Logs: ${logsDir}`);
 

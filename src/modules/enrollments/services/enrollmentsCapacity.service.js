@@ -9,7 +9,6 @@ export async function getCapacityForClassroom({ classroomId, cycleId, totalCapac
   const occupied = await Vacancy.countDocuments({
     classroomId: toObjectId(classroomId),
     cycleId: toObjectId(cycleId),
-    endDate: null,
   });
 
   return {
@@ -30,7 +29,6 @@ export async function getCapacityForClassrooms(classrooms = []) {
       $match: {
         classroomId: { $in: classroomIds },
         cycleId: { $in: cycleIds.map((id) => toObjectId(id)) },
-        endDate: null,
       },
     },
     { $group: { _id: '$classroomId', occupied: { $sum: 1 } } },

@@ -1,7 +1,7 @@
 import { asyncHandler } from '../../utils/asyncHandler.js';
 import {
   createStudentService,
-  findStudentByDniService,
+  searchStudentAutocompleteService,
   searchStudentsService,
   getStudentSummaryService,
   listStudentsByCampusService,
@@ -32,15 +32,8 @@ export const createStudentWithPerson = asyncHandler(async (req, res) => {
 });
 
 export const searchStudent = asyncHandler(async (req, res) => {
-  const { dni } = req.query;
-  if (!dni) {
-    return res.status(400).json({ message: 'DNI requerido' });
-  }
-  const student = await findStudentByDniService(dni);
-  if (!student) {
-    return res.status(404).json({ message: 'Estudiante no encontrado' });
-  }
-  res.json(student);
+  const students = await searchStudentAutocompleteService(req.validatedQuery || req.query);
+  res.json(students);
 });
 
 export const listStudents = asyncHandler(async (req, res) => {

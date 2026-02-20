@@ -15,6 +15,7 @@ import {
   studentFinancialParamsSchema,
   studentIdentitySchema,
   studentInternalNotesSchema,
+  studentSearchQuerySchema,
 } from './students.schemas.js';
 import {
   createStudent,
@@ -46,7 +47,7 @@ const coreSecretaryRoles = [
 
 router.use(authMiddleware);
 
-router.get('/search', requireRoles(['ADMIN', 'SECRETARY', 'DIRECTOR', 'PROMOTER', ...coreSecretaryRoles]), searchStudent);
+router.get('/search', requireRoles(['ADMIN', 'SECRETARY', 'DIRECTOR', 'PROMOTER', ...coreSecretaryRoles]), validateRequest({ query: studentSearchQuerySchema }), searchStudent);
 router.get('/', requireRoles(['ADMIN', 'PROMOTER']), listStudents);
 router.get('/campus/:campus', requireRoles(['ADMIN', 'PROMOTER', 'DIRECTOR', ...coreSecretaryRoles]), listStudentsByCampus);
 router.get('/:id/summary', requireRoles(['ADMIN', 'PROMOTER', 'DIRECTOR', ...coreSecretaryRoles]), studentSummary);

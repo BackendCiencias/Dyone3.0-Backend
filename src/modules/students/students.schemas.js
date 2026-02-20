@@ -68,3 +68,10 @@ export const studentInternalNotesSchema = z.object({
 export const studentFinancialParamsSchema = z.object({
   studentId: objectIdSchema,
 });
+
+
+export const studentSearchQuerySchema = z.object({
+  q: z.string().trim().optional(),
+  dni: z.string().trim().optional(),
+  limit: z.union([z.string(), z.number()]).optional(),
+});

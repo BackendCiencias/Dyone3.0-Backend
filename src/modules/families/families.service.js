@@ -174,8 +174,8 @@ export async function createFamilyService({ tutors, students, notes }) {
   return Family.findById(family._id).populate({ path: 'studentIds', populate: { path: 'personId' } });
 }
 
-export async function listFamiliesBaseService({ limit = 20, cursor, campus } = {}) {
-  const normalizedLimit = Math.max(1, Math.min(100, Number(limit) || 20));
+export async function listFamiliesBaseService({ limit = 12, cursor, campus } = {}) {
+  const normalizedLimit = Math.max(1, Math.min(100, Number(limit) || 12));
 
   const families = await findFamiliesBase({
     limit: normalizedLimit,
@@ -188,6 +188,8 @@ export async function listFamiliesBaseService({ limit = 20, cursor, campus } = {
 
   const items = itemsSource.map((family) => {
     const primaryTutor = (family.tutorIds || []).find((tutor) => tutor.isPrimary) || family.tutorIds?.[0] || null;
+    const students = (family?.studentIds || []) || null;
+
 
     return {
       familyId: String(family._id),
@@ -197,6 +199,7 @@ export async function listFamiliesBaseService({ limit = 20, cursor, campus } = {
         dni: primaryTutor.tutorPersonId?.dni || null,
         phone: primaryTutor.tutorPersonId?.phone || null,
       } : null,
+      students: students || [],
       studentsCount: family.studentIds?.length || 0,
       tutorsCount: family.tutorIds?.length || 0,
       updatedAt: family.updatedAt || family.createdAt || null,
@@ -219,6 +222,7 @@ export async function searchFamiliesService({ q, limit = 20, cursor, campus }) {
     const fields = [
       family._id,
       family.notes,
+      family?.studentIds || [],
       ...(family.studentIds || []).flatMap((student) => [
         student.internalCode,
         student.personId?.names,
@@ -252,6 +256,7 @@ export async function searchFamiliesService({ q, limit = 20, cursor, campus }) {
     return {
       familyId: String(family._id),
       notes: family.notes || null,
+      students: family?.studentIds || [],
       studentsCount: family.studentIds?.length || 0,
       tutorsCount: family.tutorIds?.length || 0,
       primaryTutor: primaryTutor ? {

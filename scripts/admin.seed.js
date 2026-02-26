@@ -25,7 +25,7 @@ const usersToSeed = [
   {
     email: 'secretaria@cienciasperu.edu.pe',
     roles: ['SECRETARY'],
-    campusScope: ['CIENCIAS', 'CIMAS'],
+    campusScope: ['CIENCIAS', 'CIMAS','CIENCIAS_APLICADAS'],
     person: {
       names: 'Secretaria',
       lastNames: 'Principal',
@@ -34,12 +34,12 @@ const usersToSeed = [
     },
   },
   {
-    email: 'secretaria.viewer@cienciasperu.edu.pe',
+    email: 'secretaria_aplicadas@cienciasperu.edu.pe',
     roles: ['SECRETARY_VIEWER'],
-    campusScope: ['CIENCIAS'],
+    campusScope: ['CIENCIAS_APLICADAS'],
     person: {
       names: 'Secretaria',
-      lastNames: 'Viewer',
+      lastNames: 'Aplicadas',
       dni: '00000003',
       gender: 'F',
     },

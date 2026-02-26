@@ -13,6 +13,7 @@ import { ApiError } from '../../utils/errors.js';
 import { findFamiliesBase } from './repositories/families.repository.js';
 import { runInTransaction } from '../../shared/dbSession.js';
 import { registerAuditLog } from '../../shared/audit.service.js';
+import { buildAccentInsensitiveRegex, normalizeSearchTerm } from '../../utils/search.js';
 
 // Encuentra o crea una persona por DNI
 async function findOrCreatePerson(personData) {
@@ -30,39 +31,6 @@ function normalizeDni(dni) {
   const lowered = normalized.toLowerCase();
   if (['null', 'undefined', 'n/a', 'na', '-'].includes(lowered)) return undefined;
   return normalized;
-}
-
-function normalizeString(value) {
-  return String(value || '')
-    .normalize('NFD')
-    .replace(/\p{Diacritic}/gu, '')
-    .toLowerCase()
-    .trim();
-}
-
-function escapeRegExp(value) {
-  return value.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
-}
-
-function buildAccentInsensitiveRegex(term) {
-  const normalized = String(term || '').trim().normalize('NFD').replace(/[\u0300-\u036f]/g, '');
-  if (!normalized) return null;
-
-  const map = {
-    a: '[aáàäâãAÁÀÄÂÃ]',
-    e: '[eéèëêEÉÈËÊ]',
-    i: '[iíìïîIÍÌÏÎ]',
-    o: '[oóòöôõOÓÒÖÔÕ]',
-    u: '[uúùüûUÚÙÜÛ]',
-    n: '[nñNÑ]',
-  };
-
-  const pattern = normalized
-    .split('')
-    .map((char) => map[char.toLowerCase()] || escapeRegExp(char))
-    .join('');
-
-  return new RegExp(pattern, 'i');
 }
 
 async function resolvePreferredCycleId() {
@@ -156,7 +124,6 @@ async function buildFamiliesResponse(families) {
       familyId: String(family._id),
       notes: family.notes || null,
       students,
-      children: students,
       studentsCount: family.studentIds?.length || 0,
       tutorsCount: family.tutorIds?.length || 0,
       primaryTutor: primaryTutor ? {
@@ -340,11 +307,12 @@ export async function listFamiliesBaseService({ limit = 5, cursor, campus } = {}
 }
 
 export async function searchFamiliesService({ q, limit = 5, cursor, campus }) {
-  const normalizedTerm = normalizeString(q);
+  const normalizedTerm = normalizeSearchTerm(q);
   if (!normalizedTerm) throw new ApiError(400, 'q es requerido');
 
+  // Nota: mantenemos clamp 1..10 para no romper paginación histórica del front.
   const normalizedLimit = Math.max(1, Math.min(10, Number(limit) || 5));
-  const queryRegex = buildAccentInsensitiveRegex(q);
+  const queryRegex = buildAccentInsensitiveRegex(normalizedTerm);
 
   const personIds = queryRegex
     ? (await Person.find({

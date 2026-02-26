@@ -16,6 +16,7 @@ import { ApiError } from '../../utils/errors.js';
 import { getClassroomCapacityService } from '../enrollments/enrollments.service.js';
 import { runInTransaction } from '../../shared/dbSession.js';
 import { registerAuditLog } from '../../shared/audit.service.js';
+import { buildAccentInsensitiveRegex, normalizeSearchTerm } from '../../utils/search.js';
 import {
   findStudentWithPersonById,
   findPersonByDni,
@@ -261,10 +262,6 @@ export async function findStudentByDniService(dni) {
   return student;
 }
 
-function normalizeSearchTerm(value) {
-  return String(value || '').trim().replace(/\s+/g, ' ');
-}
-
 function parseSearchLimit(limit) {
   const parsed = Number(limit);
   if (!Number.isFinite(parsed) || parsed <= 0) return 5;
@@ -283,47 +280,86 @@ export async function searchStudentAutocompleteService({ q, dni, limit }) {
   if (!term) return [];
 
   const normalizedLimit = parseSearchLimit(limit);
+  const peopleFetchLimit = normalizedLimit * 3;
+  const qRegex = buildAccentInsensitiveRegex(normalizedQ);
+  const dniRegex = buildAccentInsensitiveRegex(normalizedDni || normalizedQ);
 
-  let personFilter;
+  let personFilter = null;
   if (normalizedDni) {
-    personFilter = normalizedDni.length === 8
+    personFilter = normalizedDni.length === 8 && isNumericTerm(normalizedDni)
       ? { dni: normalizedDni }
-      : { dni: new RegExp(escapeRegExp(normalizedDni), 'i') };
-  } else if (isNumericTerm(normalizedQ)) {
-    personFilter = { dni: new RegExp(escapeRegExp(normalizedQ), 'i') };
-  } else {
-    const regex = new RegExp(escapeRegExp(normalizedQ), 'i');
-    personFilter = {
-      $or: [{ names: regex }, { lastNames: regex }],
-    };
+      : { dni: dniRegex };
+  } else if (qRegex) {
+    const orFilters = [{ names: qRegex }, { lastNames: qRegex }];
+    if (/\d/.test(normalizedQ) && dniRegex) {
+      orFilters.push({ dni: dniRegex });
+    }
+    personFilter = { $or: orFilters };
   }
 
-  const people = await Person.find(personFilter)
-    .select('_id')
-    .limit(normalizedLimit)
-    .lean();
+  const [people, codeMatchedStudents] = await Promise.all([
+    personFilter
+      ? Person.find(personFilter)
+        .select('_id')
+        .limit(peopleFetchLimit)
+        .lean()
+      : Promise.resolve([]),
+    qRegex
+      ? Student.find({ $or: [{ internalCode: qRegex }, { bankCode: qRegex }] })
+        .select('_id personId')
+        .limit(peopleFetchLimit)
+        .lean()
+      : Promise.resolve([]),
+  ]);
 
-  if (!people.length) return [];
+  const personIdSet = new Set(people.map((person) => String(person._id)));
+  codeMatchedStudents.forEach((student) => {
+    if (student.personId) personIdSet.add(String(student.personId));
+  });
 
-  const students = await Student.find({ personId: { $in: people.map((person) => person._id) } })
+  if (!personIdSet.size) return [];
+
+  const orderedPersonIds = Array.from(personIdSet).map((id) => new mongoose.Types.ObjectId(id));
+  const students = await Student.find({ personId: { $in: orderedPersonIds } })
     .select('_id personId familyId')
-    .sort({ _id: 1 })
-    .limit(normalizedLimit)
     .populate({ path: 'personId', select: 'names lastNames dni' })
     .lean();
 
-  return students.map((student) => ({
-    _id: student._id,
-    personId: student.personId
-      ? {
+  const mapped = students
+    .filter((student) => student.personId)
+    .map((student) => ({
+      _id: student._id,
+      personId: {
         _id: student.personId._id,
         names: student.personId.names,
         lastNames: student.personId.lastNames,
         dni: student.personId.dni ?? null,
-      }
-      : null,
-    familyId: student.familyId || null,
-  }));
+      },
+      familyId: student.familyId || null,
+    }));
+
+  if (normalizedDni && normalizedDni.length === 8 && isNumericTerm(normalizedDni)) {
+    mapped.sort((a, b) => {
+      const aExact = a.personId?.dni === normalizedDni ? 1 : 0;
+      const bExact = b.personId?.dni === normalizedDni ? 1 : 0;
+      if (aExact !== bExact) return bExact - aExact;
+      return String(a._id).localeCompare(String(b._id));
+    });
+  } else {
+    mapped.sort((a, b) => {
+      const aLastName = normalizeSearchTerm(a.personId?.lastNames || '');
+      const bLastName = normalizeSearchTerm(b.personId?.lastNames || '');
+      if (aLastName !== bLastName) return aLastName.localeCompare(bLastName, 'es');
+
+      const aNames = normalizeSearchTerm(a.personId?.names || '');
+      const bNames = normalizeSearchTerm(b.personId?.names || '');
+      if (aNames !== bNames) return aNames.localeCompare(bNames, 'es');
+
+      return String(a._id).localeCompare(String(b._id));
+    });
+  }
+
+  return mapped.slice(0, normalizedLimit);
 }
 
 export async function searchStudentsService({ q, limit = 20, cursor }) {

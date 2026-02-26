@@ -7,6 +7,8 @@ const studentSchema = new mongoose.Schema(
 
     internalCode: { type: String, required: true, unique: true, index: true },
 
+    bankCode: { type: String, unique: true, sparse: true, index: true, trim: true },
+
     isActive: { type: Boolean, default: true },
     entryDate: { type: Date },
     notes: { type: String },

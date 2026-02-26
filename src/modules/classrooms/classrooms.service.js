@@ -12,7 +12,6 @@ function buildStatus({ capacity, available }) {
 function campusSortCode(value) {
   if (!value) return 'ZZZ';
 
-  if (value === 'CIENCIAS_PRI' || value === 'CIENCIAS_SEC') return 'CIENCIAS';
   if (value.startsWith('CIENCIAS')) return value;
   return value;
 }

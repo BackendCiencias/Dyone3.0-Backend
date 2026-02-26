@@ -7,7 +7,7 @@ const personSchema = z.object({
   names: z.string().trim().min(1),
   lastNames: z.string().trim().min(1),
   dni: nullableString,
-  gender: z.enum(['Masculino', 'Femenino']),
+  gender: z.enum(['M', 'F']),
   birthDate: z.string().optional(),
   phone: z.string().optional(),
   address: z.string().optional(),
@@ -54,7 +54,7 @@ export const studentIdentitySchema = z.object({
     z.literal(''),
   ]).optional(),
   birthDate: z.string().datetime().optional(),
-  gender: z.enum(['Masculino', 'Femenino']).optional(),
+  gender: z.enum(['M', 'F']).optional(),
   phone: z.string().trim().min(1).optional(),
   address: z.string().trim().min(1).optional(),
 }).refine((payload) => Object.keys(payload).length > 0, {
@@ -67,6 +67,10 @@ export const studentInternalNotesSchema = z.object({
 
 export const studentFinancialParamsSchema = z.object({
   studentId: objectIdSchema,
+});
+
+export const studentBankCodeSchema = z.object({
+  bankCode: z.union([z.string(), z.null()]).optional(),
 });
 
 

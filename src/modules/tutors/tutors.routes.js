@@ -8,7 +8,7 @@ import { upsertTutor } from './tutors.controller.js';
 const router = Router();
 
 router.use(authMiddleware);
-router.use(requireRoles(['ADMIN', 'SECRETARY', 'DIRECTOR', 'PROMOTER', 'SECRETARY_CIENCIAS_SEC', 'SECRETARY_CIENCIAS_PRIM', 'SECRETARY_CIMAS']));
+router.use(requireRoles(['ADMIN', 'SECRETARY', 'DIRECTOR', 'PROMOTER']));
 
 router.post('/', validate(tutorCreateSchema), upsertTutor);
 router.post('/student/:studentId', (req, _res, next) => { req.body.studentId = req.params.studentId; next(); }, validate(tutorCreateSchema), upsertTutor);

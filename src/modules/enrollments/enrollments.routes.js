@@ -15,28 +15,22 @@ import {
   listEnrollments,
 } from './enrollments.controller.js';
 
-const coreSecretaryRoles = [
-  'SECRETARY',
-  'SECRETARY_CIENCIAS_SEC',
-  'SECRETARY_CIENCIAS_PRIM',
-  'SECRETARY_CIMAS',
-];
-
 const router = Router();
+const ENROLLMENT_WRITE_ROLES = ['ADMIN', 'SECRETARY', 'DIRECTOR', 'PROMOTER'];
+const ENROLLMENT_READ_ROLES = [...ENROLLMENT_WRITE_ROLES, 'SECRETARY_VIEWER', 'AUXILIAR'];
 
-// Proteger todas las rutas de familias
 router.use(authMiddleware);
-router.use(requireRoles(['ADMIN', 'SECRETARY', 'DIRECTOR', 'PROMOTER', ...coreSecretaryRoles]));
 
-router.post('/', validate(enrollmentCreateSchema), createEnrollment);
+router.post('/', requireRoles(ENROLLMENT_WRITE_ROLES), validate(enrollmentCreateSchema), createEnrollment);
 router.post('/:id/confirm',
+  requireRoles(ENROLLMENT_WRITE_ROLES),
   authorizeByCampusScope(async (req) => findEnrollmentCampusById(req.params.id)),
   validateRequest({ params: enrollmentIdParamsSchema, body: enrollmentConfirmSchema }),
   confirmEnrollment
 );
-router.get('/', attachCampusScope(), validateRequest({ query: enrollmentListQuerySchema }), listEnrollments);
-router.get('/classrooms/:classroomId/capacity', getClassroomCapacity);
-router.get('/capacity', getCampusCapacity);
-router.get('/:id', getEnrollmentById);
+router.get('/', requireRoles(ENROLLMENT_READ_ROLES), attachCampusScope(), validateRequest({ query: enrollmentListQuerySchema }), listEnrollments);
+router.get('/classrooms/:classroomId/capacity', requireRoles(ENROLLMENT_READ_ROLES), getClassroomCapacity);
+router.get('/capacity', requireRoles(ENROLLMENT_READ_ROLES), getCampusCapacity);
+router.get('/:id', requireRoles(ENROLLMENT_READ_ROLES), getEnrollmentById);
 
 export default router;

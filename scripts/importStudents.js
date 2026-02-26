@@ -13,11 +13,14 @@ import { Student } from '../src/models/student.model.js';
 import { StudentCycle } from '../src/models/studentCycle.model.js';
 import { Vacancy } from '../src/models/vacancy.model.js';
 
+const genderSchema = z.enum(['M', 'F']).or(z.enum(['m', 'f'])).transform((value) => value.toUpperCase());
+
 const rowSchema = z.object({
   internalCode: z.string().trim().min(1, 'Código interno es obligatorio'),
   lastNames: z.string().min(1, 'Apellidos es obligatorio'),
   names: z.string().min(1, 'Nombres es obligatorio'),
   dni: z.string().trim().optional().or(z.literal('')),
+  gender: genderSchema.optional().or(z.literal('')).transform((value) => (value ? value.toUpperCase() : undefined)),
   campusText: z.string().trim().optional().or(z.literal('')),
   grade: z.string().min(1, 'Grado es obligatorio'),
   section: z.string().min(1, 'Sección es obligatoria'),
@@ -112,6 +115,24 @@ function normalizeDni(value) {
   return normalized;
 }
 
+function normalizeLastNames(input) {
+  return String(input || '')
+    .trim()
+    .replace(/\s+/g, ' ')
+    .toLocaleUpperCase('es-PE');
+}
+
+function normalizeNames(input) {
+  return String(input || '')
+    .trim()
+    .replace(/\s+/g, ' ')
+    .toLocaleLowerCase('es-PE')
+    .split(' ')
+    .filter(Boolean)
+    .map((token) => token.charAt(0).toLocaleUpperCase('es-PE') + token.slice(1))
+    .join(' ');
+}
+
 
 function mapRow(rawRow) {
   return {
@@ -119,6 +140,7 @@ function mapRow(rawRow) {
     lastNames: (rawRow.apellidos || '').trim(),
     names: (rawRow.nombres || '').trim(),
     dni: normalizeDni(rawRow.dni),
+    gender: (rawRow.genero || '').trim(),
     campusText: (rawRow.sede || '').trim(),
     grade: String(rawRow.grado || '').trim(),
     section: String(rawRow.seccion || '').trim().toUpperCase(),
@@ -283,19 +305,27 @@ async function run() {
         }
 
         if (!person) {
+          if (!data.gender) {
+            throw new Error('Género es obligatorio (M/F) para crear persona nueva');
+          }
+
           person = await Person.create({
-            names: data.names,
-            lastNames: data.lastNames,
+            names: normalizeNames(data.names),
+            lastNames: normalizeLastNames(data.lastNames),
             ...(data.dni ? { dni: data.dni } : {}),
-            gender: 'Masculino',
+            gender: data.gender,
           });
           createdSomething = true;
         } else {
           const personSetUpdates = {};
           const personUnsetUpdates = {};
 
-          if (person.names !== data.names) personSetUpdates.names = data.names;
-          if (person.lastNames !== data.lastNames) personSetUpdates.lastNames = data.lastNames;
+          const normalizedNames = normalizeNames(data.names);
+          const normalizedLastNames = normalizeLastNames(data.lastNames);
+
+          if (person.names !== normalizedNames) personSetUpdates.names = normalizedNames;
+          if (person.lastNames !== normalizedLastNames) personSetUpdates.lastNames = normalizedLastNames;
+          if (data.gender && person.gender !== data.gender) personSetUpdates.gender = data.gender;
 
           if (data.dni && person.dni !== data.dni) {
             personSetUpdates.dni = data.dni;

@@ -3,7 +3,7 @@ import { z } from 'zod';
 // Esquemas de validación para el módulo de administración
 
 export const campusCreateSchema = z.object({
-  code: z.enum(['CIMAS', 'CIENCIAS_PRI', 'CIENCIAS_SEC']),
+  code: z.enum(['CIENCIAS', 'CIENCIAS_APLICADAS', 'CIMAS']),
   name: z.string().min(1),
   isActive: z.boolean().optional().default(true),
 });

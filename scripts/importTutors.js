@@ -17,6 +17,10 @@ const rowSchema = z.object({
   lastNames: z.string().trim().optional().or(z.literal('')),
   names: z.string().trim().optional().or(z.literal('')),
   dni: z.string().trim().optional(),
+  gender: z.preprocess(
+    (value) => String(value || '').trim().toUpperCase(),
+    z.enum(['M', 'F'], { message: 'gender inválido (solo M o F)' })
+  ),
   phones: z.string().trim().optional().or(z.literal('')),
   notes: z.string().trim().optional().or(z.literal('')),
 });
@@ -115,6 +119,20 @@ function normalizePhones(value) {
     .filter(Boolean);
 }
 
+function formatLastNames(value) {
+  return String(value || '').trim().toUpperCase();
+}
+
+function formatNames(value) {
+  return String(value || '')
+    .trim()
+    .toLowerCase()
+    .split(' ')
+    .filter(Boolean)
+    .map((w) => w.charAt(0).toUpperCase() + w.slice(1))
+    .join(' ');
+}
+
 function mapRow(rawRow) {
   return {
     studentCod: (rawRow.studentcod || '').trim(),
@@ -122,6 +140,7 @@ function mapRow(rawRow) {
     lastNames: (rawRow.lastnames || '').trim(),
     names: (rawRow.names || '').trim(),
     dni: normalizeDni(rawRow.dni),
+    gender: (rawRow.gender || '').trim(),
     phones: (rawRow.phones || '').trim(),
     notes: (rawRow.notes || '').trim(),
   };
@@ -134,6 +153,9 @@ function toTutorRelationship(relationship) {
 }
 
 async function resolveTutorPerson(data, normalizedPhones) {
+  const formattedNames = formatNames(data.names);
+  const formattedLastNames = formatLastNames(data.lastNames);
+
   let person = null;
   let created = false;
   let updated = false;
@@ -142,10 +164,10 @@ async function resolveTutorPerson(data, normalizedPhones) {
     person = await Person.findOne({ dni: data.dni });
   }
 
-  if (!person && !data.dni && data.names && data.lastNames) {
+  if (!person && !data.dni && formattedNames && formattedLastNames) {
     const candidates = await Person.find({
-      names: data.names,
-      lastNames: data.lastNames,
+      names: formattedNames,
+      lastNames: formattedLastNames,
     }).limit(2);
 
     if (candidates.length === 1) {
@@ -160,17 +182,17 @@ async function resolveTutorPerson(data, normalizedPhones) {
     : '';
 
   if (!person) {
-    if (!data.names || !data.lastNames) {
+    if (!formattedNames || !formattedLastNames) {
       throw new Error('No se puede crear Person del tutor: faltan nombres/apellidos y no existe dni previo');
     }
 
     const personNotes = [additionalPhonesNote].filter(Boolean).join(' | ') || undefined;
 
     person = await Person.create({
-      names: data.names,
-      lastNames: data.lastNames,
+      names: formattedNames,
+      lastNames: formattedLastNames,
       ...(data.dni ? { dni: data.dni } : {}),
-      gender: 'M',
+      gender: data.gender,
       ...(phone ? { phone } : {}),
       ...(personNotes ? { notes: personNotes } : {}),
     });
@@ -181,9 +203,10 @@ async function resolveTutorPerson(data, normalizedPhones) {
 
   const personSet = {};
 
-  if (data.names && person.names !== data.names) personSet.names = data.names;
-  if (data.lastNames && person.lastNames !== data.lastNames) personSet.lastNames = data.lastNames;
+  if (formattedNames && person.names !== formattedNames) personSet.names = formattedNames;
+  if (formattedLastNames && person.lastNames !== formattedLastNames) personSet.lastNames = formattedLastNames;
   if (data.dni && person.dni !== data.dni) personSet.dni = data.dni;
+  if (person.gender !== data.gender) personSet.gender = data.gender;
   if (phone && person.phone !== phone) personSet.phone = phone;
 
   if (additionalPhonesNote && !(person.notes || '').includes(additionalPhonesNote)) {

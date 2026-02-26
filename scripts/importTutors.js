@@ -9,7 +9,18 @@ import { Person } from '../src/models/person.model.js';
 import { Tutor } from '../src/models/tutor.model.js';
 import { Family } from '../src/models/family.model.js';
 
-const ALLOWED_RELATIONSHIPS = ['MADRE', 'PADRE', 'TUTOR', 'APODERADO'];
+const RELATIONSHIP_DICTIONARY = {
+  PADRE: 'Padre',
+  MADRE: 'Madre',
+  ABUELO: 'Abuelo',
+  ABUELA: 'Abuela',
+  HERMANO: 'Hermano',
+  HERMANA: 'Hermana',
+  TIO: 'Tio',
+  TIA: 'Tia',
+  APODERADO: 'Apoderado',
+  OTRO: 'Otro',
+};
 
 const rowSchema = z.object({
   studentCod: z.string().trim().min(1, 'studentCod es obligatorio'),
@@ -136,7 +147,7 @@ function formatNames(value) {
 function mapRow(rawRow) {
   return {
     studentCod: (rawRow.studentcod || '').trim(),
-    relationship: (rawRow.relationship || '').trim().toUpperCase(),
+    relationship: (rawRow.relationship || '').trim(),
     lastNames: (rawRow.lastnames || '').trim(),
     names: (rawRow.names || '').trim(),
     dni: normalizeDni(rawRow.dni),
@@ -146,10 +157,23 @@ function mapRow(rawRow) {
   };
 }
 
-function toTutorRelationship(relationship) {
-  if (relationship === 'MADRE') return 'Madre';
-  if (relationship === 'PADRE') return 'Padre';
-  return 'Apoderado';
+function normalizeRelationship(input) {
+  const original = String(input || '').trim();
+  if (!original) {
+    throw new Error('relationship vacío');
+  }
+
+  const normalizedKey = original
+    .normalize('NFD')
+    .replace(/[\u0300-\u036f]/g, '')
+    .toUpperCase();
+
+  const mapped = RELATIONSHIP_DICTIONARY[normalizedKey];
+  if (!mapped) {
+    throw new Error(`relationship no reconocido: ${original}`);
+  }
+
+  return mapped;
 }
 
 async function resolveTutorPerson(data, normalizedPhones) {
@@ -299,26 +323,6 @@ async function run() {
 
       const data = parsed.data;
 
-      if (!data.relationship) {
-        report.skipped += 1;
-        skippedRows.push({
-          rowNumber: row.rowNumber,
-          studentCod: data.studentCod,
-          reason: 'Relación vacía',
-        });
-        continue;
-      }
-
-      if (!ALLOWED_RELATIONSHIPS.includes(data.relationship)) {
-        report.skipped += 1;
-        skippedRows.push({
-          rowNumber: row.rowNumber,
-          studentCod: data.studentCod,
-          reason: `relationship no permitido: ${data.relationship}`,
-        });
-        continue;
-      }
-
       if (!((data.names && data.lastNames) || data.dni)) {
         report.skipped += 1;
         skippedRows.push({
@@ -330,6 +334,7 @@ async function run() {
       }
 
       try {
+        const relationship = normalizeRelationship(data.relationship);
         const student = await Student.findOne({ internalCode: data.studentCod });
         if (!student) {
           throw new Error('No existe Student para studentCod');
@@ -337,8 +342,6 @@ async function run() {
 
         const normalizedPhones = normalizePhones(data.phones);
         const { person } = await resolveTutorPerson(data, normalizedPhones);
-
-        const relationship = toTutorRelationship(data.relationship);
 
         let tutor = await Tutor.findOne({
           studentId: student._id,

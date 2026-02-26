@@ -4,8 +4,13 @@ import { Person } from '../../models/person.model.js';
 import { Student } from '../../models/student.model.js';
 import { Tutor } from '../../models/tutor.model.js';
 import { Counter } from '../../models/counter.model.js';
+import { StudentCycle } from '../../models/studentCycle.model.js';
+import { Vacancy } from '../../models/vacancy.model.js';
+import { Classroom } from '../../models/classroom.model.js';
+import { Campus } from '../../models/campus.model.js';
+import { Cycle } from '../../models/cycle.model.js';
 import { ApiError } from '../../utils/errors.js';
-import { findFamiliesBase, findFamiliesForSearch } from './repositories/families.repository.js';
+import { findFamiliesBase } from './repositories/families.repository.js';
 import { runInTransaction } from '../../shared/dbSession.js';
 import { registerAuditLog } from '../../shared/audit.service.js';
 
@@ -33,6 +38,138 @@ function normalizeString(value) {
     .replace(/\p{Diacritic}/gu, '')
     .toLowerCase()
     .trim();
+}
+
+function escapeRegExp(value) {
+  return value.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+}
+
+function buildAccentInsensitiveRegex(term) {
+  const normalized = String(term || '').trim().normalize('NFD').replace(/[\u0300-\u036f]/g, '');
+  if (!normalized) return null;
+
+  const map = {
+    a: '[aáàäâãAÁÀÄÂÃ]',
+    e: '[eéèëêEÉÈËÊ]',
+    i: '[iíìïîIÍÌÏÎ]',
+    o: '[oóòöôõOÓÒÖÔÕ]',
+    u: '[uúùüûUÚÙÜÛ]',
+    n: '[nñNÑ]',
+  };
+
+  const pattern = normalized
+    .split('')
+    .map((char) => map[char.toLowerCase()] || escapeRegExp(char))
+    .join('');
+
+  return new RegExp(pattern, 'i');
+}
+
+async function resolvePreferredCycleId() {
+  const preferredCycle = await Cycle.findOne({ isActive: true })
+    .sort({ year: -1, startDate: -1, _id: -1 })
+    .select('_id')
+    .lean();
+
+  if (preferredCycle?._id) return preferredCycle._id;
+
+  const latestCycle = await Cycle.findOne({})
+    .sort({ year: -1, startDate: -1, _id: -1 })
+    .select('_id')
+    .lean();
+
+  return latestCycle?._id || null;
+}
+
+async function enrichStudentsWithCampusStatus(students) {
+  if (!students.length) return [];
+
+  const preferredCycleId = await resolvePreferredCycleId();
+  const studentIds = students.map((student) => student._id);
+
+  const [studentCycles, vacancies] = await Promise.all([
+    preferredCycleId
+      ? StudentCycle.find({ studentId: { $in: studentIds }, cycleId: preferredCycleId })
+        .select('studentId campusId')
+        .lean()
+      : Promise.resolve([]),
+    preferredCycleId
+      ? Vacancy.find({ studentId: { $in: studentIds }, cycleId: preferredCycleId })
+        .select('studentId classroomId')
+        .lean()
+      : Promise.resolve([]),
+  ]);
+
+  const campusIdsFromCycles = studentCycles.map((item) => String(item.campusId));
+  const classroomIds = vacancies.map((item) => item.classroomId);
+
+  const classrooms = classroomIds.length
+    ? await Classroom.find({ _id: { $in: classroomIds } }).select('_id campusId').lean()
+    : [];
+
+  const campusIdsFromClassrooms = classrooms.map((item) => String(item.campusId));
+  const allCampusIds = [...new Set([...campusIdsFromCycles, ...campusIdsFromClassrooms])]
+    .map((id) => new mongoose.Types.ObjectId(id));
+
+  const campuses = allCampusIds.length
+    ? await Campus.find({ _id: { $in: allCampusIds } }).select('_id code').lean()
+    : [];
+
+  const campusById = new Map(campuses.map((campus) => [String(campus._id), campus.code]));
+  const classroomCampusById = new Map(classrooms.map((item) => [String(item._id), String(item.campusId)]));
+
+  const statusByStudentId = new Map();
+  studentCycles.forEach((row) => {
+    const code = campusById.get(String(row.campusId));
+    if (code) statusByStudentId.set(String(row.studentId), code);
+  });
+
+  vacancies.forEach((row) => {
+    if (statusByStudentId.has(String(row.studentId))) return;
+    const campusId = classroomCampusById.get(String(row.classroomId));
+    const code = campusId ? campusById.get(campusId) : null;
+    if (code) statusByStudentId.set(String(row.studentId), code);
+  });
+
+  return students.map((student) => {
+    const campusCode = statusByStudentId.get(String(student._id));
+    const currentCampusStatus = campusCode || (student.isActive ? 'OTRO' : 'EGRESADO');
+
+    return {
+      ...student,
+      currentCampusStatus,
+      currentCampusCode: campusCode || null,
+    };
+  });
+}
+
+async function buildFamiliesResponse(families) {
+  const allStudents = families.flatMap((family) => family.studentIds || []);
+  const enrichedStudents = await enrichStudentsWithCampusStatus(allStudents);
+  const studentsById = new Map(enrichedStudents.map((student) => [String(student._id), student]));
+
+  return families.map((family) => {
+    const primaryTutor = (family.tutorIds || []).find((tutor) => tutor.isPrimary) || family.tutorIds?.[0] || null;
+    const students = (family.studentIds || []).map((student) => studentsById.get(String(student._id)) || student);
+
+    return {
+      familyId: String(family._id),
+      notes: family.notes || null,
+      students,
+      children: students,
+      studentsCount: family.studentIds?.length || 0,
+      tutorsCount: family.tutorIds?.length || 0,
+      primaryTutor: primaryTutor ? {
+        tutorId: String(primaryTutor._id),
+        names: primaryTutor.tutorPersonId?.names || null,
+        lastNames: primaryTutor.tutorPersonId?.lastNames || null,
+        dni: primaryTutor.tutorPersonId?.dni || null,
+        phone: primaryTutor.tutorPersonId?.phone || null,
+        relationship: primaryTutor.relationship || null,
+      } : null,
+      updatedAt: family.updatedAt || family.createdAt || null,
+    };
+  });
 }
 
 function mapRelationship(value) {
@@ -73,9 +210,6 @@ function mapFamilyDetail(family) {
 
   const primaryTutor = tutors.find((tutor) => tutor.isPrimary) || null;
   const otherTutors = tutors.find((tutor) => tutor.isPrimary == false) || null;
-
-  console.log(family.studentIds[0])
-
 
   return {
     familyId: family?._id || null,
@@ -176,8 +310,8 @@ export async function createFamilyService({ tutors, students, notes }) {
   return Family.findById(family._id).populate({ path: 'studentIds', populate: { path: 'personId' } });
 }
 
-export async function listFamiliesBaseService({ limit = 12, cursor, campus } = {}) {
-  const normalizedLimit = Math.max(1, Math.min(100, Number(limit) || 12));
+export async function listFamiliesBaseService({ limit = 5, cursor, campus } = {}) {
+  const normalizedLimit = Math.max(1, Math.min(10, Number(limit) || 5));
 
   const families = await findFamiliesBase({
     limit: normalizedLimit,
@@ -188,25 +322,16 @@ export async function listFamiliesBaseService({ limit = 12, cursor, campus } = {
   const hasMore = families.length > normalizedLimit;
   const itemsSource = hasMore ? families.slice(0, normalizedLimit) : families;
 
-  const items = itemsSource.map((family) => {
-    const primaryTutor = (family.tutorIds || []).find((tutor) => tutor.isPrimary) || family.tutorIds?.[0] || null;
-    const students = (family?.studentIds || []) || null;
-
-
-    return {
-      familyId: String(family._id),
-      primaryTutor: primaryTutor ? {
-        names: primaryTutor.tutorPersonId?.names || null,
-        lastNames: primaryTutor.tutorPersonId?.lastNames || null,
-        dni: primaryTutor.tutorPersonId?.dni || null,
-        phone: primaryTutor.tutorPersonId?.phone || null,
-      } : null,
-      students: students || [],
-      studentsCount: family.studentIds?.length || 0,
-      tutorsCount: family.tutorIds?.length || 0,
-      updatedAt: family.updatedAt || family.createdAt || null,
-    };
-  });
+  const rawItems = await buildFamiliesResponse(itemsSource);
+  const items = rawItems.map((item) => ({
+    ...item,
+    primaryTutor: item.primaryTutor ? {
+      names: item.primaryTutor.names,
+      lastNames: item.primaryTutor.lastNames,
+      dni: item.primaryTutor.dni,
+      phone: item.primaryTutor.phone,
+    } : null,
+  }));
 
   return {
     items,
@@ -214,67 +339,108 @@ export async function listFamiliesBaseService({ limit = 12, cursor, campus } = {
   };
 }
 
-export async function searchFamiliesService({ q, limit = 20, cursor, campus }) {
+export async function searchFamiliesService({ q, limit = 5, cursor, campus }) {
   const normalizedTerm = normalizeString(q);
   if (!normalizedTerm) throw new ApiError(400, 'q es requerido');
 
-  const families = await findFamiliesForSearch({ campus });
+  const normalizedLimit = Math.max(1, Math.min(10, Number(limit) || 5));
+  const queryRegex = buildAccentInsensitiveRegex(q);
 
-  const filtered = families.filter((family) => {
-    const fields = [
-      family._id,
-      family.notes,
-      family?.studentIds || [],
-      ...(family.studentIds || []).flatMap((student) => [
-        student.internalCode,
-        student.personId?.names,
-        student.personId?.lastNames,
-        student.personId?.dni,
-        student.personId?.phone,
-      ]),
-      ...(family.tutorIds || []).flatMap((tutor) => [
-        tutor.relationship,
-        tutor.tutorPersonId?.names,
-        tutor.tutorPersonId?.lastNames,
-        tutor.tutorPersonId?.dni,
-        tutor.tutorPersonId?.phone,
-      ]),
-    ];
+  const personIds = queryRegex
+    ? (await Person.find({
+      $or: [
+        { names: queryRegex },
+        { lastNames: queryRegex },
+        { dni: queryRegex },
+      ],
+    }).select('_id').lean()).map((person) => person._id)
+    : [];
 
-    return fields.some((value) => normalizeString(value).includes(normalizedTerm));
+  const personIdFilter = personIds.length ? { $in: personIds } : null;
+
+  const [primaryTutorTutorIds, tutorIds, matchedStudentsByPerson, matchedStudentsByCode] = await Promise.all([
+    personIdFilter
+      ? Tutor.find({ tutorPersonId: personIdFilter, isPrimary: true }).select('_id').lean()
+      : Promise.resolve([]),
+    personIdFilter
+      ? Tutor.find({ tutorPersonId: personIdFilter }).select('_id').lean()
+      : Promise.resolve([]),
+    personIdFilter
+      ? Student.find({ personId: personIdFilter }).select('_id').lean()
+      : Promise.resolve([]),
+    queryRegex
+      ? Student.find({ $or: [{ internalCode: queryRegex }, { bankCode: queryRegex }] }).select('_id').lean()
+      : Promise.resolve([]),
+  ]);
+
+  const primaryTutorFamilyIds = primaryTutorTutorIds.length
+    ? (await Family.find({ tutorIds: { $in: primaryTutorTutorIds.map((tutor) => tutor._id) } }).select('_id').lean())
+      .map((family) => String(family._id))
+    : [];
+
+  const tutorFamilyIds = tutorIds.length
+    ? (await Family.find({ tutorIds: { $in: tutorIds.map((tutor) => tutor._id) } }).select('_id').lean())
+      .map((family) => String(family._id))
+    : [];
+
+  const studentIds = [...matchedStudentsByPerson, ...matchedStudentsByCode].map((row) => row._id);
+  const studentFamilyIds = studentIds.length
+    ? (await Family.find({ studentIds: { $in: studentIds } }).select('_id').lean())
+      .map((family) => String(family._id))
+    : [];
+
+  const prioritizedFamilyIds = [];
+  const seen = new Set();
+  [primaryTutorFamilyIds, tutorFamilyIds, studentFamilyIds].forEach((group) => {
+    group.forEach((familyId) => {
+      if (seen.has(familyId)) return;
+      seen.add(familyId);
+      prioritizedFamilyIds.push(familyId);
+    });
   });
+
+  if (!prioritizedFamilyIds.length) {
+    return { items: [], nextCursor: null };
+  }
+
+  let filteredIds = prioritizedFamilyIds;
+  if (campus) {
+    const campusDoc = await Campus.findOne({ code: campus }).select('_id').lean();
+    if (!campusDoc?._id) return { items: [], nextCursor: null };
+
+    const studentIdsForCampus = (await StudentCycle.find({ campusId: campusDoc._id })
+      .select('studentId')
+      .lean())
+      .map((row) => row.studentId);
+
+    if (!studentIdsForCampus.length) return { items: [], nextCursor: null };
+
+    const campusFamilies = await Family.find({ studentIds: { $in: studentIdsForCampus } }).select('_id').lean();
+    const campusFamilySet = new Set(campusFamilies.map((family) => String(family._id)));
+    filteredIds = prioritizedFamilyIds.filter((familyId) => campusFamilySet.has(familyId));
+  }
 
   const fromCursor = cursor
-    ? filtered.filter((family) => String(family._id) > String(cursor))
-    : filtered;
+    ? filteredIds.filter((familyId) => familyId > String(cursor))
+    : filteredIds;
 
-  const normalizedLimit = Math.max(1, Math.min(50, Number(limit) || 20));
-  const selected = fromCursor.slice(0, normalizedLimit + 1);
-  const hasMore = selected.length > normalizedLimit;
-  const itemsSource = hasMore ? selected.slice(0, normalizedLimit) : selected;
+  const selectedIds = fromCursor.slice(0, normalizedLimit + 1);
+  const hasMore = selectedIds.length > normalizedLimit;
+  const pageIds = hasMore ? selectedIds.slice(0, normalizedLimit) : selectedIds;
 
-  const items = itemsSource.map((family) => {
-    const primaryTutor = (family.tutorIds || []).find((tutor) => tutor.isPrimary) || family.tutorIds?.[0] || null;
-    return {
-      familyId: String(family._id),
-      notes: family.notes || null,
-      students: family?.studentIds || [],
-      studentsCount: family.studentIds?.length || 0,
-      tutorsCount: family.tutorIds?.length || 0,
-      primaryTutor: primaryTutor ? {
-        tutorId: String(primaryTutor._id),
-        names: primaryTutor.tutorPersonId?.names || null,
-        lastNames: primaryTutor.tutorPersonId?.lastNames || null,
-        dni: primaryTutor.tutorPersonId?.dni || null,
-        phone: primaryTutor.tutorPersonId?.phone || null,
-        relationship: primaryTutor.relationship || null,
-      } : null,
-    };
-  });
+  const families = await Family.find({ _id: { $in: pageIds } })
+    .populate({ path: 'studentIds', populate: { path: 'personId' } })
+    .populate({ path: 'tutorIds', populate: { path: 'tutorPersonId' } })
+    .lean();
+
+  const orderMap = new Map(pageIds.map((id, index) => [String(id), index]));
+  families.sort((a, b) => orderMap.get(String(a._id)) - orderMap.get(String(b._id)));
+
+  const items = await buildFamiliesResponse(families);
 
   return {
     items,
-    nextCursor: hasMore ? String(itemsSource[itemsSource.length - 1]._id) : null,
+    nextCursor: hasMore ? String(pageIds[pageIds.length - 1]) : null,
   };
 }
 

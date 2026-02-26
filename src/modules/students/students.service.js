@@ -324,7 +324,7 @@ export async function searchStudentAutocompleteService({ q, dni, limit }) {
     .select('_id personId familyId')
     .populate({ path: 'personId', select: 'names lastNames dni' })
     .lean();
-
+  console.log(students)
   const mapped = students
     .filter((student) => student.personId)
     .map((student) => ({
@@ -358,7 +358,8 @@ export async function searchStudentAutocompleteService({ q, dni, limit }) {
       return String(a._id).localeCompare(String(b._id));
     });
   }
-
+  console.log("mapped_ ",mapped)
+  console.log("x ",mapped.slice(0, normalizedLimit))
   return mapped.slice(0, normalizedLimit);
 }
 

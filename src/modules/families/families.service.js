@@ -323,6 +323,7 @@ export async function searchFamiliesService({ q, limit = 5, cursor, campus }) {
       ],
     }).select('_id').lean()).map((person) => person._id)
     : [];
+  // console.log(personIds)
 
   const personIdFilter = personIds.length ? { $in: personIds } : null;
 
@@ -356,6 +357,8 @@ export async function searchFamiliesService({ q, limit = 5, cursor, campus }) {
     ? (await Family.find({ studentIds: { $in: studentIds } }).select('_id').lean())
       .map((family) => String(family._id))
     : [];
+
+  // console.log(studentFamilyIds)
 
   const prioritizedFamilyIds = [];
   const seen = new Set();
@@ -404,7 +407,9 @@ export async function searchFamiliesService({ q, limit = 5, cursor, campus }) {
   const orderMap = new Map(pageIds.map((id, index) => [String(id), index]));
   families.sort((a, b) => orderMap.get(String(a._id)) - orderMap.get(String(b._id)));
 
+  // console.log("families.length: ",families.length)
   const items = await buildFamiliesResponse(families);
+  // console.log("items: ",items)
 
   return {
     items,

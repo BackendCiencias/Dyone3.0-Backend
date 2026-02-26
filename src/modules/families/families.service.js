@@ -38,6 +38,8 @@ function normalizeString(value) {
 function mapRelationship(value) {
   if (value === 'PADRE' || value === 'Padre') return 'Padre';
   if (value === 'MADRE' || value === 'Madre') return 'Madre';
+  if (value === 'ABUELA' || value === 'Abuela') return 'Abuela';
+  if (value === 'ABUELO' || value === 'Abuelo') return 'Abuelo';
   return 'Apoderado';
 }
 

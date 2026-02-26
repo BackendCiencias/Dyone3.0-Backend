@@ -8,7 +8,7 @@ import { createCharge } from './charges.controller.js';
 const router = Router();
 
 router.use(authMiddleware);
-router.use(requireRoles(['ADMIN', 'SECRETARY', 'DIRECTOR', 'PROMOTER', 'SECRETARY_CIENCIAS_SEC', 'SECRETARY_CIENCIAS_PRIM', 'SECRETARY_CIMAS']));
+router.use(requireRoles(['ADMIN', 'SECRETARY', 'DIRECTOR', 'PROMOTER']));
 
 router.post('/', validate(chargeCreateSchema), createCharge);
 

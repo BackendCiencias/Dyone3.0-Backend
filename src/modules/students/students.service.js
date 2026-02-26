@@ -122,39 +122,9 @@ const CAMPUS_ALIAS = {
   CIENCIAS_APLICADAS: ['CIENCIAS_APLICADAS'],
 };
 
-const CAMPUS_LEGACY_NORMALIZATION = {
-  CIENCIAS_PRI: 'CIENCIAS',
-  CIENCIAS_SEC: 'CIENCIAS',
-};
-
-const CAMPUS_ACCESS_BY_ROLE = {
-  SECRETARY_CIMAS: ['CIMAS'],
-  SECRETARY_CIENCIAS_SEC: ['CIENCIAS'],
-  SECRETARY_CIENCIAS_PRIM: ['CIENCIAS'],
-  SECRETARY_CIENCIAS: ['CIENCIAS'],
-  SECRETARY_APLICADAS: ['CIENCIAS_APLICADAS'],
-};
-
-export function getAllowedCampusesFromRoles(roles = []) {
-  const normalizedRoles = Array.isArray(roles) ? roles : [];
-
-  if (normalizedRoles.includes('ADMIN') || normalizedRoles.includes('PROMOTER')) return ['*'];
-  if (normalizedRoles.includes('SECRETARY')) return ['*'];
-
-  const campuses = new Set();
-  for (const role of normalizedRoles) {
-    const roleCampuses = CAMPUS_ACCESS_BY_ROLE[role];
-    if (roleCampuses) {
-      for (const campus of roleCampuses) campuses.add(campus);
-    }
-  }
-
-  return [...campuses];
-}
-
-function ensureCampusAccess({ campus, roles }) {
-  const allowedCampuses = getAllowedCampusesFromRoles(roles);
-  if (allowedCampuses.includes('*')) return;
+function ensureCampusAccess({ campus, campusScope }) {
+  const allowedCampuses = Array.isArray(campusScope) ? campusScope : [];
+  if (allowedCampuses.includes('ALL')) return;
   if (!allowedCampuses.includes(campus)) {
     throw new ApiError(403, 'No autorizado para consultar este campus');
   }
@@ -162,12 +132,11 @@ function ensureCampusAccess({ campus, roles }) {
 
 function resolveCampusCodes(campus) {
   const raw = String(campus || '').trim().toUpperCase();
-  const normalized = CAMPUS_LEGACY_NORMALIZATION[raw] || raw;
-  const codes = CAMPUS_ALIAS[normalized];
+  const codes = CAMPUS_ALIAS[raw];
   if (!codes) {
     throw new ApiError(400, 'campus inválido. Usa CIENCIAS, CIMAS o CIENCIAS_APLICADAS');
   }
-  return { normalized, codes };
+  return { normalized: raw, codes };
 }
 
 async function buildStudentResponse(items) {
@@ -190,6 +159,7 @@ async function buildStudentResponse(items) {
       names: person?.names || null,
       lastNames: person?.lastNames || null,
       code: student.internalCode || null,
+      bankCode: student.bankCode || null,
       campusCode: campus?.code || null,
       lastKnownGrade: classroom?.grade || null,
       lastKnownSection: classroom?.section || null,
@@ -443,6 +413,7 @@ export async function getStudentSummaryService(studentId) {
     dni: person?.dni || null,
     gender: person?.gender || null,
     internalCode: student?.internalCode || null,
+    bankCode: student?.bankCode || null,
     names: person?.names || null,
     lastNames: person?.lastNames || null,
     birthDate: person?.birthDate || null,
@@ -505,11 +476,11 @@ export async function getStudentSummaryService(studentId) {
 }
 
 
-export async function listStudentsByCampusService({ campus, q = '', limit = 20, cursor, roles = [] }) {
+export async function listStudentsByCampusService({ campus, q = '', limit = 20, cursor, campusScope = [] }) {
   const { normalized, codes } = resolveCampusCodes(campus);
   console.log('[studentsByCampus][dbg] normalized=', normalized, 'codes=', codes);
-  ensureCampusAccess({ campus: normalized, roles });
-  console.log('[studentsByCampus][dbg] accessGrantedFor=', normalized, 'roles=', roles);
+  ensureCampusAccess({ campus: normalized, campusScope });
+  console.log('[studentsByCampus][dbg] accessGrantedFor=', normalized, 'campusScope=', campusScope);
   const normalizedLimit = Math.max(1, Math.min(50, toNumber(limit, 20)));
 
   const campuses = await Campus.find({ code: { $in: codes } }).select('_id').lean();
@@ -912,6 +883,7 @@ async function buildStudentFinancialSnapshot(studentId) {
       lastNames: student.personId?.lastNames || null,
       dni: student.personId?.dni || null,
       code: student.internalCode || null,
+      bankCode: student.bankCode || null,
     },
     totals,
     charges,
@@ -994,4 +966,34 @@ export async function updateStudentInternalNotesService(studentId, internalNotes
   }
 
   return { ok: true, student };
+}
+
+
+export async function updateStudentBankCodeService(studentId, bankCode, actor = null) {
+  const student = await Student.findById(studentId).lean();
+  if (!student) throw new ApiError(404, 'Estudiante no encontrado');
+
+  const normalizedBankCode = typeof bankCode === 'string' ? bankCode.trim() : null;
+  const nextBankCode = normalizedBankCode ? normalizedBankCode : null;
+
+  try {
+    const updated = await updateStudentById(studentId, { $set: { bankCode: nextBankCode } });
+
+    if (actor) {
+      await registerAuditLog({
+        entityType: 'STUDENT',
+        entityId: studentId,
+        action: 'STUDENT_BANK_CODE_UPDATED',
+        performedBy: actor,
+        payloadSnapshot: { studentId, bankCode: nextBankCode },
+      });
+    }
+
+    return { ok: true, student: updated };
+  } catch (error) {
+    if (error?.code === 11000 && error?.keyPattern?.bankCode) {
+      throw new ApiError(409, 'bankCode ya está asignado a otro estudiante');
+    }
+    throw error;
+  }
 }

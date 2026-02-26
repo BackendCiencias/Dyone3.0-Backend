@@ -7,7 +7,7 @@ const personSchema = z.object({
   names: z.string().min(1),
   lastNames: z.string().min(1),
   dni: z.string().min(1),
-  gender: z.enum(['Masculino', 'Femenino']),
+  gender: z.enum(['M', 'F']),
   birthDate: z.string().optional(),
   phone: z.string().optional(),
   address: z.string().optional(),

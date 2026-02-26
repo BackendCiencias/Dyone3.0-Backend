@@ -569,22 +569,16 @@ export async function listEnrollmentsService({ q, campus, cycleId, status, class
   const normalizedLimit = Math.max(1, Math.min(100, Number(limit) || 20));
   const where = {};
 
-  const isGlobalScope = Array.isArray(campusScope) && campusScope.includes('*');
+  const isGlobalScope = Array.isArray(campusScope) && campusScope.includes('ALL');
   if (!isGlobalScope && Array.isArray(campusScope) && campusScope.length) {
-    const scopedCampuses = await Campus.find({
-      $or: [
-        { code: { $in: campusScope } },
-        { _id: { $in: campusScope.filter((value) => mongoose.Types.ObjectId.isValid(value)).map((value) => new mongoose.Types.ObjectId(value)) } },
-      ],
-    }).select('_id code').lean();
+    const scopedCampuses = await Campus.find({ code: { $in: campusScope } }).select('_id code').lean();
 
     const scopeCampusIds = new Set(scopedCampuses.map((row) => String(row._id)));
     const scopeCampusCodes = new Set(scopedCampuses.map((row) => row.code));
 
     if (campus) {
       const normalizedCampus = String(campus);
-      const allowed = scopeCampusIds.has(normalizedCampus) || scopeCampusCodes.has(normalizedCampus);
-      if (!allowed) throw new ApiError(403, 'No autorizado para este campus');
+      if (!scopeCampusCodes.has(normalizedCampus)) throw new ApiError(403, 'No autorizado para este campus');
     } else {
       where.campusId = { $in: [...scopeCampusIds].map((id) => new mongoose.Types.ObjectId(id)) };
       if (!scopeCampusIds.size) return { items: [], nextCursor: null };

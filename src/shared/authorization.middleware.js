@@ -1,43 +1,45 @@
+import { Campus } from '../models/campus.model.js';
 import { ApiError } from '../utils/errors.js';
 
-const CAMPUS_BY_ROLE = {
-  SECRETARY_CIMAS: ['CIMAS'],
-  SECRETARY_CIENCIAS_SEC: ['CIENCIAS'],
-  SECRETARY_CIENCIAS_PRIM: ['CIENCIAS'],
-  SECRETARY_CIENCIAS: ['CIENCIAS'],
-  SECRETARY_APLICADAS: ['CIENCIAS_APLICADAS'],
-};
+const SCOPED_ROLES = new Set(['ADMIN', 'SECRETARY', 'SECRETARY_VIEWER', 'AUXILIAR', 'DIRECTOR', 'PROMOTER', 'TEACHER']);
 
 function isScopedUser(user) {
   const roles = Array.isArray(user?.roles) ? user.roles : [];
-  return roles.some((role) => role === 'SECRETARY' || role.startsWith('SECRETARY_'));
+  return roles.some((role) => SCOPED_ROLES.has(role));
 }
 
 function resolveCampusScope(user) {
-  if (!user) return [];
-  if (Array.isArray(user.campusScope) && user.campusScope.length) return user.campusScope.map(String);
-
-  const roles = Array.isArray(user.roles) ? user.roles : [];
-  if (roles.includes('ADMIN')) return ['*'];
-
-  const scopes = new Set();
-  for (const role of roles) {
-    for (const code of CAMPUS_BY_ROLE[role] || []) scopes.add(code);
-  }
-  return [...scopes];
+  if (!user || !Array.isArray(user.campusScope)) return [];
+  return user.campusScope.map(String);
 }
 
-function assertCampusAllowed(req, campusValue) {
+async function resolveCampusCode(campusValue) {
+  if (!campusValue) return null;
+
+  if (typeof campusValue === 'object') {
+    if (campusValue.code) return String(campusValue.code);
+    if (campusValue.id) {
+      const campus = await Campus.findById(campusValue.id).select('code').lean();
+      return campus?.code || null;
+    }
+  }
+
+  const value = String(campusValue);
+  const campus = await Campus.findOne({ $or: [{ _id: value }, { code: value }] }).select('code').lean();
+  if (campus?.code) return campus.code;
+
+  return ['CIENCIAS', 'CIENCIAS_APLICADAS', 'CIMAS'].includes(value) ? value : null;
+}
+
+async function assertCampusAllowed(req, campusValue) {
   const scope = resolveCampusScope(req.user);
-  if (scope.includes('*')) return;
+  if (scope.includes('ALL')) return;
   if (!campusValue) throw new ApiError(403, 'Campus requerido para este usuario');
 
-  const candidates = typeof campusValue === 'object'
-    ? [campusValue.id, campusValue.code].filter(Boolean).map(String)
-    : [String(campusValue)];
+  const campusCode = await resolveCampusCode(campusValue);
+  if (!campusCode) throw new ApiError(403, 'No autorizado para este campus');
 
-  const allowed = candidates.some((value) => scope.includes(value));
-  if (!allowed) throw new ApiError(403, 'No autorizado para este campus');
+  if (!scope.includes(campusCode)) throw new ApiError(403, 'No autorizado para este campus');
 }
 
 export function authorizeByCampusScope(resolveCampus) {
@@ -46,14 +48,14 @@ export function authorizeByCampusScope(resolveCampus) {
       const scope = resolveCampusScope(req.user);
       req.campusScope = scope;
 
-      if (!isScopedUser(req.user) || scope.includes('*')) return next();
+      if (!isScopedUser(req.user) || scope.includes('ALL')) return next();
       if (!scope.length) throw new ApiError(403, 'Usuario sin campusScope configurado');
 
       const campus = await resolveCampus(req);
       if (Array.isArray(campus)) {
-        for (const campusItem of campus) assertCampusAllowed(req, campusItem);
+        for (const campusItem of campus) await assertCampusAllowed(req, campusItem);
       } else {
-        assertCampusAllowed(req, campus);
+        await assertCampusAllowed(req, campus);
       }
       return next();
     } catch (error) {
@@ -67,7 +69,7 @@ export function attachCampusScope() {
     const scope = resolveCampusScope(req.user);
     req.campusScope = scope;
 
-    if (isScopedUser(req.user) && !scope.includes('*') && !scope.length) {
+    if (isScopedUser(req.user) && !scope.includes('ALL') && !scope.length) {
       return next(new ApiError(403, 'Usuario sin campusScope configurado'));
     }
 

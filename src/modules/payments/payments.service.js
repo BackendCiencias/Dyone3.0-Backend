@@ -240,7 +240,7 @@ export async function getDebtorsService({ cycleId, conceptId, q, campus, campusS
     .populate({ path: 'studentId', populate: { path: 'personId' } })
     .lean();
 
-  const scopeAll = campusScope.includes('*');
+  const scopeAll = campusScope.includes('ALL');
   const campusFilter = campus ? String(campus) : null;
   const studentIds = [...new Set(charges.map((charge) => String(charge.studentId?._id)).filter(Boolean))]
     .map((id) => new mongoose.Types.ObjectId(id));
@@ -260,8 +260,7 @@ export async function getDebtorsService({ cycleId, conceptId, q, campus, campusS
   const campusById = new Map(campuses.map((row) => [String(row._id), row.code]));
 
   if (!scopeAll && campusFilter && !campusScope.includes(campusFilter)) {
-    const campusFromId = campusById.get(campusFilter);
-    if (!campusFromId || !campusScope.includes(campusFromId)) throw new ApiError(403, 'No autorizado para este campus');
+    throw new ApiError(403, 'No autorizado para este campus');
   }
 
   const now = new Date();
@@ -275,8 +274,8 @@ export async function getDebtorsService({ cycleId, conceptId, q, campus, campusS
     const studentCampusId = latestCampusByStudent.get(studentKey) || null;
     const studentCampus = studentCampusId ? campusById.get(studentCampusId) || studentCampusId : null;
 
-    if (!scopeAll && campusScope.length && !campusScope.includes(studentCampus) && !campusScope.includes(studentCampusId)) continue;
-    if (campusFilter && campusFilter !== studentCampusId && campusFilter !== studentCampus) continue;
+    if (!scopeAll && campusScope.length && !campusScope.includes(studentCampus)) continue;
+    if (campusFilter && campusFilter !== studentCampus) continue;
 
     if (q) {
       const term = String(q).toLowerCase();

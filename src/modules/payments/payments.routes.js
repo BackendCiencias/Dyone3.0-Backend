@@ -7,11 +7,12 @@ import { paymentCreateSchema } from './payments.schemas.js';
 import { createPayment, getDebtors } from './payments.controller.js';
 
 const router = Router();
+const PAYMENT_WRITE_ROLES = ['ADMIN', 'SECRETARY', 'DIRECTOR', 'PROMOTER'];
+const PAYMENT_READ_ROLES = [...PAYMENT_WRITE_ROLES, 'SECRETARY_VIEWER', 'AUXILIAR'];
 
 router.use(authMiddleware);
-router.use(requireRoles(['ADMIN', 'SECRETARY', 'DIRECTOR', 'PROMOTER', 'SECRETARY_CIENCIAS_SEC', 'SECRETARY_CIENCIAS_PRIM', 'SECRETARY_CIMAS']));
 
-router.post('/', validate(paymentCreateSchema), createPayment);
-router.get('/debtors', attachCampusScope(), getDebtors);
+router.post('/', requireRoles(PAYMENT_WRITE_ROLES), validate(paymentCreateSchema), createPayment);
+router.get('/debtors', requireRoles(PAYMENT_READ_ROLES), attachCampusScope(), getDebtors);
 
 export default router;

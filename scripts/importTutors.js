@@ -170,7 +170,7 @@ async function resolveTutorPerson(data, normalizedPhones) {
       names: data.names,
       lastNames: data.lastNames,
       ...(data.dni ? { dni: data.dni } : {}),
-      gender: 'Masculino',
+      gender: 'M',
       ...(phone ? { phone } : {}),
       ...(personNotes ? { notes: personNotes } : {}),
     });

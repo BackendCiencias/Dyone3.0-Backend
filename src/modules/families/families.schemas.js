@@ -7,7 +7,7 @@ const personSchema = z.object({
   names: z.string().min(1),
   lastNames: z.string().min(1),
   dni: z.string().min(1),
-  gender: z.enum(['Masculino', 'Femenino']),
+  gender: z.enum(['M', 'F']),
   birthDate: z.string().optional(),
   phone: z.string().optional(),
   address: z.string().optional(),
@@ -55,7 +55,7 @@ const tutorPersonPayloadSchema = z.object({
   dni: z.string().trim().optional(),
   phone: z.string().trim().optional(),
   email: z.string().trim().email().optional(),
-  gender: z.enum(['Masculino', 'Femenino']).optional(),
+  gender: z.enum(['M', 'F']).optional(),
 });
 
 export const familyAddTutorSchema = z.object({

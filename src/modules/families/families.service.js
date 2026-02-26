@@ -104,7 +104,7 @@ async function resolveOrCreateTutorPerson(payload, session) {
     person = new Person({
       names: personData.names,
       lastNames: personData.lastNames,
-      gender: personData.gender || 'Masculino',
+      gender: personData.gender || 'M',
       ...(normalizedDni ? { dni: normalizedDni } : {}),
       ...(personData.phone ? { phone: personData.phone } : {}),
       ...(personData.email ? { email: personData.email } : {}),
@@ -332,7 +332,7 @@ export async function linkStudentFamilyService({ studentId, familyId, family }) 
               names: guardian.names,
               lastNames: guardian.lastNames,
               dni: guardian.dni?.trim() || undefined,
-              gender: 'Masculino',
+              gender: 'M',
               phone: guardian.phone,
               email: guardian.email,
             },

@@ -1,4 +1,4 @@
-const ADMIN_BASE_ROLES = ['SECRETARY', 'SECRETARY_CIENCIAS_SEC', 'DIRECTOR', 'PROMOTER', 'ADMIN'];
+const ADMIN_BASE_ROLES = ['SECRETARY', 'DIRECTOR', 'PROMOTER', 'ADMIN'];
 
 export const moduleEndpointMetadata = [
   { method: 'GET', path: '/api/admin/campuses', module: 'admin', authRequired: true, rolesAllowed: ADMIN_BASE_ROLES, description: 'Listar campuses', requestSchema: null, responseSchema: 'Campus[]' },

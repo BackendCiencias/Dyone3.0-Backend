@@ -5,17 +5,10 @@ import { validateRequest } from '../../middlewares/validateRequest.js';
 import { classroomOptionsQuerySchema } from './classrooms.schemas.js';
 import { getClassroomOptions } from './classrooms.controller.js';
 
-const coreSecretaryRoles = [
-  'SECRETARY',
-  'SECRETARY_CIENCIAS_SEC',
-  'SECRETARY_CIENCIAS_PRIM',
-  'SECRETARY_CIMAS',
-];
-
 const router = Router();
 
 router.use(authMiddleware);
-router.use(requireRoles(['ADMIN', 'DIRECTOR', 'PROMOTER', ...coreSecretaryRoles]));
+router.use(requireRoles(['ADMIN', 'DIRECTOR', 'PROMOTER', 'SECRETARY', 'SECRETARY_VIEWER', 'AUXILIAR']));
 
 router.get('/options', validateRequest({ query: classroomOptionsQuerySchema }), getClassroomOptions);
 

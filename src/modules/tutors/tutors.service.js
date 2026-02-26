@@ -61,7 +61,7 @@ async function resolveTutorPerson({ names, lastNames, dni, phones }, session) {
       names,
       lastNames,
       ...(normalizedDni ? { dni: normalizedDni } : {}),
-      gender: 'Masculino',
+      gender: 'M',
       ...(mainPhone ? { phone: mainPhone } : {}),
       ...(extraPhones.length ? { notes: `Teléfonos adicionales: ${extraPhones.join(', ')}` } : {}),
     });

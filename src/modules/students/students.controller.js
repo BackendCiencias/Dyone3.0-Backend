@@ -13,6 +13,7 @@ import {
   getStudentPaymentsService,
   updateStudentIdentityService,
   updateStudentInternalNotesService,
+  updateStudentBankCodeService,
 } from './students.service.js';
 
 const ENABLE_STUDENTS_BY_CAMPUS_DEBUG =
@@ -51,7 +52,7 @@ export const listStudentsByCampus = asyncHandler(async (req, res) => {
 
   const data = await listStudentsByCampusService({
     campus,
-    roles: req.user?.roles || [],
+    campusScope: req.user?.campusScope || [],
     q,
     limit,
     cursor,
@@ -108,6 +109,16 @@ export const updateStudentInternalNotes = asyncHandler(async (req, res) => {
   const data = await updateStudentInternalNotesService(
     req.validatedParams.id,
     req.validated.internalNotes,
+    req.user?.id
+  );
+  res.json(data);
+});
+
+
+export const updateStudentBankCode = asyncHandler(async (req, res) => {
+  const data = await updateStudentBankCodeService(
+    req.validatedParams.id,
+    req.validated.bankCode,
     req.user?.id
   );
   res.json(data);

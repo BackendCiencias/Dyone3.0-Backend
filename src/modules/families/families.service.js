@@ -142,6 +142,8 @@ async function buildFamiliesResponse(families) {
 function mapRelationship(value) {
   if (value === 'PADRE' || value === 'Padre') return 'Padre';
   if (value === 'MADRE' || value === 'Madre') return 'Madre';
+  if (value === 'HERMANA' || value === 'Hermana') return 'Hermana';
+  if (value === 'HERMANO' || value === 'Hermano') return 'Hermano';
   if (value === 'ABUELA' || value === 'Abuela') return 'Abuela';
   if (value === 'ABUELO' || value === 'Abuelo') return 'Abuelo';
   return 'Apoderado';
@@ -323,7 +325,7 @@ export async function searchFamiliesService({ q, limit = 5, cursor, campus }) {
       ],
     }).select('_id').lean()).map((person) => person._id)
     : [];
-  // console.log(personIds)
+  // console.log(personIdsmapRelationship)
 
   const personIdFilter = personIds.length ? { $in: personIds } : null;
 

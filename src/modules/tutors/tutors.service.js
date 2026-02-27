@@ -23,8 +23,12 @@ function normalizePhones(phones) {
 }
 
 function mapRelationship(value) {
-  if (value === 'MADRE') return 'Madre';
-  if (value === 'PADRE') return 'Padre';
+  if (value === 'PADRE' || value === 'Padre') return 'Padre';
+  if (value === 'MADRE' || value === 'Madre') return 'Madre';
+  if (value === 'HERMANA' || value === 'Hermana') return 'Hermana';
+  if (value === 'HERMANO' || value === 'Hermano') return 'Hermano';
+  if (value === 'ABUELA' || value === 'Abuela') return 'Abuela';
+  if (value === 'ABUELO' || value === 'Abuelo') return 'Abuelo';
   return 'Apoderado';
 }
 

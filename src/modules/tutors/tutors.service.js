@@ -23,6 +23,11 @@ function normalizePhones(phones) {
 }
 
 function mapRelationship(value) {
+  const allowedRelationships = ['MADRE', 'PADRE', 'HERMANA', 'HERMANO', 'ABUELA', 'ABUELO', 'APODERADO'];
+  if (!value || !allowedRelationships.includes(String(value).toUpperCase())) {
+    throw new ApiError(400, `Relación no permitida. Valores permitidos: ${allowedRelationships.join(', ')}`);
+  }
+
   if (value === 'PADRE' || value === 'Padre') return 'Padre';
   if (value === 'MADRE' || value === 'Madre') return 'Madre';
   if (value === 'HERMANA' || value === 'Hermana') return 'Hermana';
@@ -32,21 +37,43 @@ function mapRelationship(value) {
   return 'Apoderado';
 }
 
-async function resolveStudent({ studentId, studentCod }, session) {
+function extractStudentCods(payload) {
+  const candidateCods = [];
+
+  if (payload.studentCod) candidateCods.push(payload.studentCod);
+  if (Array.isArray(payload.studentCods)) candidateCods.push(...payload.studentCods);
+  if (Array.isArray(payload.studentsCod)) candidateCods.push(...payload.studentsCod);
+
+  const normalizedCods = [...new Set(candidateCods
+    .map((cod) => String(cod || '').trim())
+    .filter(Boolean))];
+
+  if (!normalizedCods.length && !payload.studentId) {
+    throw new ApiError(400, 'Debes enviar al menos un código de alumno en studentCods (compatible con studentCod/studentsCod) o studentId');
+  }
+
+  return normalizedCods;
+}
+
+async function resolveStudents({ studentId, studentCods }, session) {
   if (studentId) {
     if (!mongoose.Types.ObjectId.isValid(studentId)) throw new ApiError(400, 'studentId inválido');
     const student = await Student.findById(studentId).session(session);
     if (!student) throw new ApiError(404, 'Alumno no encontrado');
-    return student;
+    return [student];
   }
 
-  if (studentCod) {
-    const student = await Student.findOne({ internalCode: studentCod }).session(session);
-    if (!student) throw new ApiError(404, 'Alumno no encontrado por studentCod');
-    return student;
+  const students = [];
+  for (const studentCod of studentCods) {
+    const student = await Student.findOne({
+      $or: [{ internalCode: studentCod }, { bankCode: studentCod }],
+    }).session(session);
+
+    if (!student) throw new ApiError(404, `Alumno no encontrado por código: ${studentCod}`);
+    students.push(student);
   }
 
-  throw new ApiError(400, 'Debes enviar studentId o studentCod');
+  return students;
 }
 
 async function resolveTutorPerson({ names, lastNames, dni, phones }, session) {
@@ -97,46 +124,84 @@ export async function upsertTutorService(payload) {
   session.startTransaction();
 
   try {
-    const student = await resolveStudent(payload, session);
+    const studentCods = extractStudentCods(payload);
+    const students = await resolveStudents({ studentId: payload.studentId, studentCods }, session);
+    const requestFamilyId = payload.familyId;
+
+    if (requestFamilyId) {
+      if (!mongoose.Types.ObjectId.isValid(requestFamilyId)) throw new ApiError(400, 'familyId inválido');
+      const requestFamily = await Family.findById(requestFamilyId).session(session);
+      if (!requestFamily) throw new ApiError(404, 'La familia indicada en familyId no existe');
+    }
+
     const person = await resolveTutorPerson(payload, session);
     const relationship = mapRelationship(payload.relationship);
 
-    const existing = await Tutor.findOne({
-      studentId: student._id,
-      tutorPersonId: person._id,
-      relationship,
-    }).session(session);
+    const tutorIds = [];
+    const affectedFamilyIds = new Set();
 
-    await Tutor.updateMany(
-      { studentId: student._id, _id: existing ? { $ne: existing._id } : { $exists: true } },
-      { $set: { isPrimary: false } },
-      { session }
-    );
+    for (const student of students) {
+      const existing = await Tutor.findOne({
+        studentId: student._id,
+        tutorPersonId: person._id,
+        relationship,
+      }).session(session);
 
-    const updateDoc = {
-      studentId: student._id,
-      tutorPersonId: person._id,
-      relationship,
-      isPrimary: true,
-      livesWithStudent: true,
-      ...(payload.notes ? { notes: payload.notes } : {}),
-    };
+      if (payload.isPrimary === true) {
+        await Tutor.updateMany(
+          { studentId: student._id, _id: existing ? { $ne: existing._id } : { $exists: true } },
+          { $set: { isPrimary: false } },
+          { session }
+        );
+      }
 
-    const tutor = await Tutor.findOneAndUpdate(
-      { studentId: student._id, tutorPersonId: person._id, relationship },
-      { $set: updateDoc, $setOnInsert: updateDoc },
-      { upsert: true, new: true, session }
-    );
+      const setDoc = {
+        ...(payload.isPrimary !== undefined ? { isPrimary: payload.isPrimary } : { isPrimary: true }),
+        ...(payload.livesWithStudent !== undefined ? { livesWithStudent: payload.livesWithStudent } : { livesWithStudent: true }),
+        ...(payload.notes !== undefined ? { notes: payload.notes } : {}),
+      };
 
-    if (student.familyId) {
-      await Family.updateOne({ _id: student.familyId }, { $addToSet: { tutorIds: tutor._id } }, { session });
+      const setOnInsertDoc = {
+        studentId: student._id,
+        tutorPersonId: person._id,
+        relationship,
+      };
+
+      const tutor = await Tutor.findOneAndUpdate(
+        { studentId: student._id, tutorPersonId: person._id, relationship },
+        { $set: setDoc, $setOnInsert: setOnInsertDoc },
+        { upsert: true, new: true, session }
+      );
+
+      tutorIds.push(tutor._id);
+
+      if (student.familyId) {
+        await Family.updateOne({ _id: student.familyId }, { $addToSet: { tutorIds: tutor._id } }, { session });
+        affectedFamilyIds.add(String(student.familyId));
+      }
+
+      if (requestFamilyId) {
+        await Family.updateOne({ _id: requestFamilyId }, { $addToSet: { tutorIds: tutor._id } }, { session });
+        affectedFamilyIds.add(String(requestFamilyId));
+      }
     }
 
     await session.commitTransaction();
 
-    return Tutor.findById(tutor._id)
+    const tutors = await Tutor.find({ _id: { $in: tutorIds } })
       .populate('studentId')
       .populate('tutorPersonId');
+
+    const tutorsById = new Map(tutors.map((tutor) => [String(tutor._id), tutor]));
+    const orderedTutors = tutorIds.map((id) => tutorsById.get(String(id))).filter(Boolean);
+
+    // Contrato final: se retorna un resumen multiestudiante y compatibilidad con primaryTutor (primer alumno resuelto).
+    return {
+      primaryTutor: orderedTutors[0] || null,
+      tutors: orderedTutors,
+      tutorsCount: orderedTutors.length,
+      familyIds: [...affectedFamilyIds],
+    };
   } catch (error) {
     await session.abortTransaction();
     throw error;

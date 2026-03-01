@@ -59,6 +59,66 @@ function parseArgs(argv) {
   return args;
 }
 
+function parseBooleanFlag(value) {
+  if (typeof value === 'boolean') return value;
+  if (typeof value !== 'string') return false;
+
+  const normalized = value.trim().toLowerCase();
+  return ['1', 'true', 'yes', 'y', 'on'].includes(normalized);
+}
+
+function debugLog(enabled, message, payload) {
+  if (!enabled) return;
+
+  if (payload === undefined) {
+    console.log(`[importTutors:debug] ${message}`);
+    return;
+  }
+
+  console.log(`[importTutors:debug] ${message}`, payload);
+}
+
+function formatDurationMs(ms) {
+  const safeMs = Number.isFinite(ms) && ms > 0 ? ms : 0;
+  const totalSeconds = Math.floor(safeMs / 1000);
+  const minutes = String(Math.floor(totalSeconds / 60)).padStart(2, '0');
+  const seconds = String(totalSeconds % 60).padStart(2, '0');
+  return `${minutes}:${seconds}`;
+}
+
+function createProgressTracker({ scriptName, total, quiet }) {
+  const startedAt = Date.now();
+  const step = Math.max(25, Math.floor((total || 0) / 200));
+  let lastLineLength = 0;
+  let hasRendered = false;
+
+  if (!quiet) {
+    console.log(`Script: ${scriptName}`);
+    console.log(`Total filas a procesar: ${total}`);
+  }
+
+  return {
+    render({ processed, ok, invalid, errors, force = false }) {
+      if (quiet || total <= 0) return;
+      if (!force && processed !== total && (step <= 0 || processed % step !== 0)) return;
+
+      const elapsedMs = Date.now() - startedAt;
+      const percent = Math.floor((processed / total) * 100);
+      const avgPerRowMs = processed > 0 ? elapsedMs / processed : 0;
+      const etaMs = processed > 0 ? Math.max(0, (total - processed) * avgPerRowMs) : 0;
+      const line = `\r${percent}% (${processed}/${total}) | ok:${ok} invalid:${invalid} errors:${errors} | elapsed:${formatDurationMs(elapsedMs)} ETA:${formatDurationMs(etaMs)}`;
+
+      const padding = Math.max(0, lastLineLength - line.length);
+      process.stdout.write(line + ' '.repeat(padding));
+      lastLineLength = line.length;
+      hasRendered = true;
+    },
+    finish() {
+      if (!quiet && hasRendered) console.log('');
+    },
+  };
+}
+
 function normalizeHeader(value) {
   return String(value || '')
     .normalize('NFD')
@@ -393,6 +453,8 @@ async function upsertTutorForStudent({ student, person, relationship, notes }, r
 
 async function run() {
   const args = parseArgs(process.argv);
+  const debug = parseBooleanFlag(args.debug);
+  const quiet = parseBooleanFlag(args.quiet);
 
   if (!args.file) {
     console.error('Uso: node scripts/importTutors.js --file ./data/parents.csv');
@@ -434,18 +496,27 @@ async function run() {
     const content = fs.readFileSync(filePath, 'utf8');
     const rows = parseCSV(content);
     report.totalRows = rows.length;
+    const progress = createProgressTracker({ scriptName: 'importTutors', total: rows.length, quiet });
+    let processed = 0;
+    let ok = 0;
+    let invalid = 0;
+    let errors = 0;
 
     for (const row of rows) {
       const mapped = mapRow(row.raw);
+      debugLog(debug, 'Procesando fila', { rowNumber: row.rowNumber, studentCod: mapped.studentCod, studentCods: mapped.studentCods });
       const parsed = rowSchema.safeParse(mapped);
 
       if (!parsed.success) {
         report.rowsInvalid += 1;
+        invalid += 1;
+        processed += 1;
         errorRows.push({
           rowNumber: row.rowNumber,
           studentCod: mapped.studentCod || null,
           reason: parsed.error.issues.map((issue) => issue.message).join('; '),
         });
+        progress.render({ processed, ok, invalid, errors });
         continue;
       }
 
@@ -544,15 +615,24 @@ async function run() {
             familyId: baseFamily._id,
           });
         }
+
+        ok += 1;
       } catch (error) {
         report.errors += 1;
+        errors += 1;
         errorRows.push({
           rowNumber: row.rowNumber,
           studentCod: studentCodes.join(',') || null,
           reason: error.message,
         });
       }
+
+      processed += 1;
+      progress.render({ processed, ok, invalid, errors });
     }
+
+    progress.render({ processed, ok, invalid, errors, force: true });
+    progress.finish();
 
     const logsDir = path.resolve(process.cwd(), 'logs');
     fs.mkdirSync(logsDir, { recursive: true });

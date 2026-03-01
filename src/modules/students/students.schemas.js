@@ -74,6 +74,12 @@ export const studentBankCodeSchema = z.object({
 });
 
 
+
+export const studentUnassignedQuerySchema = z.object({
+  limit: z.union([z.string(), z.number()]).optional(),
+  cursor: objectIdSchema.optional(),
+});
+
 export const studentSearchQuerySchema = z.object({
   q: z.string().trim().optional(),
   dni: z.string().trim().optional(),

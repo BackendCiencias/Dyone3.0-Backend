@@ -365,6 +365,57 @@ export async function searchStudentAutocompleteService({ q, dni, limit }) {
   return mapped.slice(0, normalizedLimit);
 }
 
+
+export async function searchUnassignedStudentsService({ limit = 20, cursor }) {
+  const normalizedLimit = Math.max(1, Math.min(50, toNumber(limit, 20)));
+
+  const filter = {
+    $or: [
+      { familyId: null },
+      { familyId: { $exists: false } },
+    ],
+  };
+
+  if (cursor) {
+    if (!mongoose.Types.ObjectId.isValid(cursor)) {
+      throw new ApiError(400, 'cursor inválido');
+    }
+    filter._id = { $gt: cursor };
+  }
+
+  const rows = await Student.find(filter)
+    .sort({ _id: 1 })
+    .limit(normalizedLimit + 1)
+    .populate({
+      path: 'personId',
+      select: 'names lastNames dni gender',
+    })
+    .lean();
+
+  const hasMore = rows.length > normalizedLimit;
+  const selected = hasMore ? rows.slice(0, normalizedLimit) : rows;
+
+  const items = selected.map((student) => ({
+    _id: String(student._id),
+    internalCode: student.internalCode,
+    personId: student.personId
+      ? {
+        _id: String(student.personId._id),
+        names: student.personId.names,
+        lastNames: student.personId.lastNames,
+        dni: student.personId.dni ?? null,
+        gender: student.personId.gender,
+      }
+      : null,
+    isActive: Boolean(student.isActive),
+  }));
+
+  return {
+    items,
+    nextCursor: hasMore ? String(selected[selected.length - 1]._id) : null,
+  };
+}
+
 export async function searchStudentsService({ q, limit = 20, cursor }) {
   const term = String(q || '').trim();
   if (!term) throw new ApiError(400, 'q es requerido');

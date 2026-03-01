@@ -12,14 +12,21 @@ function normalizeDni(dni) {
   return normalized;
 }
 
-function normalizePhones(phones) {
-  const raw = Array.isArray(phones) ? phones.join(' ') : String(phones || '');
-  if (!raw.trim()) return [];
+function normalizePhone(value) {
+  const raw = String(value || '').trim().replace(/\s+/g, ' ');
+  if (!raw) return undefined;
 
-  return raw
-    .split(/[;,\-\s]+/)
-    .map((v) => v.replace(/\D/g, ''))
-    .filter(Boolean);
+  const normalized = raw.replace(/[\s-]+/g, '');
+  return normalized || undefined;
+}
+
+function normalizePhones(phones) {
+  if (Array.isArray(phones)) {
+    return phones.map(normalizePhone).filter(Boolean);
+  }
+
+  const normalized = normalizePhone(phones);
+  return normalized ? [normalized] : [];
 }
 
 function mapRelationship(value) {
@@ -81,11 +88,13 @@ async function resolveStudents({ studentId, studentCods }, session) {
   return students;
 }
 
-async function resolveTutorPerson({ names, lastNames, dni, phones }, session) {
+async function resolveTutorPerson({ names, lastNames, dni, phones, phone }, session) {
   const normalizedDni = normalizeDni(dni);
   const normalizedPhones = normalizePhones(phones);
-  const mainPhone = normalizedPhones[0];
-  const extraPhones = normalizedPhones.slice(1);
+  const fallbackPhone = normalizePhone(phone);
+  const resolvedPhones = normalizedPhones.length ? normalizedPhones : (fallbackPhone ? [fallbackPhone] : []);
+  const mainPhone = resolvedPhones[0];
+  const extraPhones = resolvedPhones.slice(1);
 
   let person = null;
   if (normalizedDni) {
@@ -213,7 +222,7 @@ export async function upsertTutorService(payload) {
 
     const tutors = await Tutor.find({ _id: { $in: tutorIds } })
       .populate('studentId')
-      .populate('tutorPersonId');
+      .populate({ path: 'tutorPersonId', select: 'names lastNames dni phone gender' });
 
     const tutorsById = new Map(tutors.map((tutor) => [String(tutor._id), tutor]));
     const orderedTutors = tutorIds.map((id) => tutorsById.get(String(id))).filter(Boolean);
@@ -274,7 +283,7 @@ export async function updateTutorService(tutorId, payload) {
     await session.commitTransaction();
 
     return Tutor.findById(tutor._id)
-      .populate('tutorPersonId')
+      .populate({ path: 'tutorPersonId', select: 'names lastNames dni phone gender' })
       .populate('studentId');
   } catch (error) {
     await session.abortTransaction();

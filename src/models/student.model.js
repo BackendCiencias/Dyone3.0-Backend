@@ -18,5 +18,7 @@ const studentSchema = new mongoose.Schema(
 );
 
 studentSchema.index({ personId: 1 }, { unique: true });
+studentSchema.index({ familyId: 1 });
+studentSchema.index({ _id: 1 });
 
 export const Student = mongoose.model('Student', studentSchema);

@@ -18,7 +18,7 @@ const personSchema = z.object({
 
 export const studentCreateSchema = z.object({
   person: personSchema,
-  classroomId: z.string().min(1),
+  classroomId: z.string().min(1).optional(),
   familyId: z.string().optional(),
   entryDate: z.string().optional(),
   notes: z.string().optional(),

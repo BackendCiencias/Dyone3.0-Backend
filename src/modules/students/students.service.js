@@ -175,8 +175,8 @@ export async function createStudentService({ person, familyId, classroomId, entr
   session.startTransaction();
 
   try {
-    const classroom = await Classroom.findById(classroomId).session(session);
-    if (!classroom) {
+    const classroom = classroomId ? await Classroom.findById(classroomId).session(session) : null;
+    if (classroomId && !classroom) {
       throw new ApiError(404, 'Classroom no encontrado');
     }
 
@@ -186,9 +186,6 @@ export async function createStudentService({ person, familyId, classroomId, entr
     if (familyId) {
       family = await Family.findById(familyId).session(session);
       if (!family) throw new ApiError(404, 'Familia no encontrada');
-    } else {
-      family = new Family({ tutorIds: [], studentIds: [], notes: 'Stub creado desde POST /api/students' });
-      await family.save({ session });
     }
 
     const existingStudent = await Student.findOne({ personId: personDoc._id }).session(session);
@@ -198,10 +195,11 @@ export async function createStudentService({ person, familyId, classroomId, entr
 
     const internalCode = await nextStudentCode(session);
 
+    // Student puede existir sin familia; matrícula/StudentCycle define su estado activo.
     const student = await Student.create([
       {
         personId: personDoc._id,
-        familyId: family._id,
+        ...(family ? { familyId: family._id } : {}),
         internalCode,
         entryDate: entryDate ? new Date(entryDate) : undefined,
         notes,
@@ -210,37 +208,41 @@ export async function createStudentService({ person, familyId, classroomId, entr
 
     const studentDoc = student[0];
 
-    await Family.updateOne({ _id: family._id }, { $addToSet: { studentIds: studentDoc._id } }, { session });
+    if (family) {
+      await Family.updateOne({ _id: family._id }, { $addToSet: { studentIds: studentDoc._id } }, { session });
+    }
 
-    const cycle = await resolveCurrentCycle(session);
+    if (classroom) {
+      const cycle = await resolveCurrentCycle(session);
 
-    await StudentCycle.updateOne(
-      { studentId: studentDoc._id, cycleId: cycle._id, campusId: classroom.campusId },
-      {
-        $setOnInsert: {
-          studentId: studentDoc._id,
-          cycleId: cycle._id,
-          campusId: classroom.campusId,
-          status: 'ABSENT',
+      await StudentCycle.updateOne(
+        { studentId: studentDoc._id, cycleId: cycle._id, campusId: classroom.campusId },
+        {
+          $setOnInsert: {
+            studentId: studentDoc._id,
+            cycleId: cycle._id,
+            campusId: classroom.campusId,
+            status: 'ABSENT',
+          },
         },
-      },
-      { upsert: true, session }
-    );
+        { upsert: true, session }
+      );
 
-    await Vacancy.updateOne(
-      { studentId: studentDoc._id, cycleId: cycle._id },
-      {
-        $setOnInsert: {
-          studentId: studentDoc._id,
-          cycleId: cycle._id,
+      await Vacancy.updateOne(
+        { studentId: studentDoc._id, cycleId: cycle._id },
+        {
+          $setOnInsert: {
+            studentId: studentDoc._id,
+            cycleId: cycle._id,
+          },
+          $set: {
+            classroomId: classroom._id,
+            notes: notes || undefined,
+          },
         },
-        $set: {
-          classroomId: classroom._id,
-          notes: notes || undefined,
-        },
-      },
-      { upsert: true, session }
-    );
+        { upsert: true, session }
+      );
+    }
 
     await session.commitTransaction();
 

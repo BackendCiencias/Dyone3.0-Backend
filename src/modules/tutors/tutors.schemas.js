@@ -13,6 +13,7 @@ export const tutorCreateSchema = z.object({
   names: z.string().trim().min(1),
   lastNames: z.string().trim().min(1),
   dni: nullableString,
+  phone: z.string().trim().optional(),
   phones: z.union([z.string(), z.array(z.string())]).optional(),
   notes: z.string().optional(),
   isPrimary: z.boolean().optional(),

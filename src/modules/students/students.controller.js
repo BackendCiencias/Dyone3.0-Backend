@@ -14,6 +14,7 @@ import {
   updateStudentIdentityService,
   updateStudentInternalNotesService,
   updateStudentBankCodeService,
+  searchUnassignedStudentsService,
 } from './students.service.js';
 
 const ENABLE_STUDENTS_BY_CAMPUS_DEBUG =
@@ -122,5 +123,10 @@ export const updateStudentBankCode = asyncHandler(async (req, res) => {
     req.validated.bankCode,
     req.user?.id
   );
+  res.json(data);
+});
+
+export const listUnassignedStudents = asyncHandler(async (req, res) => {
+  const data = await searchUnassignedStudentsService(req.validatedQuery || req.query);
   res.json(data);
 });

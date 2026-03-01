@@ -263,7 +263,7 @@ export async function updateTutorService(tutorId, payload) {
     }
 
     const tutorUpdates = {};
-    if (payload.relationship !== undefined) tutorUpdates.relationship = mapRelationship(payload.relationship);
+    if (payload.relationship !== undefined) tutorUpdates.relationship = toTitleCase(payload.relationship);
     if (payload.isPrimary !== undefined) tutorUpdates.isPrimary = payload.isPrimary;
     if (payload.livesWithStudent !== undefined) tutorUpdates.livesWithStudent = payload.livesWithStudent;
     if (payload.notes !== undefined) tutorUpdates.notes = payload.notes;

@@ -13,7 +13,7 @@ router.use(authMiddleware);
 router.post('/', requireRoles(['ADMIN', 'SECRETARY', 'DIRECTOR', 'PROMOTER']), validate(tutorCreateSchema), upsertTutor);
 router.post('/student/:studentId', requireRoles(['ADMIN', 'SECRETARY', 'DIRECTOR', 'PROMOTER']), (req, _res, next) => { req.body.studentId = req.params.studentId; next(); }, validate(tutorCreateSchema), upsertTutor);
 
-router.patch('/:id', requireRoles(['ADMIN']), validateRequest({ params: tutorIdParamsSchema, body: tutorUpdateSchema }), updateTutor);
+router.patch('/:id', requireRoles(['ADMIN', 'SECRETARY']), validateRequest({ params: tutorIdParamsSchema, body: tutorUpdateSchema }), updateTutor);
 router.delete('/:id', requireRoles(['ADMIN']), validateRequest({ params: tutorIdParamsSchema }), deleteTutor);
 
 export default router;

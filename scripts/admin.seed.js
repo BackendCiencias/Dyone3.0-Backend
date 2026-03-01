@@ -13,8 +13,8 @@ const PASSWORD = 'CienciasyCimas2026';
 const usersToSeed = [
   {
     email: 'admin@cienciasperu.edu.pe',
-    roles: ['ADMIN'],
-    campusScope: ['ALL'],
+    roles: ['ADMIN','SECRETARY'],
+    campusScope: ['ALL','CIENCIAS', 'CIMAS','CIENCIAS_APLICADAS'],
     person: {
       names: 'Administrador',
       lastNames: 'Sistema',

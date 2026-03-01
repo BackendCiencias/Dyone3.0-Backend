@@ -53,6 +53,75 @@ function parseArgs(argv) {
   return args;
 }
 
+function parseBooleanFlag(value) {
+  if (typeof value === 'boolean') return value;
+  if (typeof value !== 'string') return false;
+
+  const normalized = value.trim().toLowerCase();
+  return ['1', 'true', 'yes', 'y', 'on'].includes(normalized);
+}
+
+function debugLog(enabled, message, payload) {
+  if (!enabled) return;
+
+  if (payload === undefined) {
+    console.log(`[importStudents:debug] ${message}`);
+    return;
+  }
+
+  console.log(`[importStudents:debug] ${message}`, payload);
+}
+
+function formatDurationMs(ms) {
+  const safeMs = Number.isFinite(ms) && ms > 0 ? ms : 0;
+  const totalSeconds = Math.floor(safeMs / 1000);
+  const minutes = String(Math.floor(totalSeconds / 60)).padStart(2, '0');
+  const seconds = String(totalSeconds % 60).padStart(2, '0');
+  return `${minutes}:${seconds}`;
+}
+
+function createProgressTracker({ scriptName, total, quiet }) {
+  const startedAt = Date.now();
+  const step = Math.max(25, Math.floor((total || 0) / 200));
+  let lastLineLength = 0;
+  let hasRendered = false;
+
+  if (!quiet) {
+    console.log(`Script: ${scriptName}`);
+    console.log(`Total filas a procesar: ${total}`);
+  }
+
+  return {
+    render({ processed, ok, invalid, errors, force = false }) {
+      if (quiet || total <= 0) return;
+      if (!force && processed !== total && (step <= 0 || processed % step !== 0)) return;
+
+      const elapsedMs = Date.now() - startedAt;
+      const percent = Math.floor((processed / total) * 100);
+      const avgPerRowMs = processed > 0 ? elapsedMs / processed : 0;
+      const etaMs = processed > 0 ? Math.max(0, (total - processed) * avgPerRowMs) : 0;
+      const line = `\r${percent}% (${processed}/${total}) | ok:${ok} invalid:${invalid} errors:${errors} | elapsed:${formatDurationMs(elapsedMs)} ETA:${formatDurationMs(etaMs)}`;
+
+      const padding = Math.max(0, lastLineLength - line.length);
+      process.stdout.write(line + ' '.repeat(padding));
+      lastLineLength = line.length;
+      hasRendered = true;
+    },
+    finish() {
+      if (!quiet && hasRendered) console.log('');
+    },
+  };
+}
+
+function resolveStudentCycleEnrolledStatus() {
+  const statusPath = StudentCycle.schema.path('status');
+  const enumValues = Array.isArray(statusPath?.enumValues) ? statusPath.enumValues : [];
+
+  if (enumValues.includes('ENROLLED')) return 'ENROLLED';
+  if (enumValues.length > 0) return enumValues[0];
+  return 'ENROLLED';
+}
+
 function normalizeHeader(value) {
   return String(value || '')
     .normalize('NFD')
@@ -315,27 +384,41 @@ async function resolveOrCreateClassroom({ campusId, cycleId, grade, section, lev
   }
 }
 
-async function upsertStudentCycle({ studentId, cycleId, campusId, notes }, report) {
-  const updateResult = await StudentCycle.updateOne(
-    { studentId, cycleId, campusId },
-    {
-      $setOnInsert: {
-        studentId,
-        cycleId,
-        campusId,
-        status: 'ENROLLED',
-        enrolledAt: new Date(),
-        notes: notes || 'Importación inicial',
-      },
-      $set: {
-        status: 'ENROLLED',
-        notes: notes || 'Importación inicial',
-      },
+async function upsertStudentCycle({ studentId, cycleId, campusId, notes, debug }, report) {
+  const enrolledStatus = resolveStudentCycleEnrolledStatus();
+  const updateDoc = {
+    $setOnInsert: {
+      studentId,
+      cycleId,
+      campusId,
+      enrolledAt: new Date(),
     },
-    { upsert: true }
-  );
+    $set: {
+      status: enrolledStatus,
+      notes: notes || 'Importación inicial',
+    },
+  };
 
-  if (updateResult.upsertedCount > 0) report.studentCyclesCreated += 1;
+  debugLog(debug, 'StudentCycle.updateOne filter', { studentId, cycleId, campusId });
+  debugLog(debug, 'StudentCycle.updateOne updateDoc', updateDoc);
+
+  try {
+    const updateResult = await StudentCycle.updateOne(
+      { studentId, cycleId, campusId },
+      updateDoc,
+      { upsert: true }
+    );
+
+    if (updateResult.upsertedCount > 0) report.studentCyclesCreated += 1;
+  } catch (error) {
+    debugLog(debug, 'Error en StudentCycle.updateOne', {
+      message: error?.message,
+      stack: error?.stack,
+      code: error?.code,
+      name: error?.name,
+    });
+    throw error;
+  }
 }
 
 async function resolveOrCreateDraftEnrollment({ student, cycleId, campusId }, report) {
@@ -393,6 +476,8 @@ async function upsertEnrollmentStudent({ enrollment, studentId, classroomId, cam
 
 async function run() {
   const args = parseArgs(process.argv);
+  const debug = parseBooleanFlag(args.debug);
+  const quiet = parseBooleanFlag(args.quiet);
 
   if (!args.file) {
     console.error('Uso: node scripts/importStudents.js --file ./data/students_2025.csv');
@@ -406,6 +491,27 @@ async function run() {
   }
 
   await connectDB();
+
+  if (debug) {
+    const statusPath = StudentCycle.schema.path('status');
+    const cyclePath = StudentCycle.schema.path('cycleId');
+    const campusPath = StudentCycle.schema.path('campusId');
+
+    debugLog(true, 'StudentCycle schema relevant paths', {
+      status: {
+        instance: statusPath?.instance,
+        enumValues: statusPath?.enumValues,
+      },
+      cycleId: {
+        instance: cyclePath?.instance,
+        options: cyclePath?.options,
+      },
+      campusId: {
+        instance: campusPath?.instance,
+        options: campusPath?.options,
+      },
+    });
+  }
 
   const report = {
     totalRows: 0,
@@ -436,18 +542,27 @@ async function run() {
     const content = fs.readFileSync(filePath, 'utf8');
     const rows = parseCSV(content);
     report.totalRows = rows.length;
+    const progress = createProgressTracker({ scriptName: 'importStudents', total: rows.length, quiet });
+    let processed = 0;
+    let ok = 0;
+    let invalid = 0;
+    let errors = 0;
 
     for (const row of rows) {
       const mapped = mapRow(row.raw, report, row.rowNumber);
+      debugLog(debug, 'Procesando fila', { rowNumber: row.rowNumber, internalCode: mapped.internalCode });
       const parsed = rowSchema.safeParse(mapped);
 
       if (!parsed.success) {
         report.rowsInvalid += 1;
+        invalid += 1;
+        processed += 1;
         errorRows.push({
           rowNumber: row.rowNumber,
           internalCode: mapped.internalCode || null,
           reason: parsed.error.issues.map((issue) => issue.message).join('; '),
         });
+        progress.render({ processed, ok, invalid, errors });
         continue;
       }
 
@@ -472,6 +587,7 @@ async function run() {
           cycleId: activeCycle._id,
           campusId: campus._id,
           notes: data.notes,
+          debug,
         }, report);
 
         const enrollment = await resolveOrCreateDraftEnrollment({
@@ -496,15 +612,23 @@ async function run() {
           classroomId: classroom._id,
           cycleId: activeCycle._id,
         });
+        ok += 1;
       } catch (error) {
         report.errors += 1;
+        errors += 1;
         errorRows.push({
           rowNumber: row.rowNumber,
           internalCode: data.internalCode || null,
           reason: error.message,
         });
       }
+
+      processed += 1;
+      progress.render({ processed, ok, invalid, errors });
     }
+
+    progress.render({ processed, ok, invalid, errors, force: true });
+    progress.finish();
 
     const logsDir = path.resolve(process.cwd(), 'logs');
     fs.mkdirSync(logsDir, { recursive: true });

@@ -23,18 +23,23 @@ function normalizePhones(phones) {
 }
 
 function mapRelationship(value) {
-  const allowedRelationships = ['MADRE', 'PADRE', 'HERMANA', 'HERMANO', 'ABUELA', 'ABUELO', 'APODERADO'];
-  if (!value || !allowedRelationships.includes(String(value).toUpperCase())) {
-    throw new ApiError(400, `Relación no permitida. Valores permitidos: ${allowedRelationships.join(', ')}`);
+  const relationMap = {
+    PADRE: 'Padre',
+    MADRE: 'Madre',
+    HERMANA: 'Hermana',
+    HERMANO: 'Hermano',
+    ABUELA: 'Abuela',
+    ABUELO: 'Abuelo',
+    APODERADO: 'Apoderado',
+  };
+
+  const normalized = String(value || '').trim().toUpperCase();
+  const mapped = relationMap[normalized];
+  if (!mapped) {
+    throw new ApiError(400, `Relación no permitida. Valores permitidos: ${Object.keys(relationMap).join(', ')}`);
   }
 
-  if (value === 'PADRE' || value === 'Padre') return 'Padre';
-  if (value === 'MADRE' || value === 'Madre') return 'Madre';
-  if (value === 'HERMANA' || value === 'Hermana') return 'Hermana';
-  if (value === 'HERMANO' || value === 'Hermano') return 'Hermano';
-  if (value === 'ABUELA' || value === 'Abuela') return 'Abuela';
-  if (value === 'ABUELO' || value === 'Abuelo') return 'Abuelo';
-  return 'Apoderado';
+  return mapped;
 }
 
 function extractStudentCods(payload) {
@@ -117,6 +122,24 @@ async function resolveTutorPerson({ names, lastNames, dni, phones }, session) {
   }
 
   return person;
+}
+
+
+function sanitizeSpaces(value) {
+  return String(value || '').trim().replace(/\s+/g, ' ');
+}
+
+function toTitleCase(value) {
+  return sanitizeSpaces(value)
+    .toLowerCase()
+    .split(' ')
+    .filter(Boolean)
+    .map((part) => part.charAt(0).toUpperCase() + part.slice(1))
+    .join(' ');
+}
+
+function toUpperCaseWords(value) {
+  return sanitizeSpaces(value).toUpperCase();
 }
 
 export async function upsertTutorService(payload) {
@@ -202,6 +225,90 @@ export async function upsertTutorService(payload) {
       tutorsCount: orderedTutors.length,
       familyIds: [...affectedFamilyIds],
     };
+  } catch (error) {
+    await session.abortTransaction();
+    throw error;
+  } finally {
+    session.endSession();
+  }
+}
+
+
+export async function updateTutorService(tutorId, payload) {
+  const session = await mongoose.startSession();
+  session.startTransaction();
+
+  try {
+    const tutor = await Tutor.findById(tutorId).session(session);
+    if (!tutor) throw new ApiError(404, 'Tutor no encontrado');
+
+    const personUpdates = {};
+    if (payload.names !== undefined) personUpdates.names = toTitleCase(payload.names);
+    if (payload.lastNames !== undefined) personUpdates.lastNames = toUpperCaseWords(payload.lastNames);
+    if (payload.dni !== undefined) personUpdates.dni = normalizeDni(payload.dni);
+    if (payload.phone !== undefined) personUpdates.phone = sanitizeSpaces(payload.phone);
+    if (payload.gender !== undefined) personUpdates.gender = payload.gender;
+
+    if (Object.keys(personUpdates).length) {
+      await Person.updateOne({ _id: tutor.tutorPersonId }, { $set: personUpdates }, { session });
+    }
+
+    const tutorUpdates = {};
+    if (payload.relationship !== undefined) tutorUpdates.relationship = mapRelationship(payload.relationship);
+    if (payload.isPrimary !== undefined) tutorUpdates.isPrimary = payload.isPrimary;
+    if (payload.livesWithStudent !== undefined) tutorUpdates.livesWithStudent = payload.livesWithStudent;
+    if (payload.notes !== undefined) tutorUpdates.notes = payload.notes;
+
+    if (payload.isPrimary === true) {
+      await Tutor.updateMany(
+        { studentId: tutor.studentId, _id: { $ne: tutor._id } },
+        { $set: { isPrimary: false } },
+        { session }
+      );
+    }
+
+    if (Object.keys(tutorUpdates).length) {
+      await Tutor.updateOne({ _id: tutor._id }, { $set: tutorUpdates }, { session });
+    }
+
+    await session.commitTransaction();
+
+    return Tutor.findById(tutor._id)
+      .populate('tutorPersonId')
+      .populate('studentId');
+  } catch (error) {
+    await session.abortTransaction();
+    throw error;
+  } finally {
+    session.endSession();
+  }
+}
+
+export async function deleteTutorService(tutorId) {
+  const session = await mongoose.startSession();
+  session.startTransaction();
+
+  try {
+    const tutor = await Tutor.findById(tutorId).session(session);
+    if (!tutor) throw new ApiError(404, 'Tutor no encontrado');
+
+    const student = await Student.findById(tutor.studentId).session(session);
+    if (student?.familyId) {
+      await Family.updateOne(
+        { _id: student.familyId },
+        { $pull: { tutorIds: tutor._id } },
+        { session }
+      );
+    }
+
+    await Tutor.deleteOne({ _id: tutor._id }, { session });
+
+    const hasMoreTutors = await Tutor.exists({ tutorPersonId: tutor.tutorPersonId }).session(session);
+    if (!hasMoreTutors) {
+      await Person.deleteOne({ _id: tutor.tutorPersonId }, { session });
+    }
+
+    await session.commitTransaction();
   } catch (error) {
     await session.abortTransaction();
     throw error;

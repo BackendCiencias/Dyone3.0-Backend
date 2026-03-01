@@ -3,7 +3,7 @@ import mongoose from 'mongoose';
 const studentSchema = new mongoose.Schema(
   {
     personId: { type: mongoose.Schema.Types.ObjectId, ref: 'Person', required: true, index: true },
-    familyId: { type: mongoose.Schema.Types.ObjectId, ref: 'Family', required: true, index: true },
+    familyId: { type: mongoose.Schema.Types.ObjectId, ref: 'Family', index: true },
 
     internalCode: { type: String, required: true, unique: true, index: true },
 

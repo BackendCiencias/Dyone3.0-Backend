@@ -25,6 +25,7 @@ export const createStudent = asyncHandler(async (req, res) => {
 });
 
 export const createStudentWithPerson = asyncHandler(async (req, res) => {
+  // Student puede existir sin familia; matrícula/StudentCycle define su estado activo.
   const student = await createStudentService(req.validated);
   res.status(201).json({
     studentId: student._id,

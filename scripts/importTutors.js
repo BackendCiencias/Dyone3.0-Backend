@@ -23,11 +23,12 @@ const RELATIONSHIP_DICTIONARY = {
 };
 
 const rowSchema = z.object({
-  studentCod: z.string().trim().min(1, 'studentCod es obligatorio'),
-  relationship: z.string().trim().optional().or(z.literal('')),
+  studentCod: z.string().trim().optional().or(z.literal('')),
+  studentCods: z.string().trim().optional().or(z.literal('')),
+  relationship: z.string().trim().min(1, 'relationship es obligatorio'),
   lastNames: z.string().trim().optional().or(z.literal('')),
   names: z.string().trim().optional().or(z.literal('')),
-  dni: z.string().trim().optional(),
+  dni: z.string().trim().optional().or(z.literal('')),
   gender: z.preprocess(
     (value) => String(value || '').trim().toUpperCase(),
     z.enum(['M', 'F'], { message: 'gender inválido (solo M o F)' })
@@ -113,172 +114,288 @@ function normalizeDni(value) {
   if (!normalized) return undefined;
 
   const lowered = normalized.toLowerCase();
-  if (['null', 'undefined', 'n/a', 'na', '-'].includes(lowered)) {
-    return undefined;
-  }
+  if (['null', 'undefined', 'n/a', 'na', '-'].includes(lowered)) return undefined;
 
   return normalized;
 }
 
+function normalizeSpaces(value) {
+  return String(value || '').trim().replace(/\s+/g, ' ');
+}
+
 function normalizePhones(value) {
-  const raw = String(value || '').trim();
+  const raw = normalizeSpaces(value);
   if (!raw) return [];
 
   return raw
-    .split(/[;,\-\s]+/)
-    .map((p) => p.replace(/\D/g, '').trim())
+    .split(/[\/,|;]+/)
+    .map((part) => part.trim())
+    .filter(Boolean)
+    .map((part) => part.replace(/\D/g, ''))
     .filter(Boolean);
 }
 
 function formatLastNames(value) {
-  return String(value || '').trim().toUpperCase();
+  return normalizeSpaces(value).toLocaleUpperCase('es-PE');
 }
 
 function formatNames(value) {
-  return String(value || '')
-    .trim()
-    .toLowerCase()
+  return normalizeSpaces(value)
+    .toLocaleLowerCase('es-PE')
     .split(' ')
     .filter(Boolean)
-    .map((w) => w.charAt(0).toUpperCase() + w.slice(1))
+    .map((w) => w.charAt(0).toLocaleUpperCase('es-PE') + w.slice(1))
     .join(' ');
+}
+
+function parseStudentCodes({ studentCod, studentCods }) {
+  const merged = [studentCod, studentCods]
+    .map((value) => String(value || ''))
+    .join('|');
+
+  return [...new Set(
+    merged
+      .split(/[\/,|;]+/)
+      .map((v) => normalizeSpaces(v))
+      .filter(Boolean)
+  )];
 }
 
 function mapRow(rawRow) {
   return {
-    studentCod: (rawRow.studentcod || '').trim(),
-    relationship: (rawRow.relationship || '').trim(),
-    lastNames: (rawRow.lastnames || '').trim(),
-    names: (rawRow.names || '').trim(),
+    studentCod: normalizeSpaces(rawRow.studentcod),
+    studentCods: normalizeSpaces(rawRow.studentcods),
+    relationship: normalizeSpaces(rawRow.relationship),
+    lastNames: normalizeSpaces(rawRow.lastnames),
+    names: normalizeSpaces(rawRow.names),
     dni: normalizeDni(rawRow.dni),
-    gender: (rawRow.gender || '').trim(),
-    phones: (rawRow.phones || '').trim(),
-    notes: (rawRow.notes || '').trim(),
+    gender: normalizeSpaces(rawRow.gender),
+    phones: normalizeSpaces(rawRow.phones),
+    notes: normalizeSpaces(rawRow.notes),
   };
 }
 
 function normalizeRelationship(input) {
   const original = String(input || '').trim();
-  if (!original) {
-    throw new Error('relationship vacío');
-  }
-
   const normalizedKey = original
     .normalize('NFD')
     .replace(/[\u0300-\u036f]/g, '')
     .toUpperCase();
 
-  const mapped = RELATIONSHIP_DICTIONARY[normalizedKey];
-  if (!mapped) {
-    throw new Error(`relationship no reconocido: ${original}`);
-  }
-
-  return mapped;
+  return RELATIONSHIP_DICTIONARY[normalizedKey] || null;
 }
 
-async function resolveTutorPerson(data, normalizedPhones) {
+async function buildStudentCache() {
+  const students = await Student.find({}).select('_id internalCode familyId').lean();
+  const map = new Map();
+
+  students.forEach((student) => {
+    map.set(student.internalCode, student);
+  });
+
+  return map;
+}
+
+async function resolveTutorPerson(data, normalizedPhones, personByDniCache, report) {
   const formattedNames = formatNames(data.names);
   const formattedLastNames = formatLastNames(data.lastNames);
 
   let person = null;
-  let created = false;
-  let updated = false;
-
   if (data.dni) {
-    person = await Person.findOne({ dni: data.dni });
+    const cached = personByDniCache.get(data.dni);
+    if (cached) person = cached;
+    else {
+      person = await Person.findOne({ dni: data.dni });
+      if (person) personByDniCache.set(data.dni, person);
+    }
   }
 
   if (!person && !data.dni && formattedNames && formattedLastNames) {
-    const candidates = await Person.find({
-      names: formattedNames,
-      lastNames: formattedLastNames,
-    }).limit(2);
-
-    if (candidates.length === 1) {
-      person = candidates[0];
-    }
+    const candidates = await Person.find({ names: formattedNames, lastNames: formattedLastNames }).limit(2);
+    if (candidates.length === 1) person = candidates[0];
   }
 
   const phone = normalizedPhones[0];
   const additionalPhones = normalizedPhones.slice(1);
-  const additionalPhonesNote = additionalPhones.length
-    ? `Teléfonos adicionales: ${additionalPhones.join(', ')}`
-    : '';
+  const additionalPhonesNote = additionalPhones.length ? `Teléfonos adicionales: ${additionalPhones.join(', ')}` : '';
 
   if (!person) {
     if (!formattedNames || !formattedLastNames) {
-      throw new Error('No se puede crear Person del tutor: faltan nombres/apellidos y no existe dni previo');
+      throw new Error('No se puede crear Person del tutor: faltan names/lastNames y no existe dni previo');
     }
 
-    const personNotes = [additionalPhonesNote].filter(Boolean).join(' | ') || undefined;
+    try {
+      person = await Person.create({
+        names: formattedNames,
+        lastNames: formattedLastNames,
+        ...(data.dni ? { dni: data.dni } : {}),
+        gender: data.gender,
+        ...(phone ? { phone } : {}),
+        ...(additionalPhonesNote ? { notes: additionalPhonesNote } : {}),
+      });
+      report.peopleCreated += 1;
+    } catch (error) {
+      if (error?.code === 11000 && data.dni) {
+        person = await Person.findOne({ dni: data.dni });
+      } else {
+        throw error;
+      }
+    }
 
-    person = await Person.create({
-      names: formattedNames,
-      lastNames: formattedLastNames,
-      ...(data.dni ? { dni: data.dni } : {}),
-      gender: data.gender,
-      ...(phone ? { phone } : {}),
-      ...(personNotes ? { notes: personNotes } : {}),
+    if (person && data.dni) personByDniCache.set(data.dni, person);
+    return person;
+  }
+
+  const setUpdates = {};
+  if (formattedNames && person.names !== formattedNames) setUpdates.names = formattedNames;
+  if (formattedLastNames && person.lastNames !== formattedLastNames) setUpdates.lastNames = formattedLastNames;
+  if (data.dni && person.dni !== data.dni) setUpdates.dni = data.dni;
+  if (person.gender !== data.gender) setUpdates.gender = data.gender;
+  if (phone && person.phone !== phone) setUpdates.phone = phone;
+  if (additionalPhonesNote && !(person.notes || '').includes(additionalPhonesNote)) {
+    setUpdates.notes = person.notes ? `${person.notes} | ${additionalPhonesNote}` : additionalPhonesNote;
+  }
+
+  if (Object.keys(setUpdates).length) {
+    await Person.updateOne({ _id: person._id }, { $set: setUpdates });
+    report.peopleUpdated += 1;
+    person = await Person.findById(person._id);
+  }
+
+  if (person?.dni) personByDniCache.set(person.dni, person);
+  return person;
+}
+
+async function ensureFamilyForStudent(student, familyByStudentCache, report) {
+  const cached = familyByStudentCache.get(String(student._id));
+  if (cached) return cached;
+
+  let family = null;
+  if (student.familyId) {
+    family = await Family.findById(student.familyId);
+  }
+
+  if (!family) {
+    family = await Family.create({
+      tutorIds: [],
+      studentIds: [student._id],
+      notes: 'Creada por importación de tutores',
     });
 
-    created = true;
-    return { person, created, updated };
+    await Student.updateOne({ _id: student._id }, { $set: { familyId: family._id } });
+    report.familiesCreated += 1;
+    report.studentsLinkedToFamily += 1;
+
+    student.familyId = family._id;
+  } else {
+    await Family.updateOne({ _id: family._id }, { $addToSet: { studentIds: student._id } });
   }
 
-  const personSet = {};
-
-  if (formattedNames && person.names !== formattedNames) personSet.names = formattedNames;
-  if (formattedLastNames && person.lastNames !== formattedLastNames) personSet.lastNames = formattedLastNames;
-  if (data.dni && person.dni !== data.dni) personSet.dni = data.dni;
-  if (person.gender !== data.gender) personSet.gender = data.gender;
-  if (phone && person.phone !== phone) personSet.phone = phone;
-
-  if (additionalPhonesNote && !(person.notes || '').includes(additionalPhonesNote)) {
-    personSet.notes = person.notes ? `${person.notes} | ${additionalPhonesNote}` : additionalPhonesNote;
-  }
-
-  if (Object.keys(personSet).length) {
-    await Person.updateOne({ _id: person._id }, { $set: personSet });
-    updated = true;
-  }
-
-  return { person, created, updated };
+  familyByStudentCache.set(String(student._id), family);
+  return family;
 }
 
+async function mergeFamiliesIfNeeded(familyA, familyB, familyByStudentCache, report) {
+  if (!familyA || !familyB) return familyA || familyB;
+  if (String(familyA._id) === String(familyB._id)) return familyA;
 
-async function findFamilyByTutorPersonId(tutorPersonId) {
-  const tutors = await Tutor.find({ tutorPersonId }).select('_id').lean();
-  if (!tutors.length) return null;
+  const mergeEnabled = String(process.env.MERGE_FAMILIES || '').toLowerCase() === 'true';
+  if (!mergeEnabled) return familyA;
 
-  return Family.findOne({ tutorIds: { $in: tutors.map((row) => row._id) } });
+  const destination = familyA.createdAt && familyB.createdAt && familyA.createdAt > familyB.createdAt ? familyB : familyA;
+  const source = String(destination._id) === String(familyA._id) ? familyB : familyA;
+
+  const session = await mongoose.startSession();
+  session.startTransaction();
+
+  try {
+    const sourceFamily = await Family.findById(source._id).session(session);
+    if (!sourceFamily) {
+      await session.commitTransaction();
+      return destination;
+    }
+
+    await Family.updateOne(
+      { _id: destination._id },
+      {
+        $addToSet: {
+          studentIds: { $each: sourceFamily.studentIds || [] },
+          tutorIds: { $each: sourceFamily.tutorIds || [] },
+        },
+      },
+      { session }
+    );
+
+    await Student.updateMany(
+      { _id: { $in: sourceFamily.studentIds || [] } },
+      { $set: { familyId: destination._id } },
+      { session }
+    );
+
+    await Family.deleteOne({ _id: source._id }, { session });
+
+    await session.commitTransaction();
+
+    (sourceFamily.studentIds || []).forEach((studentId) => {
+      familyByStudentCache.set(String(studentId), destination);
+    });
+
+    report.familiesMerged += 1;
+    return destination;
+  } catch (error) {
+    await session.abortTransaction();
+    throw error;
+  } finally {
+    session.endSession();
+  }
 }
 
-async function linkStudentToFamily(student, family, previousFamilyId = null) {
-  await Student.updateOne({ _id: student._id }, { $set: { familyId: family._id } });
+async function upsertTutorForStudent({ student, person, relationship, notes }, report) {
+  let tutor = await Tutor.findOne({ studentId: student._id, tutorPersonId: person._id });
 
-  await Family.updateOne(
-    { _id: family._id },
-    { $addToSet: { studentIds: student._id } }
-  );
+  const existingPrimary = await Tutor.findOne({ studentId: student._id, isPrimary: true });
+  const preferredPrimary = ['Madre', 'Padre'].includes(relationship);
+  const shouldBePrimary = !existingPrimary || preferredPrimary;
 
-  if (!previousFamilyId || String(previousFamilyId) === String(family._id)) return;
+  if (!tutor) {
+    tutor = await Tutor.create({
+      studentId: student._id,
+      tutorPersonId: person._id,
+      relationship,
+      isPrimary: shouldBePrimary,
+      livesWithStudent: true,
+      ...(notes ? { notes } : {}),
+    });
+    report.tutorsCreated += 1;
+  } else {
+    const setUpdates = {};
+    if (tutor.relationship !== relationship) setUpdates.relationship = relationship;
+    if (tutor.livesWithStudent !== true) setUpdates.livesWithStudent = true;
+    if (notes && tutor.notes !== notes) setUpdates.notes = notes;
+    if (shouldBePrimary && tutor.isPrimary !== true) setUpdates.isPrimary = true;
 
-  await Family.updateOne(
-    { _id: previousFamilyId },
-    { $pull: { studentIds: student._id } }
-  );
-
-  const previousFamily = await Family.findById(previousFamilyId).lean();
-  if (previousFamily && (!previousFamily.studentIds || previousFamily.studentIds.length === 0) && (!previousFamily.tutorIds || previousFamily.tutorIds.length === 0)) {
-    await Family.deleteOne({ _id: previousFamilyId });
+    if (Object.keys(setUpdates).length) {
+      await Tutor.updateOne({ _id: tutor._id }, { $set: setUpdates });
+      report.tutorsUpdated += 1;
+      tutor = await Tutor.findById(tutor._id);
+    }
   }
+
+  if (shouldBePrimary) {
+    await Tutor.updateMany(
+      { studentId: student._id, _id: { $ne: tutor._id }, isPrimary: true },
+      { $set: { isPrimary: false } }
+    );
+  }
+
+  return tutor;
 }
 
 async function run() {
   const args = parseArgs(process.argv);
 
   if (!args.file) {
-    console.error('Uso: node scripts/importTutors.js --file ./tutors.csv');
+    console.error('Uso: node scripts/importTutors.js --file ./data/parents.csv');
     process.exit(1);
   }
 
@@ -292,15 +409,26 @@ async function run() {
 
   const report = {
     totalRows: 0,
-    created: 0,
-    updated: 0,
+    rowsInvalid: 0,
     skipped: 0,
     errors: 0,
+    peopleCreated: 0,
+    peopleUpdated: 0,
+    tutorsCreated: 0,
+    tutorsUpdated: 0,
+    familiesCreated: 0,
+    familiesMerged: 0,
+    studentsLinkedToFamily: 0,
+    missingStudents: 0,
   };
 
   const successRows = [];
   const errorRows = [];
   const skippedRows = [];
+
+  const studentByCodeCache = await buildStudentCache();
+  const personByDniCache = new Map();
+  const familyByStudentCache = new Map();
 
   try {
     const content = fs.readFileSync(filePath, 'utf8');
@@ -312,7 +440,7 @@ async function run() {
       const parsed = rowSchema.safeParse(mapped);
 
       if (!parsed.success) {
-        report.errors += 1;
+        report.rowsInvalid += 1;
         errorRows.push({
           rowNumber: row.rowNumber,
           studentCod: mapped.studentCod || null,
@@ -322,118 +450,105 @@ async function run() {
       }
 
       const data = parsed.data;
+      const studentCodes = parseStudentCodes(data);
+
+      if (!studentCodes.length) {
+        report.skipped += 1;
+        skippedRows.push({
+          rowNumber: row.rowNumber,
+          reason: 'No hay studentCod/studentCods válidos en la fila',
+        });
+        continue;
+      }
 
       if (!((data.names && data.lastNames) || data.dni)) {
         report.skipped += 1;
         skippedRows.push({
           rowNumber: row.rowNumber,
-          studentCod: data.studentCod,
+          studentCod: studentCodes.join(','),
           reason: 'Faltan datos del tutor (names+lastNames o dni)',
         });
         continue;
       }
 
+      const relationship = normalizeRelationship(data.relationship);
+      if (!relationship) {
+        report.skipped += 1;
+        skippedRows.push({
+          rowNumber: row.rowNumber,
+          studentCod: studentCodes.join(','),
+          reason: `relationship no permitido: ${data.relationship}`,
+        });
+        continue;
+      }
+
       try {
-        const relationship = normalizeRelationship(data.relationship);
-        const student = await Student.findOne({ internalCode: data.studentCod });
-        if (!student) {
-          throw new Error('No existe Student para studentCod');
+        const students = studentCodes
+          .map((code) => studentByCodeCache.get(code))
+          .filter(Boolean)
+          .map((student) => ({ ...student }));
+
+        const missingCodes = studentCodes.filter((code) => !studentByCodeCache.has(code));
+        if (missingCodes.length) {
+          report.missingStudents += missingCodes.length;
+          skippedRows.push({
+            rowNumber: row.rowNumber,
+            studentCod: missingCodes.join(','),
+            reason: 'No existe Student para studentCod',
+          });
+        }
+
+        if (!students.length) {
+          report.skipped += 1;
+          continue;
         }
 
         const normalizedPhones = normalizePhones(data.phones);
-        const { person } = await resolveTutorPerson(data, normalizedPhones);
+        const person = await resolveTutorPerson(data, normalizedPhones, personByDniCache, report);
 
-        let tutor = await Tutor.findOne({
-          studentId: student._id,
-          tutorPersonId: person._id,
-        });
+        let baseFamily = null;
 
-        let createdSomething = false;
-        let updatedSomething = false;
+        for (const student of students) {
+          const family = await ensureFamilyForStudent(student, familyByStudentCache, report);
+          if (!baseFamily) baseFamily = family;
+          else baseFamily = await mergeFamiliesIfNeeded(baseFamily, family, familyByStudentCache, report);
 
-        if (!tutor) {
-          tutor = await Tutor.create({
+          const tutor = await upsertTutorForStudent({
+            student,
+            person,
+            relationship,
+            notes: data.notes,
+          }, report);
+
+          await Family.updateOne(
+            { _id: baseFamily._id },
+            {
+              $addToSet: {
+                studentIds: student._id,
+                tutorIds: tutor._id,
+              },
+            }
+          );
+
+          await Student.updateOne({ _id: student._id }, { $set: { familyId: baseFamily._id } });
+          student.familyId = baseFamily._id;
+          studentByCodeCache.set(student.internalCode, student);
+          familyByStudentCache.set(String(student._id), baseFamily);
+
+          successRows.push({
+            rowNumber: row.rowNumber,
+            studentCod: student.internalCode,
             studentId: student._id,
             tutorPersonId: person._id,
             relationship,
-            isPrimary: true,
-            livesWithStudent: true,
-            notes: data.notes || undefined,
+            familyId: baseFamily._id,
           });
-          createdSomething = true;
-        } else {
-          const tutorSet = {
-            isPrimary: true,
-            livesWithStudent: true,
-          };
-
-          if (data.notes && tutor.notes !== data.notes) {
-            tutorSet.notes = data.notes;
-          }
-
-          if (
-            tutor.isPrimary !== true ||
-            tutor.livesWithStudent !== true ||
-            (data.notes && tutor.notes !== data.notes)
-          ) {
-            await Tutor.updateOne({ _id: tutor._id }, { $set: tutorSet });
-            updatedSomething = true;
-          }
         }
-
-        await Tutor.updateMany(
-          {
-            studentId: student._id,
-            _id: { $ne: tutor._id },
-            isPrimary: true,
-          },
-          { $set: { isPrimary: false } }
-        );
-
-        let targetFamily = null;
-        const familyByTutor = await findFamilyByTutorPersonId(person._id);
-
-        if (familyByTutor) {
-          targetFamily = familyByTutor;
-          if (!student.familyId || String(student.familyId) !== String(familyByTutor._id)) {
-            await linkStudentToFamily(student, familyByTutor, student.familyId || null);
-            student.familyId = familyByTutor._id;
-          }
-        } else if (student.familyId) {
-          targetFamily = await Family.findById(student.familyId);
-        }
-
-        if (!targetFamily) {
-          targetFamily = await Family.create({
-            tutorIds: [],
-            studentIds: [student._id],
-            notes: 'Creado automáticamente por importación inicial.',
-          });
-          await Student.updateOne({ _id: student._id }, { $set: { familyId: targetFamily._id } });
-          student.familyId = targetFamily._id;
-        }
-
-        await Family.updateOne(
-          { _id: targetFamily._id },
-          { $addToSet: { tutorIds: tutor._id, studentIds: student._id } }
-        );
-
-        if (createdSomething) report.created += 1;
-        else if (updatedSomething) report.updated += 1;
-
-        successRows.push({
-          rowNumber: row.rowNumber,
-          studentCod: data.studentCod,
-          studentId: student._id,
-          tutorPersonId: person._id,
-          relationship,
-          isPrimary: true,
-        });
       } catch (error) {
         report.errors += 1;
         errorRows.push({
           rowNumber: row.rowNumber,
-          studentCod: data.studentCod || null,
+          studentCod: studentCodes.join(',') || null,
           reason: error.message,
         });
       }
@@ -442,30 +557,29 @@ async function run() {
     const logsDir = path.resolve(process.cwd(), 'logs');
     fs.mkdirSync(logsDir, { recursive: true });
 
-    fs.writeFileSync(
-      path.join(logsDir, 'import-tutors-success.json'),
-      JSON.stringify(successRows, null, 2),
-      'utf8'
-    );
+    fs.writeFileSync(path.join(logsDir, 'import-tutors-success.json'), JSON.stringify(successRows, null, 2), 'utf8');
+    fs.writeFileSync(path.join(logsDir, 'import-tutors-errors.json'), JSON.stringify(errorRows, null, 2), 'utf8');
+    fs.writeFileSync(path.join(logsDir, 'import-tutors-skipped.json'), JSON.stringify(skippedRows, null, 2), 'utf8');
 
-    fs.writeFileSync(
-      path.join(logsDir, 'import-tutors-errors.json'),
-      JSON.stringify(errorRows, null, 2),
-      'utf8'
-    );
-
-    fs.writeFileSync(
-      path.join(logsDir, 'import-tutors-skipped.json'),
-      JSON.stringify(skippedRows, null, 2),
-      'utf8'
-    );
+    const studentsWithoutFamily = await Student.countDocuments({
+      $or: [{ familyId: { $exists: false } }, { familyId: null }],
+    });
 
     console.log('===== Import Tutors Summary =====');
     console.log(`Total filas: ${report.totalRows}`);
-    console.log(`Creados: ${report.created}`);
-    console.log(`Actualizados: ${report.updated}`);
+    console.log(`Filas inválidas: ${report.rowsInvalid}`);
     console.log(`Omitidos: ${report.skipped}`);
-    console.log(`Errores: ${report.errors}`);
+    console.log(`Errores de proceso: ${report.errors}`);
+    console.log(`People creadas: ${report.peopleCreated}`);
+    console.log(`People actualizadas: ${report.peopleUpdated}`);
+    console.log(`Tutores creados: ${report.tutorsCreated}`);
+    console.log(`Tutores actualizados: ${report.tutorsUpdated}`);
+    console.log(`Familias creadas: ${report.familiesCreated}`);
+    console.log(`Familias mergeadas: ${report.familiesMerged}`);
+    console.log(`Estudiantes vinculados a familia: ${report.studentsLinkedToFamily}`);
+    console.log(`StudentCod sin alumno: ${report.missingStudents}`);
+    console.log(`Students sin familyId (validación opcional): ${studentsWithoutFamily}`);
+    console.log(`MERGE_FAMILIES=${String(process.env.MERGE_FAMILIES || 'false')}`);
     console.log(`Logs: ${logsDir}`);
 
     process.exit(0);

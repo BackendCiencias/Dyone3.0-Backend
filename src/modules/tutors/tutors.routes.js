@@ -2,15 +2,18 @@ import { Router } from 'express';
 import { authMiddleware } from '../../middlewares/auth.js';
 import { requireRoles } from '../../middlewares/roles.js';
 import { validate } from '../../middlewares/validate.js';
-import { tutorCreateSchema } from './tutors.schemas.js';
-import { upsertTutor } from './tutors.controller.js';
+import { validateRequest } from '../../middlewares/validateRequest.js';
+import { tutorCreateSchema, tutorIdParamsSchema, tutorUpdateSchema } from './tutors.schemas.js';
+import { upsertTutor, updateTutor, deleteTutor } from './tutors.controller.js';
 
 const router = Router();
 
 router.use(authMiddleware);
-router.use(requireRoles(['ADMIN', 'SECRETARY', 'DIRECTOR', 'PROMOTER']));
 
-router.post('/', validate(tutorCreateSchema), upsertTutor);
-router.post('/student/:studentId', (req, _res, next) => { req.body.studentId = req.params.studentId; next(); }, validate(tutorCreateSchema), upsertTutor);
+router.post('/', requireRoles(['ADMIN', 'SECRETARY', 'DIRECTOR', 'PROMOTER']), validate(tutorCreateSchema), upsertTutor);
+router.post('/student/:studentId', requireRoles(['ADMIN', 'SECRETARY', 'DIRECTOR', 'PROMOTER']), (req, _res, next) => { req.body.studentId = req.params.studentId; next(); }, validate(tutorCreateSchema), upsertTutor);
+
+router.patch('/:id', requireRoles(['ADMIN']), validateRequest({ params: tutorIdParamsSchema, body: tutorUpdateSchema }), updateTutor);
+router.delete('/:id', requireRoles(['ADMIN']), validateRequest({ params: tutorIdParamsSchema }), deleteTutor);
 
 export default router;

@@ -191,7 +191,6 @@ async function createQuickEnrollmentService(data, createdByUserId) {
           status: 'ENROLLED',
           enrolledAt: new Date(),
           enrollmentId: enrollment._id,
-          matriculaId: enrollment._id,
           notes: data.notes || undefined,
         },
       },
@@ -241,7 +240,7 @@ async function createLegacyEnrollmentService(data, createdByUserId) {
           personId: personDoc._id,
           familyId: family._id,
           internalCode: await nextStudentCodeSession(session),
-          isActive: true,
+          activeStatus: 'ACTIVE',
         });
         await student.save({ session });
       } else if (!student.internalCode) {
@@ -477,7 +476,7 @@ export async function confirmEnrollmentService({ enrollmentId, payload, userId }
       await StudentCycle.findOneAndUpdate(
         { studentId: row.studentId, cycleId: payload.cycleId, campusId: payload.campusId },
         {
-          $set: { status: 'ENROLLED', enrolledAt: new Date(), enrollmentId: enrollment._id, matriculaId: enrollment._id },
+          $set: { status: 'ENROLLED', enrolledAt: new Date(), enrollmentId: enrollment._id },
           $setOnInsert: { studentId: row.studentId, cycleId: payload.cycleId, campusId: payload.campusId },
         },
         { upsert: true, new: true, session }

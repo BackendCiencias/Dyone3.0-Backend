@@ -14,4 +14,4 @@ const personSchema = new mongoose.Schema({
   notes: { type: String },
 });
 
-export const Person = mongoose.model('Person', personSchema);
+export const Person = mongoose.model('Person', personSchema, 'person');

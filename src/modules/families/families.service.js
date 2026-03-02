@@ -101,7 +101,7 @@ async function enrichStudentsWithCampusStatus(students) {
 
   return students.map((student) => {
     const campusCode = statusByStudentId.get(String(student._id));
-    const currentCampusStatus = campusCode || (student.isActive ? 'OTRO' : 'EGRESADO');
+    const currentCampusStatus = campusCode || (student.activeStatus === 'GRADUATED' ? 'EGRESADO' : 'OTRO');
 
     return {
       ...student,
@@ -262,7 +262,7 @@ export async function createFamilyService({ tutors, students, notes }) {
       personId: person._id,
       familyId: family._id,
       internalCode: await nextStudentCode(),
-      isActive: true,
+      activeStatus: 'ACTIVE',
     });
     if (!studentDoc.internalCode) {
       studentDoc.internalCode = await nextStudentCode();

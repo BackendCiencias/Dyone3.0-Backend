@@ -316,12 +316,14 @@ async function findOrCreatePerson(data, report) {
 
 async function upsertStudent(data, person, report) {
   const existing = await Student.findOne({ internalCode: data.internalCode });
+  const previousCampus = data.campusCode;
 
   if (!existing) {
     const created = await Student.create({
       personId: person._id,
       internalCode: data.internalCode,
-      isActive: true,
+      previousCampus,
+      activeStatus: 'ACTIVE',
       ...(data.notes ? { internalNotes: data.notes } : {}),
     });
     report.studentsCreated += 1;
@@ -331,7 +333,8 @@ async function upsertStudent(data, person, report) {
   const setUpdates = {};
   if (String(existing.personId) !== String(person._id)) setUpdates.personId = person._id;
   if (data.notes && existing.internalNotes !== data.notes) setUpdates.internalNotes = data.notes;
-  if (existing.isActive !== true) setUpdates.isActive = true;
+  if (existing.previousCampus !== previousCampus) setUpdates.previousCampus = previousCampus;
+  if (existing.activeStatus !== 'ACTIVE') setUpdates.activeStatus = 'ACTIVE';
 
   if (Object.keys(setUpdates).length) {
     await Student.updateOne({ _id: existing._id }, { $set: setUpdates });

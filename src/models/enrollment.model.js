@@ -33,5 +33,4 @@ enrollmentSchema.pre('save', function syncLegacyFields(next) {
   next();
 });
 
-// NOTE: keep legacy collection name to avoid migration
-export const Enrollment = mongoose.model('Enrollment', enrollmentSchema, 'matriculas');
+export const Enrollment = mongoose.model('Enrollment', enrollmentSchema, 'enrollment');

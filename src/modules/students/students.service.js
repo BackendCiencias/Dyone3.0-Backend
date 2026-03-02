@@ -165,7 +165,7 @@ async function buildStudentResponse(items) {
       lastKnownGrade: classroom?.grade || null,
       lastKnownSection: classroom?.section || null,
       classroomName:classroom?.displayName || null,
-      isActive: student.isActive,
+      activeStatus: student.activeStatus,
     };
   });
 }
@@ -407,7 +407,7 @@ export async function searchUnassignedStudentsService({ limit = 20, cursor }) {
         gender: student.personId.gender,
       }
       : null,
-    isActive: Boolean(student.isActive),
+    activeStatus: student.activeStatus || 'ACTIVE',
   }));
 
   return {
@@ -508,7 +508,7 @@ export async function getStudentSummaryService(studentId) {
     lastNames: person?.lastNames || null,
     birthDate: person?.birthDate || null,
     campusCode: latestVacancy?.classroomId?.campusId?.code || null,
-    isActive: student.isActive,
+    activeStatus: student.activeStatus,
   }
   const sendFamily = {
     familyId: student.familyId?._id?.toString() || null,

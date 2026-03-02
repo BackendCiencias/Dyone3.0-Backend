@@ -10,13 +10,11 @@ import { Cycle } from '../src/models/cycle.model.js';
 import { Campus } from '../src/models/campus.model.js';
 import { Classroom } from '../src/models/classroom.model.js';
 import { StudentCycle } from '../src/models/studentCycle.model.js';
-import { Enrollment } from '../src/models/enrollment.model.js';
-import { EnrollmentStudent, NO_APLICA_PENSION } from '../src/models/enrollmentStudent.model.js';
+import { Vacancy } from '../src/models/vacancy.model.js';
 
 const genderSchema = z.enum(['M', 'F']).or(z.enum(['m', 'f'])).transform((value) => value.toUpperCase());
 const levelSchema = z.enum(['INITIAL', 'PRIMARY', 'SECONDARY']);
 const IMPORT_NOTES = 'Creado por importación inicial';
-const SCHOOL_MONTHS = 10;
 
 const rowSchema = z.object({
   internalCode: z.string().trim().min(1, 'Código interno es obligatorio'),
@@ -113,13 +111,13 @@ function createProgressTracker({ scriptName, total, quiet }) {
   };
 }
 
-function resolveStudentCycleEnrolledStatus() {
+function resolveStudentCycleAbsentStatus() {
   const statusPath = StudentCycle.schema.path('status');
   const enumValues = Array.isArray(statusPath?.enumValues) ? statusPath.enumValues : [];
 
-  if (enumValues.includes('ENROLLED')) return 'ENROLLED';
+  if (enumValues.includes('ABSENT')) return 'ABSENT';
   if (enumValues.length > 0) return enumValues[0];
-  return 'ENROLLED';
+  return 'ABSENT';
 }
 
 function normalizeHeader(value) {
@@ -385,16 +383,15 @@ async function resolveOrCreateClassroom({ campusId, cycleId, grade, section, lev
 }
 
 async function upsertStudentCycle({ studentId, cycleId, campusId, notes, debug }, report) {
-  const enrolledStatus = resolveStudentCycleEnrolledStatus();
+  const absentStatus = resolveStudentCycleAbsentStatus();
   const updateDoc = {
     $setOnInsert: {
       studentId,
       cycleId,
       campusId,
-      enrolledAt: new Date(),
     },
     $set: {
-      status: enrolledStatus,
+      status: absentStatus,
       notes: notes || 'Importación inicial',
     },
   };
@@ -421,57 +418,28 @@ async function upsertStudentCycle({ studentId, cycleId, campusId, notes, debug }
   }
 }
 
-async function resolveOrCreateDraftEnrollment({ student, cycleId, campusId }, report) {
-  let enrollment = await Enrollment.findOne({
-    cycleId,
-    campusId,
-    status: 'DRAFT',
-    studentIds: student._id,
-    notes: /importaci[oó]n inicial/i,
-  });
+async function upsertVacancy({ studentId, cycleId, classroomId, notes }, report) {
+  const existing = await Vacancy.findOne({ studentId, cycleId });
 
-  if (enrollment) return enrollment;
-
-  enrollment = await Enrollment.create({
-    familyId: student.familyId || undefined,
-    cycleId,
-    campusId,
-    status: 'DRAFT',
-    studentIds: [student._id],
-    notes: IMPORT_NOTES,
-  });
-  report.enrollmentsCreated += 1;
-  return enrollment;
-}
-
-async function upsertEnrollmentStudent({ enrollment, studentId, classroomId, campusCode }, report) {
-  const existing = await EnrollmentStudent.findOne({ enrollmentId: enrollment._id, studentId });
-  if (existing) {
-    const setUpdates = {};
-    if (String(existing.classroomId || '') !== String(classroomId)) setUpdates.classroomId = classroomId;
-    if (existing.notes !== 'Importación inicial') setUpdates.notes = 'Importación inicial';
-
-    if (Object.keys(setUpdates).length) {
-      await EnrollmentStudent.updateOne({ _id: existing._id }, { $set: setUpdates });
-    }
-
-    if (!Array.isArray(enrollment.enrollmentStudents) || !enrollment.enrollmentStudents.some((id) => String(id) === String(existing._id))) {
-      await Enrollment.updateOne({ _id: enrollment._id }, { $addToSet: { enrollmentStudents: existing._id } });
-    }
+  if (!existing) {
+    await Vacancy.create({
+      studentId,
+      cycleId,
+      classroomId,
+      notes: notes || IMPORT_NOTES,
+    });
+    report.vacanciesCreated += 1;
     return;
   }
 
-  const created = await EnrollmentStudent.create({
-    enrollmentId: enrollment._id,
-    studentId,
-    classroomId,
-    previousSchoolType: campusCode,
-    pensionMonthlyAmounts: Array(SCHOOL_MONTHS).fill(NO_APLICA_PENSION),
-    notes: 'Importación inicial',
-  });
+  const setUpdates = {};
+  if (String(existing.classroomId) !== String(classroomId)) setUpdates.classroomId = classroomId;
+  if ((notes || IMPORT_NOTES) !== existing.notes) setUpdates.notes = notes || IMPORT_NOTES;
 
-  await Enrollment.updateOne({ _id: enrollment._id }, { $addToSet: { enrollmentStudents: created._id } });
-  report.enrollmentStudentsCreated += 1;
+  if (Object.keys(setUpdates).length > 0) {
+    await Vacancy.updateOne({ _id: existing._id }, { $set: setUpdates });
+    report.vacanciesUpdated += 1;
+  }
 }
 
 async function run() {
@@ -524,8 +492,8 @@ async function run() {
     campusesResolved: 0,
     classroomsCreated: 0,
     studentCyclesCreated: 0,
-    enrollmentsCreated: 0,
-    enrollmentStudentsCreated: 0,
+    vacanciesCreated: 0,
+    vacanciesUpdated: 0,
     warnings: 0,
     warningRows: [],
   };
@@ -590,17 +558,11 @@ async function run() {
           debug,
         }, report);
 
-        const enrollment = await resolveOrCreateDraftEnrollment({
-          student,
-          cycleId: activeCycle._id,
-          campusId: campus._id,
-        }, report);
-
-        await upsertEnrollmentStudent({
-          enrollment,
+        await upsertVacancy({
           studentId: student._id,
+          cycleId: activeCycle._id,
           classroomId: classroom._id,
-          campusCode: campus.code,
+          notes: data.notes,
         }, report);
 
         successRows.push({
@@ -647,8 +609,8 @@ async function run() {
     console.log(`Campus resueltos: ${report.campusesResolved}`);
     console.log(`Classrooms creados: ${report.classroomsCreated}`);
     console.log(`StudentCycles creados: ${report.studentCyclesCreated}`);
-    console.log(`Enrollments creados: ${report.enrollmentsCreated}`);
-    console.log(`EnrollmentStudents creados: ${report.enrollmentStudentsCreated}`);
+    console.log(`Vacancies creadas: ${report.vacanciesCreated}`);
+    console.log(`Vacancies actualizadas: ${report.vacanciesUpdated}`);
     console.log(`Warnings: ${report.warnings}`);
     console.log(`Errores de proceso: ${report.errors}`);
     console.log(`Logs: ${logsDir}`);

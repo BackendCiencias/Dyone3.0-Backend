@@ -18,6 +18,7 @@ import {
   studentSearchQuerySchema,
   studentBankCodeSchema,
   studentUnassignedQuerySchema,
+  unassignedSearchQuerySchema,
 } from './students.schemas.js';
 import {
   createStudent,
@@ -36,6 +37,7 @@ import {
   updateStudentInternalNotes,
   updateStudentBankCode,
   listUnassignedStudents,
+  searchUnassigned,
 } from './students.controller.js';
 import { tutorCreateSchema } from '../tutors/tutors.schemas.js';
 import { upsertTutor } from '../tutors/tutors.controller.js';
@@ -49,6 +51,7 @@ router.use(authMiddleware);
 router.get('/search', requireRoles(STUDENT_READ_ROLES), validateRequest({ query: studentSearchQuerySchema }), searchStudent);
 router.get('/', requireRoles(['ADMIN', 'PROMOTER']), listStudents);
 router.get('/campus/:campus', requireRoles(STUDENT_READ_ROLES), listStudentsByCampus);
+router.get('/unassigned/search', requireRoles(STUDENT_READ_ROLES), validateRequest({ query: unassignedSearchQuerySchema }), searchUnassigned);
 router.get('/unassigned', requireRoles(['ADMIN', 'SECRETARY', 'SECRETARY_VIEWER', 'PROMOTER']), validateRequest({ query: studentUnassignedQuerySchema }), listUnassignedStudents);
 router.get('/:id/summary', requireRoles(STUDENT_READ_ROLES), studentSummary);
 router.get('/:studentId/account-statement',

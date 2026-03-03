@@ -11,7 +11,8 @@
     "seed:school-structure": "node scripts/schoolStructure.seed.js",
     "import:students": "node scripts/importStudents.js --file ./data/students_2025.csv",
     "drop:db": "node scripts/dropDatabase.js",
-    "import:tutors": "node scripts/importTutors.js --file ./data/parents.csv"
+    "import:tutors": "node scripts/importTutors.js --file ./data/parents.csv",
+    "backfill:charges-campus": "node scripts/backfillChargesCampus.js"
   },
   "dependencies": {
     "bcryptjs": "^2.4.3",

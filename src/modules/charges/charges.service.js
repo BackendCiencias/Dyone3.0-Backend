@@ -1,5 +1,6 @@
 import mongoose from 'mongoose';
 import { Student } from '../../models/student.model.js';
+import { Campus } from '../../models/campus.model.js';
 import { BillingConcept } from '../../models/billingConcept.model.js';
 import { Charge } from '../../models/charge.model.js';
 import { ApiError } from '../../utils/errors.js';
@@ -22,25 +23,62 @@ async function resolveStudent({ studentId, studentCod }, session) {
   throw new ApiError(400, 'Debes enviar studentId o studentCod');
 }
 
-export async function createChargeService({ studentId, studentCod, cycleId, conceptName, description, amount, dueDate, notes, createdByUserId = null }) {
+function buildConceptCode(conceptName) {
+  const raw = String(conceptName || '')
+    .normalize('NFD')
+    .replace(/\p{Diacritic}/gu, '')
+    .toUpperCase()
+    .replace(/[^A-Z0-9]+/g, '_')
+    .replace(/^_+|_+$/g, '')
+    .slice(0, 40);
+
+  return raw || 'CONCEPTO';
+}
+
+async function resolveCampus(campusId, session) {
+  if (!campusId || !mongoose.Types.ObjectId.isValid(campusId)) {
+    throw new ApiError(400, 'campusId inválido');
+  }
+
+  const campus = await Campus.findById(campusId).select('_id code').session(session);
+  if (!campus) throw new ApiError(404, 'Campus no encontrado');
+  return campus;
+}
+
+async function resolveConceptByName(conceptName, session) {
+  const cleanName = String(conceptName || '').trim();
+  const code = buildConceptCode(cleanName);
+
+  let concept = await BillingConcept.findOne({ $or: [{ name: cleanName }, { code }] }).session(session);
+  if (!concept) {
+    concept = await BillingConcept.create([
+      { code, name: cleanName, isActive: true },
+    ], { session });
+    return concept[0];
+  }
+
+  if (!concept.code) {
+    concept.code = code;
+    await concept.save({ session, validateModifiedOnly: true });
+  }
+
+  return concept;
+}
+
+export async function createChargeService({ studentId, studentCod, cycleId, campusId, conceptName, description, amount, dueDate, notes, createdByUserId = null }) {
   const session = await mongoose.startSession();
   session.startTransaction();
 
   try {
     const student = await resolveStudent({ studentId, studentCod }, session);
-
-    let concept = await BillingConcept.findOne({ name: conceptName }).session(session);
-    if (!concept) {
-      concept = await BillingConcept.create([
-        { name: conceptName, isActive: true },
-      ], { session });
-      concept = concept[0];
-    }
+    const campus = await resolveCampus(campusId, session);
+    const concept = await resolveConceptByName(conceptName, session);
 
     const charge = await Charge.create([
       {
         studentId: student._id,
         cycleId,
+        campusId: campus._id,
         conceptId: concept._id,
         description,
         totalAmount: mongoose.Types.Decimal128.fromString(amount.toString()),
@@ -56,7 +94,8 @@ export async function createChargeService({ studentId, studentCod, cycleId, conc
     const createdCharge = await Charge.findById(charge[0]._id)
       .populate({ path: 'studentId', populate: { path: 'personId' } })
       .populate('conceptId')
-      .populate('cycleId');
+      .populate('cycleId')
+      .populate('campusId');
 
     if (createdByUserId) {
       await registerAuditLog({
@@ -64,8 +103,8 @@ export async function createChargeService({ studentId, studentCod, cycleId, conc
         entityId: createdCharge._id,
         action: 'CHARGE_CREATED',
         performedBy: createdByUserId,
-        campusId: null,
-        payloadSnapshot: { amount, conceptName, cycleId },
+        campusId: campus._id,
+        payloadSnapshot: { amount, conceptName, cycleId, campusId: campus._id },
       });
     }
 

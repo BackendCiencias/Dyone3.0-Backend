@@ -5,7 +5,7 @@ import { validate } from '../../middlewares/validate.js';
 import { validateRequest } from '../../middlewares/validateRequest.js';
 import { attachCampusScope, authorizeByCampusScope } from '../../shared/authorization.middleware.js';
 import { findEnrollmentCampusById } from './repositories/enrollments.repository.js';
-import { enrollmentCreateSchema, enrollmentConfirmSchema, enrollmentIdParamsSchema, enrollmentListQuerySchema } from './enrollments.schemas.js';
+import { enrollmentCreateSchema, enrollmentConfirmSchema, enrollmentIdParamsSchema, enrollmentListQuerySchema, intakeSearchQuerySchema } from './enrollments.schemas.js';
 import {
   createEnrollment,
   getEnrollmentById,
@@ -13,6 +13,7 @@ import {
   getCampusCapacity,
   confirmEnrollment,
   listEnrollments,
+  intakeSearch,
 } from './enrollments.controller.js';
 
 const router = Router();
@@ -28,6 +29,7 @@ router.post('/:id/confirm',
   validateRequest({ params: enrollmentIdParamsSchema, body: enrollmentConfirmSchema }),
   confirmEnrollment
 );
+router.get('/intake-search', requireRoles(ENROLLMENT_READ_ROLES), validateRequest({ query: intakeSearchQuerySchema }), intakeSearch);
 router.get('/', requireRoles(ENROLLMENT_READ_ROLES), attachCampusScope(), validateRequest({ query: enrollmentListQuerySchema }), listEnrollments);
 router.get('/classrooms/:classroomId/capacity', requireRoles(ENROLLMENT_READ_ROLES), getClassroomCapacity);
 router.get('/capacity', requireRoles(ENROLLMENT_READ_ROLES), getCampusCapacity);

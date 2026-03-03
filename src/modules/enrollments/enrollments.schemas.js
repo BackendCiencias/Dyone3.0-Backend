@@ -73,6 +73,53 @@ export const enrollmentListQuerySchema = z.object({
   cursor: objectIdSchema.optional(),
 });
 
+export const intakeSearchQuerySchema = z.object({
+  q: z.string().trim().min(2, 'q muy corto').max(80),
+  campusScope: z.enum(['ALL', 'CIENCIAS', 'CIENCIAS_APLICADAS', 'CIMAS']),
+  limit: z.coerce.number().int().min(1).max(50).optional(),
+});
+
+const objectId = z.union([objectIdSchema, z.any()]);
+
+export const intakeSearchResponseSchema = z.object({
+  q: z.string(),
+  campusScope: z.enum(['ALL', 'CIENCIAS', 'CIENCIAS_APLICADAS', 'CIMAS']),
+  items: z.array(z.discriminatedUnion('type', [
+    z.object({
+      type: z.literal('FAMILY'),
+      familyId: objectId,
+      primaryTutor: z.object({
+        personId: objectId,
+        names: z.string(),
+        lastNames: z.string(),
+        dni: z.string().nullable(),
+        phone: z.string().nullable().optional(),
+      }).nullable(),
+      studentsCount: z.number().int().nonnegative(),
+      campusHints: z.array(z.string()),
+    }),
+    z.object({
+      type: z.literal('STUDENT'),
+      studentId: objectId,
+      person: z.object({
+        names: z.string(),
+        lastNames: z.string(),
+        dni: z.string().nullable(),
+        gender: z.enum(['M', 'F']),
+      }),
+      familyId: objectId.nullable(),
+      activeStatus: z.enum(['ACTIVE', 'INACTIVE', 'GRADUATED']),
+      campusCode: z.enum(['CIENCIAS', 'CIENCIAS_APLICADAS', 'CIMAS']).nullable(),
+      cycleStatus: z.enum(['ABSENT', 'ENROLLED', 'TRANSFERRED']).nullable(),
+      hasVacancy: z.boolean(),
+      classroom: z.object({
+        classroomId: objectId,
+        label: z.string(),
+      }).nullable(),
+    }),
+  ])),
+});
+
 export const enrollmentIdParamsSchema = z.object({
   id: objectIdSchema,
 });

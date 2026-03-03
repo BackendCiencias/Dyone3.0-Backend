@@ -366,6 +366,98 @@ export async function searchStudentAutocompleteService({ q, dni, limit }) {
 }
 
 
+
+export function scoreUnassignedMatch({ qNormalized, dni, names, lastNames, internalCode }) {
+  const dniValue = String(dni || '').toLowerCase();
+  const namesValue = normalizeSearchTerm(names || '');
+  const lastNamesValue = normalizeSearchTerm(lastNames || '');
+  const internalValue = normalizeSearchTerm(internalCode || '');
+  const fullName = `${lastNamesValue} ${namesValue}`.trim();
+
+  if (dniValue && dniValue === qNormalized) return 300;
+  if (lastNamesValue.startsWith(qNormalized) || namesValue.startsWith(qNormalized) || fullName.startsWith(qNormalized)) return 200;
+  if (dniValue.includes(qNormalized) || namesValue.includes(qNormalized) || lastNamesValue.includes(qNormalized) || internalValue.includes(qNormalized) || fullName.includes(qNormalized)) return 100;
+  return 0;
+}
+
+export async function searchUnassignedStudentsByQueryService({ q, limit = 20 }) {
+  const term = String(q || '').trim();
+  const normalized = normalizeSearchTerm(term);
+  if (normalized.length < 2) throw new ApiError(400, 'q muy corto');
+
+  const normalizedLimit = Math.max(1, Math.min(50, toNumber(limit, 20)));
+  const regex = buildAccentInsensitiveRegex(term) || new RegExp(escapeRegExp(term), 'i');
+
+  const rows = await Student.aggregate([
+    {
+      $match: {
+        $or: [{ familyId: null }, { familyId: { $exists: false } }],
+      },
+    },
+    {
+      $lookup: {
+        from: 'person',
+        localField: 'personId',
+        foreignField: '_id',
+        as: 'person',
+      },
+    },
+    { $unwind: '$person' },
+    {
+      $match: {
+        $or: [
+          { internalCode: regex },
+          { 'person.dni': regex },
+          { 'person.names': regex },
+          { 'person.lastNames': regex },
+          { $expr: { $regexMatch: { input: { $concat: ['$person.lastNames', ' ', '$person.names'] }, regex } } },
+        ],
+      },
+    },
+    {
+      $project: {
+        _id: 1,
+        internalCode: 1,
+        activeStatus: 1,
+        person: {
+          personId: '$person._id',
+          names: '$person.names',
+          lastNames: '$person.lastNames',
+          dni: '$person.dni',
+          gender: '$person.gender',
+        },
+      },
+    },
+    { $limit: normalizedLimit * 3 },
+  ]);
+
+  const items = rows
+    .map((row) => ({
+      studentId: row._id,
+      internalCode: row.internalCode,
+      activeStatus: row.activeStatus || 'ACTIVE',
+      person: {
+        personId: row.person.personId,
+        names: row.person.names,
+        lastNames: row.person.lastNames,
+        dni: row.person.dni || null,
+        gender: row.person.gender,
+      },
+      score: scoreUnassignedMatch({
+        qNormalized: normalized,
+        dni: row.person.dni,
+        names: row.person.names,
+        lastNames: row.person.lastNames,
+        internalCode: row.internalCode,
+      }),
+    }))
+    .sort((a, b) => (b.score - a.score) || String(a.studentId).localeCompare(String(b.studentId)))
+    .slice(0, normalizedLimit)
+    .map(({ score, ...item }) => item);
+
+  return { q: term, items };
+}
+
 export async function searchUnassignedStudentsService({ limit = 20, cursor }) {
   const normalizedLimit = Math.max(1, Math.min(50, toNumber(limit, 20)));
 

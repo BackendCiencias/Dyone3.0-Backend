@@ -29,6 +29,7 @@ export const classroomCreateSchema = z.object({
 });
 
 export const billingConceptCreateSchema = z.object({
+  code: z.string().trim().min(1).max(40).transform((value) => value.toUpperCase()),
   name: z.string().min(1),
   isBlocking: z.boolean().optional().default(false),
   isActive: z.boolean().optional().default(true),

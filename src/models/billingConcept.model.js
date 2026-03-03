@@ -1,6 +1,14 @@
 import mongoose from 'mongoose';
 
 const billingConceptSchema = new mongoose.Schema({
+  code: {
+    type: String,
+    required: [true, 'code es obligatorio'],
+    unique: true,
+    index: true,
+    uppercase: true,
+    trim: true,
+  },
   name: { type: String, required: true, unique: true },
   isBlocking: { type: Boolean, default: false },
   isActive: { type: Boolean, default: true },

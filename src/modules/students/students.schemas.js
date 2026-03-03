@@ -80,6 +80,12 @@ export const studentUnassignedQuerySchema = z.object({
   cursor: objectIdSchema.optional(),
 });
 
+
+export const unassignedSearchQuerySchema = z.object({
+  q: z.string().trim().min(2, 'q muy corto').max(80),
+  limit: z.coerce.number().int().min(1).max(50).optional(),
+});
+
 export const studentSearchQuerySchema = z.object({
   q: z.string().trim().optional(),
   dni: z.string().trim().optional(),

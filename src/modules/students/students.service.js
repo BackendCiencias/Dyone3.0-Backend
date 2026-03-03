@@ -431,18 +431,20 @@ export async function searchUnassignedStudentsByQueryService({ q, limit = 20 }) 
     { $limit: normalizedLimit * 3 },
   ]);
 
+  // console.log("[DBG] [rows]: ",rows)
   const items = rows
     .map((row) => ({
       studentId: row._id,
       internalCode: row.internalCode,
       activeStatus: row.activeStatus || 'ACTIVE',
-      person: {
+      personId: row.person ? {
         personId: row.person.personId,
         names: row.person.names,
         lastNames: row.person.lastNames,
         dni: row.person.dni || null,
         gender: row.person.gender,
-      },
+      }
+      : null,
       score: scoreUnassignedMatch({
         qNormalized: normalized,
         dni: row.person.dni,
@@ -454,6 +456,8 @@ export async function searchUnassignedStudentsByQueryService({ q, limit = 20 }) 
     .sort((a, b) => (b.score - a.score) || String(a.studentId).localeCompare(String(b.studentId)))
     .slice(0, normalizedLimit)
     .map(({ score, ...item }) => item);
+
+  console.log("[DBG] [Búsqueda de:",term,"]: ",items[0])
 
   return { q: term, items };
 }
@@ -501,6 +505,8 @@ export async function searchUnassignedStudentsService({ limit = 20, cursor }) {
       : null,
     activeStatus: student.activeStatus || 'ACTIVE',
   }));
+  
+  console.log("[DBG] [Lista de alumnos (primero)]: ",items[0])
 
   return {
     items,

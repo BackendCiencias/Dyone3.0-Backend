@@ -419,35 +419,30 @@ export async function searchFamiliesService({ q, limit = 5, cursor, campus }) {
   };
 }
 
-export async function linkStudentFamilyService({ studentId, familyId, family }) {
+export async function linkStudentFamilyService({ studentId, familyId, requestId = 'n/a' }) {
   const session = await mongoose.startSession();
   session.startTransaction();
 
   try {
     if (!mongoose.Types.ObjectId.isValid(studentId)) throw new ApiError(400, 'studentId inválido');
+    if (!mongoose.Types.ObjectId.isValid(familyId)) throw new ApiError(400, 'familyId inválido');
+
+    console.info(
+      `[FAMILY][LINK_STUDENT] requestId=${requestId} familyId=${String(familyId)} studentId=${String(studentId)}`
+    );
 
     const student = await Student.findById(studentId).session(session);
     if (!student) throw new ApiError(404, 'Estudiante no encontrado');
+    if (student.familyId) throw new ApiError(409, 'Student already belongs to a family');
 
-    let familyDoc;
-    let created = false;
+    const familyDoc = await Family.findById(familyId).session(session);
+    if (!familyDoc) throw new ApiError(404, 'Familia no encontrada');
 
-    if (familyId) {
-      if (!mongoose.Types.ObjectId.isValid(familyId)) throw new ApiError(400, 'familyId inválido');
-      familyDoc = await Family.findById(familyId).session(session);
-      if (!familyDoc) throw new ApiError(404, 'Familia no encontrada');
-    } else {
-      const notes = [family?.address ? `Dirección: ${family.address}` : null, family?.campusId ? `Campus: ${family.campusId}` : null]
-        .filter(Boolean)
-        .join(' | ');
-      familyDoc = new Family({
-        tutorIds: [],
-        studentIds: [],
-        ...(notes ? { notes } : {}),
-      });
-      await familyDoc.save({ session });
-      created = true;
-    }
+    const previousStudentIds = [...(familyDoc.studentIds || [])];
+    const referenceStudentId = previousStudentIds[0] || null;
+    const warnings = [];
+
+    let copiedTutorsCount = 0;
 
     await Student.updateOne(
       { _id: student._id },
@@ -461,74 +456,53 @@ export async function linkStudentFamilyService({ studentId, familyId, family }) 
       { session }
     );
 
-    if (family?.guardians?.length) {
-      let isPrimaryAssigned = false;
-      for (const guardian of family.guardians) {
-        let person = null;
-        if (guardian.dni) {
-          person = await Person.findOne({ dni: guardian.dni.trim() }).session(session);
-        }
-
-        if (!person) {
-          person = await Person.create([
+    if (!referenceStudentId) {
+      warnings.push('Family has no tutors to copy');
+    } else {
+      const referenceTutors = await Tutor.find({ studentId: referenceStudentId }).session(session);
+      if (!referenceTutors.length) {
+        warnings.push('Family has no tutors to copy');
+      } else {
+        for (const referenceTutor of referenceTutors) {
+          const tutor = await Tutor.findOneAndUpdate(
+            { studentId: student._id, tutorPersonId: referenceTutor.tutorPersonId },
             {
-              names: guardian.names,
-              lastNames: guardian.lastNames,
-              dni: guardian.dni?.trim() || undefined,
-              gender: 'M',
-              phone: guardian.phone,
-              email: guardian.email,
+              $setOnInsert: {
+                studentId: student._id,
+                tutorPersonId: referenceTutor.tutorPersonId,
+                relationship: referenceTutor.relationship,
+                isPrimary: referenceTutor.isPrimary,
+                livesWithStudent: referenceTutor.livesWithStudent,
+                notes: referenceTutor.notes,
+              },
             },
-          ], { session }).then((docs) => docs[0]);
+            { upsert: true, new: true, session, rawResult: true }
+          );
+
+          const insertedTutor = tutor?.value;
+          const wasInserted = !!tutor?.lastErrorObject?.upserted;
+          if (insertedTutor?._id) {
+            await Family.updateOne(
+              { _id: familyDoc._id },
+              { $addToSet: { tutorIds: insertedTutor._id } },
+              { session }
+            );
+          }
+          if (wasInserted) copiedTutorsCount += 1;
         }
-
-        const relationship = mapRelationship(guardian.relationship);
-        const tutor = await Tutor.findOneAndUpdate(
-          { studentId: student._id, tutorPersonId: person._id, relationship },
-          {
-            $set: {
-              studentId: student._id,
-              tutorPersonId: person._id,
-              relationship,
-              isPrimary: !isPrimaryAssigned,
-              livesWithStudent: true,
-            },
-          },
-          { upsert: true, new: true, session }
-        );
-
-        isPrimaryAssigned = true;
-
-        await Family.updateOne(
-          { _id: familyDoc._id },
-          { $addToSet: { tutorIds: tutor._id } },
-          { session }
-        );
       }
     }
 
     await session.commitTransaction();
 
-    const hydratedFamily = await Family.findById(familyDoc._id)
-      .populate({ path: 'tutorIds', populate: { path: 'tutorPersonId' } })
-      .populate('studentIds')
-      .lean();
-
-    const mainTutor = hydratedFamily?.tutorIds?.find((t) => t.isPrimary);
-    const guardianName = mainTutor?.tutorPersonId
-      ? `${mainTutor.tutorPersonId.names} ${mainTutor.tutorPersonId.lastNames}`.trim()
-      : null;
+    console.info(`[FAMILY][LINK_STUDENT] copiedTutorsCount=${copiedTutorsCount}`);
 
     return {
-      created,
       familyId: familyDoc._id.toString(),
-      family: {
-        id: familyDoc._id.toString(),
-        familyName: guardianName,
-        mainGuardian: guardianName,
-        guardiansCount: hydratedFamily?.tutorIds?.length || 0,
-        studentIds: hydratedFamily?.studentIds?.map((s) => s._id.toString()) || [],
-      },
+      studentId: student._id.toString(),
+      copiedTutorsCount,
+      warnings,
+      ok: true,
     };
   } catch (error) {
     await session.abortTransaction();
@@ -760,7 +734,10 @@ export async function deleteFamilyTutorService(familyId, tutorId, userId = null)
 }
 
 export async function unlinkStudentFromFamilyService(familyId, studentId, userId = null) {
-  let newFamilyId = null;
+  if (!mongoose.Types.ObjectId.isValid(familyId)) throw new ApiError(400, 'familyId inválido');
+  if (!mongoose.Types.ObjectId.isValid(studentId)) throw new ApiError(400, 'studentId inválido');
+
+  let deletedTutorsCount = 0;
 
   await runInTransaction(async (session) => {
     const family = await Family.findById(familyId).session(session);
@@ -769,32 +746,26 @@ export async function unlinkStudentFromFamilyService(familyId, studentId, userId
     const student = await Student.findById(studentId).session(session);
     if (!student) throw new ApiError(404, 'Estudiante no encontrado');
 
-    if (!family.studentIds.some((id) => String(id) === String(studentId))) {
-      throw new ApiError(404, 'Estudiante no pertenece a la familia');
+    const belongsByFamilyArray = family.studentIds.some((id) => String(id) === String(studentId));
+    const belongsByStudentFamilyId = student.familyId && String(student.familyId) === String(family._id);
+
+    if (!belongsByFamilyArray || !belongsByStudentFamilyId) {
+      throw new ApiError(409, 'Student does not belong to this family');
     }
 
-    const autoFamily = new Family({
-      tutorIds: [],
-      studentIds: [student._id],
-      notes: 'Familia creada automáticamente al desvincular estudiante.',
-    });
-    await autoFamily.save({ session });
-    newFamilyId = String(autoFamily._id);
-
     await Family.updateOne({ _id: familyId }, { $pull: { studentIds: student._id } }, { session });
-    await Student.updateOne({ _id: student._id }, { $set: { familyId: autoFamily._id } }, { session });
+    await Student.updateOne({ _id: student._id }, { $set: { familyId: null } }, { session });
 
-    const tutorsToRemove = await Tutor.find({
-      _id: { $in: family.tutorIds },
-      studentId: student._id,
-    }).select('_id').session(session).lean();
+    const tutorsToDelete = await Tutor.find({ studentId: student._id }).select('_id').session(session).lean();
+    const tutorIdsToDelete = tutorsToDelete.map((tutor) => tutor._id);
 
-    const tutorIdsToRemove = tutorsToRemove.map((tutor) => tutor._id);
-    if (tutorIdsToRemove.length) {
-      await Tutor.deleteMany({ _id: { $in: tutorIdsToRemove } }, { session });
+    if (tutorIdsToDelete.length) {
+      const deleted = await Tutor.deleteMany({ _id: { $in: tutorIdsToDelete } }, { session });
+      deletedTutorsCount = deleted?.deletedCount || 0;
+
       await Family.updateOne(
         { _id: familyId },
-        { $pull: { tutorIds: { $in: tutorIdsToRemove } } },
+        { $pull: { tutorIds: { $in: tutorIdsToDelete } } },
         { session }
       );
 
@@ -818,6 +789,8 @@ export async function unlinkStudentFromFamilyService(familyId, studentId, userId
     }
   });
 
+  console.info(`[Families][UNLINK_STUDENT] familyId=${String(familyId)} studentId=${String(studentId)} deletedTutors=${deletedTutorsCount}`);
+
   if (userId) {
     await registerAuditLog({
       entityType: 'FAMILY',
@@ -827,7 +800,8 @@ export async function unlinkStudentFromFamilyService(familyId, studentId, userId
       payloadSnapshot: {
         familyId,
         studentId,
-        newFamilyId,
+        newFamilyId: null,
+        deletedTutorsCount,
       },
     });
   }
@@ -837,10 +811,11 @@ export async function unlinkStudentFromFamilyService(familyId, studentId, userId
     ok: true,
     familyId,
     studentId,
-    newFamilyId,
+    newFamilyId: null,
     family,
   };
 }
+
 
 export async function getFamilyByIdService(familyId) {
   if (!mongoose.Types.ObjectId.isValid(familyId)) throw new ApiError(400, 'familyId inválido');

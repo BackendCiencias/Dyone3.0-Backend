@@ -141,6 +141,7 @@ export async function searchFamilies({ q, limit = 20, campusScope = 'ALL' }) {
           phone: primaryTutor.tutorPersonId?.phone || null,
         } : null,
         studentsCount,
+        students,
         campusHints,
         score: buildSearchScore({
           normalizedQ,

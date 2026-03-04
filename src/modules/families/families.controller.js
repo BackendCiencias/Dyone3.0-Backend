@@ -28,8 +28,11 @@ export const searchFamilies = asyncHandler(async (req, res) => {
 });
 
 export const linkStudentFamily = asyncHandler(async (req, res) => {
-  const result = await linkStudentFamilyService(req.validated);
-  res.status(result.created ? 201 : 200).json(result);
+  const result = await linkStudentFamilyService({
+    ...req.validated,
+    requestId: req.requestId || req.id || 'n/a',
+  });
+  res.status(200).json(result);
 });
 
 export const addFamilyTutor = asyncHandler(async (req, res) => {

@@ -82,16 +82,8 @@ export const familySetPrimaryTutorSchema = z.object({
 });
 
 export const familyLinkStudentSchema = z.object({
-  studentId: z.string().min(1),
-  familyId: z.string().optional(),
-  family: z.object({
-    address: z.string().optional(),
-    campusId: z.string().optional(),
-    guardians: z.array(guardianSchema).min(1),
-  }).optional(),
-}).refine((data) => data.familyId || data.family, {
-  message: 'Debes enviar familyId o family para crear y vincular',
-  path: ['familyId'],
+  studentId: objectIdSchema,
+  familyId: objectIdSchema,
 });
 
 

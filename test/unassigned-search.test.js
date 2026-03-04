@@ -1,11 +1,11 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { scoreUnassignedMatch } from '../src/modules/students/students.service.js';
+import { buildSearchScore } from '../src/services/search/search.utils.js';
 import { unassignedSearchQuerySchema } from '../src/modules/students/students.schemas.js';
 
 test('unassigned score prioriza dni exacto', () => {
-  const score = scoreUnassignedMatch({
-    qNormalized: '77889911',
+  const score = buildSearchScore({
+    normalizedQ: '77889911',
     dni: '77889911',
     names: 'Ana',
     lastNames: 'Pérez',

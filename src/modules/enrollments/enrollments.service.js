@@ -17,7 +17,8 @@ import { Counter } from '../../models/counter.model.js';
 import { ApiError } from '../../utils/errors.js';
 import { runInTransaction } from '../../shared/dbSession.js';
 import { registerAuditLog } from '../../shared/audit.service.js';
-import { buildAccentInsensitiveRegex, normalizeSearchTerm } from '../../utils/search.js';
+import { buildSearchScore } from '../../utils/search.js';
+import { intakeSearch } from '../../services/search/intake.search.js';
 
 const SCHOOL_MONTHS = 10;
 
@@ -566,255 +567,29 @@ function toObjectIdOrNull(value) {
   return mongoose.Types.ObjectId.isValid(value) ? new mongoose.Types.ObjectId(value) : null;
 }
 
-export function buildSearchScore({ normalizedQ, dni, names, lastNames, internalCode }) {
-  const dniValue = String(dni || '').toLowerCase();
-  const namesValue = normalizeSearchTerm(names || '');
-  const lastNamesValue = normalizeSearchTerm(lastNames || '');
-  const fullValue = `${lastNamesValue} ${namesValue}`.trim();
-  const internalCodeValue = normalizeSearchTerm(internalCode || '');
-
-  if (dniValue && dniValue === normalizedQ) return 300;
-  if (lastNamesValue.startsWith(normalizedQ) || namesValue.startsWith(normalizedQ) || fullValue.startsWith(normalizedQ)) return 200;
-  if (dniValue.includes(normalizedQ) || namesValue.includes(normalizedQ) || lastNamesValue.includes(normalizedQ) || fullValue.includes(normalizedQ) || internalCodeValue.includes(normalizedQ)) return 100;
-  return 10;
-}
-
-function byScoreThenId(a, b) {
-  if (b.score !== a.score) return b.score - a.score;
-  return String(a.id).localeCompare(String(b.id));
-}
+export { buildSearchScore };
 
 export async function intakeSearchService({ q, campusScope, limit = 20 }) {
   const normalizedLimit = Math.max(1, Math.min(50, Number(limit) || 20));
   const trimmedQ = String(q || '').trim();
-  const normalizedQ = normalizeSearchTerm(trimmedQ);
-  if (normalizedQ.length < 2) throw new ApiError(400, 'q muy corto');
 
-  const activeCycle = await Cycle.findOne({ isActive: true }).sort({ year: -1, startDate: -1 }).select('_id year name').lean();
-  if (!activeCycle) throw new ApiError(409, 'No hay ciclo activo');
+  console.log('[IntakeSearch][REQ]', { q: trimmedQ, campusScope, limit: normalizedLimit });
 
-  const regex = buildAccentInsensitiveRegex(trimmedQ);
-  const searchRegex = regex || new RegExp(escapeRegExp(trimmedQ), 'i');
-  const scopeFilter = campusScope === 'ALL' ? null : campusScope;
+  // Antes fallaba por varios factores combinados:
+  // - $lookup manual sensible a nombre real de colección de Person (person/people).
+  // - $limit prematuro antes de score/filtro por campus, recortando coincidencias relevantes.
+  // - dependencia estricta de ciclo activo que bloqueaba toda la búsqueda.
+  const data = await intakeSearch({ q: trimmedQ, campusScope, limit: normalizedLimit });
 
-  console.log('[IntakeSearch][REQ]', { q: trimmedQ, campusScope, limit: normalizedLimit, cycleId: String(activeCycle._id) });
-
-  const students = await Student.aggregate([
-    {
-      $lookup: {
-        from: 'person',
-        localField: 'personId',
-        foreignField: '_id',
-        as: 'person',
-      },
-    },
-    { $unwind: '$person' },
-    {
-      $match: {
-        $or: [
-          { internalCode: searchRegex },
-          { 'person.dni': searchRegex },
-          { 'person.names': searchRegex },
-          { 'person.lastNames': searchRegex },
-          { $expr: { $regexMatch: { input: { $concat: ['$person.lastNames', ' ', '$person.names'] }, regex: searchRegex } } },
-        ],
-      },
-    },
-    {
-      $lookup: {
-        from: 'studentcycles',
-        let: { studentId: '$_id' },
-        pipeline: [
-          { $match: { $expr: { $and: [{ $eq: ['$studentId', '$$studentId'] }, { $eq: ['$cycleId', activeCycle._id] }] } } },
-          { $project: { status: 1, campusId: 1 } },
-          { $limit: 1 },
-        ],
-        as: 'activeCycle',
-      },
-    },
-    {
-      $lookup: {
-        from: 'vacancies',
-        let: { studentId: '$_id' },
-        pipeline: [
-          { $match: { $expr: { $and: [{ $eq: ['$studentId', '$$studentId'] }, { $eq: ['$cycleId', activeCycle._id] }] } } },
-          {
-            $lookup: {
-              from: 'classrooms',
-              localField: 'classroomId',
-              foreignField: '_id',
-              as: 'classroom',
-            },
-          },
-          { $unwind: { path: '$classroom', preserveNullAndEmptyArrays: true } },
-          { $project: { classroomId: '$classroom._id', label: '$classroom.displayName', campusId: '$classroom.campusId' } },
-          { $limit: 1 },
-        ],
-        as: 'vacancy',
-      },
-    },
-    {
-      $lookup: {
-        from: 'campuses',
-        localField: 'activeCycle.campusId',
-        foreignField: '_id',
-        as: 'cycleCampus',
-      },
-    },
-    {
-      $lookup: {
-        from: 'campuses',
-        localField: 'vacancy.campusId',
-        foreignField: '_id',
-        as: 'vacancyCampus',
-      },
-    },
-    {
-      $project: {
-        _id: 1,
-        familyId: 1,
-        internalCode: 1,
-        activeStatus: 1,
-        person: { names: '$person.names', lastNames: '$person.lastNames', dni: '$person.dni', gender: '$person.gender' },
-        cycleStatus: { $ifNull: [{ $arrayElemAt: ['$activeCycle.status', 0] }, null] },
-        cycleCampusCode: { $ifNull: [{ $arrayElemAt: ['$cycleCampus.code', 0] }, null] },
-        vacancyCampusCode: { $ifNull: [{ $arrayElemAt: ['$vacancyCampus.code', 0] }, null] },
-        classroomId: { $ifNull: [{ $arrayElemAt: ['$vacancy.classroomId', 0] }, null] },
-        classroomLabel: { $ifNull: [{ $arrayElemAt: ['$vacancy.label', 0] }, null] },
-      },
-    },
-    { $limit: normalizedLimit * 3 },
-  ]);
-
-  const mappedStudents = students
-    .map((row) => {
-      const campusCode = row.vacancyCampusCode || row.cycleCampusCode || null;
-      if (scopeFilter && row.vacancyCampusCode !== scopeFilter && row.cycleCampusCode !== scopeFilter && campusCode !== scopeFilter) {
-        return null;
-      }
-
-      return {
-        type: 'STUDENT',
-        studentId: row._id,
-        person: {
-          names: row.person.names,
-          lastNames: row.person.lastNames,
-          dni: row.person.dni || null,
-          gender: row.person.gender,
-        },
-        familyId: row.familyId || null,
-        activeStatus: row.activeStatus || 'ACTIVE',
-        campusCode,
-        cycleStatus: row.cycleStatus || null,
-        hasVacancy: Boolean(row.classroomId),
-        classroom: row.classroomId ? { classroomId: row.classroomId, label: row.classroomLabel || '' } : null,
-        score: buildSearchScore({
-          normalizedQ,
-          dni: row.person.dni,
-          names: row.person.names,
-          lastNames: row.person.lastNames,
-          internalCode: row.internalCode,
-        }),
-        id: row._id,
-      };
-    })
-    .filter(Boolean)
-    .sort(byScoreThenId);
-
-  const families = await Family.aggregate([
-    {
-      $lookup: {
-        from: 'students',
-        let: { familyStudentIds: '$studentIds' },
-        pipeline: [
-          { $match: { $expr: { $in: ['$_id', '$$familyStudentIds'] } } },
-          { $lookup: { from: 'person', localField: 'personId', foreignField: '_id', as: 'person' } },
-          { $unwind: { path: '$person', preserveNullAndEmptyArrays: true } },
-          { $lookup: { from: 'studentcycles', let: { sid: '$_id' }, pipeline: [{ $match: { $expr: { $and: [{ $eq: ['$studentId', '$$sid'] }, { $eq: ['$cycleId', activeCycle._id] }] } } }, { $project: { campusId: 1 } }, { $limit: 1 }], as: 'activeCycle' } },
-          { $lookup: { from: 'vacancies', let: { sid: '$_id' }, pipeline: [{ $match: { $expr: { $and: [{ $eq: ['$studentId', '$$sid'] }, { $eq: ['$cycleId', activeCycle._id] }] } } }, { $lookup: { from: 'classrooms', localField: 'classroomId', foreignField: '_id', as: 'classroom' } }, { $unwind: { path: '$classroom', preserveNullAndEmptyArrays: true } }, { $project: { campusId: '$classroom.campusId' } }, { $limit: 1 }], as: 'vacancy' } },
-          { $lookup: { from: 'campuses', localField: 'activeCycle.campusId', foreignField: '_id', as: 'cycleCampus' } },
-          { $lookup: { from: 'campuses', localField: 'vacancy.campusId', foreignField: '_id', as: 'vacancyCampus' } },
-          { $project: { _id: 1, names: '$person.names', lastNames: '$person.lastNames', dni: '$person.dni', cycleCampusCode: { $ifNull: [{ $arrayElemAt: ['$cycleCampus.code', 0] }, null] }, vacancyCampusCode: { $ifNull: [{ $arrayElemAt: ['$vacancyCampus.code', 0] }, null] } } },
-        ],
-        as: 'students',
-      },
-    },
-    {
-      $lookup: {
-        from: 'tutors',
-        let: { familyStudentIds: '$studentIds' },
-        pipeline: [
-          { $match: { $expr: { $in: ['$studentId', '$$familyStudentIds'] } } },
-          { $lookup: { from: 'person', localField: 'tutorPersonId', foreignField: '_id', as: 'person' } },
-          { $unwind: { path: '$person', preserveNullAndEmptyArrays: true } },
-          { $project: { isPrimary: 1, personId: '$person._id', names: '$person.names', lastNames: '$person.lastNames', dni: '$person.dni', phone: '$person.phone' } },
-        ],
-        as: 'tutors',
-      },
-    },
-    { $project: { _id: 1, students: 1, tutors: 1 } },
-    { $limit: normalizedLimit * 3 },
-  ]);
-
-  const mappedFamilies = families
-    .map((family) => {
-      const studentsCount = Array.isArray(family.students) ? family.students.length : 0;
-      if (!studentsCount) return null;
-
-      const textMatchedStudent = family.students.some((student) => {
-        const fullName = `${student.lastNames || ''} ${student.names || ''}`;
-        return searchRegex.test(student.dni || '') || searchRegex.test(student.names || '') || searchRegex.test(student.lastNames || '') || searchRegex.test(fullName.trim());
-      });
-      const textMatchedTutor = (family.tutors || []).some((tutor) => {
-        const fullName = `${tutor.lastNames || ''} ${tutor.names || ''}`;
-        return searchRegex.test(tutor.dni || '') || searchRegex.test(tutor.names || '') || searchRegex.test(tutor.lastNames || '') || searchRegex.test(fullName.trim());
-      });
-
-      if (!textMatchedStudent && !textMatchedTutor) return null;
-
-      const campusHints = [...new Set(family.students.flatMap((student) => [student.vacancyCampusCode, student.cycleCampusCode].filter(Boolean)))].slice(0, 3);
-      if (scopeFilter && !campusHints.includes(scopeFilter)) return null;
-
-      const primaryTutor = (family.tutors || []).find((t) => t.isPrimary) || (family.tutors || [])[0] || null;
-
-      const firstStudent = family.students[0];
-      return {
-        type: 'FAMILY',
-        familyId: family._id,
-        primaryTutor: primaryTutor ? {
-          personId: primaryTutor.personId,
-          names: primaryTutor.names,
-          lastNames: primaryTutor.lastNames,
-          dni: primaryTutor.dni || null,
-          phone: primaryTutor.phone || null,
-        } : null,
-        studentsCount,
-        campusHints,
-        score: buildSearchScore({
-          normalizedQ,
-          dni: primaryTutor?.dni || firstStudent?.dni,
-          names: primaryTutor?.names || firstStudent?.names,
-          lastNames: primaryTutor?.lastNames || firstStudent?.lastNames,
-          internalCode: null,
-        }),
-        id: family._id,
-      };
-    })
-    .filter(Boolean)
-    .sort(byScoreThenId);
-
-  const items = [...mappedStudents, ...mappedFamilies]
-    .sort(byScoreThenId)
-    .slice(0, normalizedLimit)
-    .map(({ score, id, ...item }) => item);
-
-  console.log('[IntakeSearch][RES]', { q: trimmedQ, campusScope, total: items.length, students: mappedStudents.length, families: mappedFamilies.length });
-
-  return {
+  console.log('[IntakeSearch][RES]', {
     q: trimmedQ,
     campusScope,
-    items,
-  };
+    total: data.items.length,
+    families: data.items.filter((item) => item.type === 'FAMILY').length,
+    students: data.items.filter((item) => item.type === 'STUDENT').length,
+  });
+
+  return data;
 }
 
 export async function listEnrollmentsService({ q, campus, cycleId, status, classroomId, limit = 20, cursor, campusScope = [] }) {

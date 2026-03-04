@@ -13,7 +13,7 @@ import { ApiError } from '../../utils/errors.js';
 import { findFamiliesBase } from './repositories/families.repository.js';
 import { runInTransaction } from '../../shared/dbSession.js';
 import { registerAuditLog } from '../../shared/audit.service.js';
-import { buildAccentInsensitiveRegex, normalizeSearchTerm } from '../../utils/search.js';
+import { searchFamilies as searchFamiliesForIntake } from '../../services/search/families.search.js';
 
 // Encuentra o crea una persona por DNI
 async function findOrCreatePerson(personData) {
@@ -309,113 +309,38 @@ export async function listFamiliesBaseService({ limit = 5, cursor, campus } = {}
 }
 
 export async function searchFamiliesService({ q, limit = 5, cursor, campus }) {
-  const normalizedTerm = normalizeSearchTerm(q);
-  if (!normalizedTerm) throw new ApiError(400, 'q es requerido');
-
-  // Nota: mantenemos clamp 1..10 para no romper paginación histórica del front.
-  const normalizedLimit = Math.max(1, Math.min(10, Number(limit) || 5));
-  const queryRegex = buildAccentInsensitiveRegex(normalizedTerm);
-
-  const personIds = queryRegex
-    ? (await Person.find({
-      $or: [
-        { names: queryRegex },
-        { lastNames: queryRegex },
-        { dni: queryRegex },
-      ],
-    }).select('_id').lean()).map((person) => person._id)
-    : [];
-  // console.log(personIdsmapRelationship)
-
-  const personIdFilter = personIds.length ? { $in: personIds } : null;
-
-  const [primaryTutorTutorIds, tutorIds, matchedStudentsByPerson, matchedStudentsByCode] = await Promise.all([
-    personIdFilter
-      ? Tutor.find({ tutorPersonId: personIdFilter, isPrimary: true }).select('_id').lean()
-      : Promise.resolve([]),
-    personIdFilter
-      ? Tutor.find({ tutorPersonId: personIdFilter }).select('_id').lean()
-      : Promise.resolve([]),
-    personIdFilter
-      ? Student.find({ personId: personIdFilter }).select('_id').lean()
-      : Promise.resolve([]),
-    queryRegex
-      ? Student.find({ $or: [{ internalCode: queryRegex }, { bankCode: queryRegex }] }).select('_id').lean()
-      : Promise.resolve([]),
-  ]);
-
-  const primaryTutorFamilyIds = primaryTutorTutorIds.length
-    ? (await Family.find({ tutorIds: { $in: primaryTutorTutorIds.map((tutor) => tutor._id) } }).select('_id').lean())
-      .map((family) => String(family._id))
-    : [];
-
-  const tutorFamilyIds = tutorIds.length
-    ? (await Family.find({ tutorIds: { $in: tutorIds.map((tutor) => tutor._id) } }).select('_id').lean())
-      .map((family) => String(family._id))
-    : [];
-
-  const studentIds = [...matchedStudentsByPerson, ...matchedStudentsByCode].map((row) => row._id);
-  const studentFamilyIds = studentIds.length
-    ? (await Family.find({ studentIds: { $in: studentIds } }).select('_id').lean())
-      .map((family) => String(family._id))
-    : [];
-
-  // console.log(studentFamilyIds)
-
-  const prioritizedFamilyIds = [];
-  const seen = new Set();
-  [primaryTutorFamilyIds, tutorFamilyIds, studentFamilyIds].forEach((group) => {
-    group.forEach((familyId) => {
-      if (seen.has(familyId)) return;
-      seen.add(familyId);
-      prioritizedFamilyIds.push(familyId);
-    });
-  });
-
-  if (!prioritizedFamilyIds.length) {
-    return { items: [], nextCursor: null };
-  }
-
-  let filteredIds = prioritizedFamilyIds;
-  if (campus) {
-    const campusDoc = await Campus.findOne({ code: campus }).select('_id').lean();
-    if (!campusDoc?._id) return { items: [], nextCursor: null };
-
-    const studentIdsForCampus = (await StudentCycle.find({ campusId: campusDoc._id })
-      .select('studentId')
-      .lean())
-      .map((row) => row.studentId);
-
-    if (!studentIdsForCampus.length) return { items: [], nextCursor: null };
-
-    const campusFamilies = await Family.find({ studentIds: { $in: studentIdsForCampus } }).select('_id').lean();
-    const campusFamilySet = new Set(campusFamilies.map((family) => String(family._id)));
-    filteredIds = prioritizedFamilyIds.filter((familyId) => campusFamilySet.has(familyId));
-  }
+  const normalizedLimit = Math.max(1, Math.min(50, Number(limit) || 5));
+  const campusScope = campus || 'ALL';
+  const normalizedRows = await searchFamiliesForIntake({ q, limit: normalizedLimit + 1, campusScope });
 
   const fromCursor = cursor
-    ? filteredIds.filter((familyId) => familyId > String(cursor))
-    : filteredIds;
+    ? normalizedRows.filter((row) => String(row.familyId) > String(cursor))
+    : normalizedRows;
 
-  const selectedIds = fromCursor.slice(0, normalizedLimit + 1);
-  const hasMore = selectedIds.length > normalizedLimit;
-  const pageIds = hasMore ? selectedIds.slice(0, normalizedLimit) : selectedIds;
+  const hasMore = fromCursor.length > normalizedLimit;
+  const selectedRows = hasMore ? fromCursor.slice(0, normalizedLimit) : fromCursor;
 
-  const families = await Family.find({ _id: { $in: pageIds } })
-    .populate({ path: 'studentIds', populate: { path: 'personId' } })
-    .populate({ path: 'tutorIds', populate: { path: 'tutorPersonId' } })
-    .lean();
-
-  const orderMap = new Map(pageIds.map((id, index) => [String(id), index]));
-  families.sort((a, b) => orderMap.get(String(a._id)) - orderMap.get(String(b._id)));
-
-  // console.log("families.length: ",families.length)
-  const items = await buildFamiliesResponse(families);
-  // console.log("items: ",items)
+  const items = selectedRows.map((row) => ({
+    familyId: String(row.familyId),
+    notes: null,
+    students: [],
+    studentsCount: row.studentsCount,
+    tutorsCount: row.primaryTutor ? 1 : 0,
+    primaryTutor: row.primaryTutor ? {
+      tutorId: null,
+      names: row.primaryTutor.names,
+      lastNames: row.primaryTutor.lastNames,
+      dni: row.primaryTutor.dni,
+      phone: row.primaryTutor.phone,
+      relationship: null,
+    } : null,
+    campusHints: row.campusHints,
+    updatedAt: null,
+  }));
 
   return {
     items,
-    nextCursor: hasMore ? String(pageIds[pageIds.length - 1]) : null,
+    nextCursor: hasMore ? String(selectedRows[selectedRows.length - 1].familyId) : null,
   };
 }
 

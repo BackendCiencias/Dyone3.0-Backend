@@ -18,7 +18,7 @@ import { ApiError } from '../../utils/errors.js';
 import { runInTransaction } from '../../shared/dbSession.js';
 import { registerAuditLog } from '../../shared/audit.service.js';
 import { buildSearchScore } from '../../utils/search.js';
-import { intakeSearch } from '../../services/search/intake.search.js';
+import { intakeSearch } from './services/intake.search.service.js';
 
 const SCHOOL_MONTHS = 10;
 

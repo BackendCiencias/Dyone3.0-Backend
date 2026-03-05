@@ -326,88 +326,43 @@ async function resolveTutorPerson(data, normalizedPhones, personByDniCache, repo
   return person;
 }
 
-async function ensureFamilyForStudent(student, familyByStudentCache, report) {
-  const cached = familyByStudentCache.get(String(student._id));
-  if (cached) return cached;
-
-  let family = null;
-  if (student.familyId) {
-    family = await Family.findById(student.familyId);
-  }
-
-  if (!family) {
-    family = await Family.create({
-      tutorIds: [],
-      studentIds: [student._id],
-      notes: 'Creada por importación de tutores',
-    });
-
-    await Student.updateOne({ _id: student._id }, { $set: { familyId: family._id } });
-    report.familiesCreated += 1;
-    report.studentsLinkedToFamily += 1;
-
-    student.familyId = family._id;
-  } else {
-    await Family.updateOne({ _id: family._id }, { $addToSet: { studentIds: student._id } });
-  }
-
-  familyByStudentCache.set(String(student._id), family);
-  return family;
+function buildFamilyKey(tutorPersonId, relationship) {
+  return `${String(tutorPersonId)}_${String(relationship)}`;
 }
 
-async function mergeFamiliesIfNeeded(familyA, familyB, familyByStudentCache, report) {
-  if (!familyA || !familyB) return familyA || familyB;
-  if (String(familyA._id) === String(familyB._id)) return familyA;
+async function resolveFamilyByTutorKey({ tutorPersonId, relationship, familyKeyMap, report }) {
+  const key = buildFamilyKey(tutorPersonId, relationship);
+  const cachedFamilyId = familyKeyMap.get(key);
 
-  const mergeEnabled = String(process.env.MERGE_FAMILIES || '').toLowerCase() === 'true';
-  if (!mergeEnabled) return familyA;
-
-  const destination = familyA.createdAt && familyB.createdAt && familyA.createdAt > familyB.createdAt ? familyB : familyA;
-  const source = String(destination._id) === String(familyA._id) ? familyB : familyA;
-
-  const session = await mongoose.startSession();
-  session.startTransaction();
-
-  try {
-    const sourceFamily = await Family.findById(source._id).session(session);
-    if (!sourceFamily) {
-      await session.commitTransaction();
-      return destination;
-    }
-
-    await Family.updateOne(
-      { _id: destination._id },
-      {
-        $addToSet: {
-          studentIds: { $each: sourceFamily.studentIds || [] },
-          tutorIds: { $each: sourceFamily.tutorIds || [] },
-        },
-      },
-      { session }
-    );
-
-    await Student.updateMany(
-      { _id: { $in: sourceFamily.studentIds || [] } },
-      { $set: { familyId: destination._id } },
-      { session }
-    );
-
-    await Family.deleteOne({ _id: source._id }, { session });
-
-    await session.commitTransaction();
-
-    (sourceFamily.studentIds || []).forEach((studentId) => {
-      familyByStudentCache.set(String(studentId), destination);
-    });
-
-    report.familiesMerged += 1;
-    return destination;
-  } catch (error) {
-    await session.abortTransaction();
-    throw error;
-  } finally {
-    session.endSession();
+  if (cachedFamilyId) {
+    const cachedFamily = await Family.findById(cachedFamilyId);
+    if (cachedFamily) return cachedFamily;
+    familyKeyMap.delete(key);
   }
+
+  const existingTutor = await Tutor.findOne({
+    tutorPersonId,
+    relationship,
+  }).populate({ path: 'studentId', select: 'familyId' });
+
+  const existingFamilyId = existingTutor?.studentId?.familyId;
+  if (existingFamilyId) {
+    const existingFamily = await Family.findById(existingFamilyId);
+    if (existingFamily) {
+      familyKeyMap.set(key, existingFamily._id);
+      return existingFamily;
+    }
+  }
+
+  const createdFamily = await Family.create({
+    tutorIds: [],
+    studentIds: [],
+    notes: 'Creada por importación de tutores',
+  });
+
+  familyKeyMap.set(key, createdFamily._id);
+  report.familiesCreated += 1;
+  return createdFamily;
 }
 
 async function upsertTutorForStudent({ student, person, relationship, notes }, report) {
@@ -490,7 +445,7 @@ async function run() {
 
   const studentByCodeCache = await buildStudentCache();
   const personByDniCache = new Map();
-  const familyByStudentCache = new Map();
+  const familyKeyMap = new Map();
 
   try {
     const content = fs.readFileSync(filePath, 'utf8');
@@ -577,13 +532,14 @@ async function run() {
         const normalizedPhones = normalizePhones(data.phones);
         const person = await resolveTutorPerson(data, normalizedPhones, personByDniCache, report);
 
-        let baseFamily = null;
+        const targetFamily = await resolveFamilyByTutorKey({
+          tutorPersonId: person._id,
+          relationship,
+          familyKeyMap,
+          report,
+        });
 
         for (const student of students) {
-          const family = await ensureFamilyForStudent(student, familyByStudentCache, report);
-          if (!baseFamily) baseFamily = family;
-          else baseFamily = await mergeFamiliesIfNeeded(baseFamily, family, familyByStudentCache, report);
-
           const tutor = await upsertTutorForStudent({
             student,
             person,
@@ -592,7 +548,7 @@ async function run() {
           }, report);
 
           await Family.updateOne(
-            { _id: baseFamily._id },
+            { _id: targetFamily._id },
             {
               $addToSet: {
                 studentIds: student._id,
@@ -601,10 +557,13 @@ async function run() {
             }
           );
 
-          await Student.updateOne({ _id: student._id }, { $set: { familyId: baseFamily._id } });
-          student.familyId = baseFamily._id;
+          if (String(student.familyId || '') !== String(targetFamily._id)) {
+            await Student.updateOne({ _id: student._id }, { $set: { familyId: targetFamily._id } });
+            report.studentsLinkedToFamily += 1;
+          }
+
+          student.familyId = targetFamily._id;
           studentByCodeCache.set(student.internalCode, student);
-          familyByStudentCache.set(String(student._id), baseFamily);
 
           successRows.push({
             rowNumber: row.rowNumber,
@@ -612,7 +571,7 @@ async function run() {
             studentId: student._id,
             tutorPersonId: person._id,
             relationship,
-            familyId: baseFamily._id,
+            familyId: targetFamily._id,
           });
         }
 

@@ -17,12 +17,14 @@ import { getClassroomCapacityService } from '../enrollments/enrollments.service.
 import { runInTransaction } from '../../shared/dbSession.js';
 import { registerAuditLog } from '../../shared/audit.service.js';
 import { buildAccentInsensitiveRegex, normalizeSearchTerm } from '../../utils/search.js';
-import { searchUnassignedStudents } from '../../services/search/unassignedStudents.search.js';
+import { searchUnassignedStudentsService as searchUnassignedStudentsModuleService, addCampusToStudents } from './services/unassignedStudents.search.service.js';
+import { toUnassignedStudentListItem } from './presenters/unassignedStudentListItem.presenter.js';
 import {
   findStudentWithPersonById,
   findPersonByDni,
   updatePersonById,
   updateStudentById,
+  findUnassignedList,
 } from './repositories/students.repository.js';
 
 function normalizeDni(dni) {
@@ -371,20 +373,7 @@ export async function searchStudentAutocompleteService({ q, dni, limit }) {
 export async function searchUnassignedStudentsByQueryService({ q, limit = 20 }) {
   const term = String(q || '').trim();
   const normalizedLimit = Math.max(1, Math.min(50, toNumber(limit, 20)));
-  const normalizedItems = await searchUnassignedStudents({ q: term, limit: normalizedLimit, campusScope: 'ALL' });
-
-  const items = normalizedItems.map((row) => ({
-    studentId: row.studentId,
-    internalCode: row.internalCode,
-    activeStatus: row.activeStatus,
-    personId: {
-      personId: row.personId,
-      names: row.person.names,
-      lastNames: row.person.lastNames,
-      dni: row.person.dni,
-      gender: row.person.gender,
-    },
-  }));
+  const items = await searchUnassignedStudentsModuleService({ q: term, limit: normalizedLimit, campusScope: 'ALL' });
 
   return { q: term, items };
 }
@@ -392,48 +381,19 @@ export async function searchUnassignedStudentsByQueryService({ q, limit = 20 }) 
 export async function searchUnassignedStudentsService({ limit = 20, cursor }) {
   const normalizedLimit = Math.max(1, Math.min(50, toNumber(limit, 20)));
 
-  const filter = {
-    $or: [
-      { familyId: null },
-      { familyId: { $exists: false } },
-    ],
-  };
-
-  if (cursor) {
-    if (!mongoose.Types.ObjectId.isValid(cursor)) {
-      throw new ApiError(400, 'cursor inválido');
-    }
-    filter._id = { $gt: cursor };
+  if (cursor && !mongoose.Types.ObjectId.isValid(cursor)) {
+    throw new ApiError(400, 'cursor inválido');
   }
 
-  const rows = await Student.find(filter)
-    .sort({ _id: 1 })
-    .limit(normalizedLimit + 1)
-    .populate({
-      path: 'personId',
-      select: 'names lastNames dni gender',
-    })
-    .lean();
+  const rows = await findUnassignedList({
+    limit: normalizedLimit,
+    cursor,
+  });
 
   const hasMore = rows.length > normalizedLimit;
   const selected = hasMore ? rows.slice(0, normalizedLimit) : rows;
-
-  const items = selected.map((student) => ({
-    _id: String(student._id),
-    internalCode: student.internalCode,
-    personId: student.personId
-      ? {
-        _id: String(student.personId._id),
-        names: student.personId.names,
-        lastNames: student.personId.lastNames,
-        dni: student.personId.dni ?? null,
-        gender: student.personId.gender,
-      }
-      : null,
-    activeStatus: student.activeStatus || 'ACTIVE',
-  }));
-  
-  console.log("[DBG] [Lista de alumnos (primero)]: ",items[0])
+  const withCampus = await addCampusToStudents(selected);
+  const items = withCampus.map((student) => toUnassignedStudentListItem(student));
 
   return {
     items,

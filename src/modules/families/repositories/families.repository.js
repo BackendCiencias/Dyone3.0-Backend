@@ -16,17 +16,17 @@ async function resolveCampusStudentIds(campusCode) {
   return [...new Set(cycles.map((row) => String(row.studentId)))].map((id) => new mongoose.Types.ObjectId(id));
 }
 
-export async function findFamiliesBase({ limit, cursor, campus }) {
+function baseFamilyQuery() {
+  return Family.find()
+    .populate({ path: 'studentIds', populate: { path: 'personId' } })
+    .populate({ path: 'tutorIds', populate: { path: 'tutorPersonId' } });
+}
+
+export async function findFamiliesList({ limit, cursor, campus }) {
   const where = {};
-
   const campusStudentIds = await resolveCampusStudentIds(campus);
-  if (campusStudentIds && !campusStudentIds.length) {
-    return [];
-  }
-
-  if (campusStudentIds) {
-    where.studentIds = { $in: campusStudentIds };
-  }
+  if (campusStudentIds && !campusStudentIds.length) return [];
+  if (campusStudentIds) where.studentIds = { $in: campusStudentIds };
 
   if (cursor) {
     const cursorDoc = await Family.findById(cursor).select('_id updatedAt').lean();
@@ -45,17 +45,11 @@ export async function findFamiliesBase({ limit, cursor, campus }) {
     .lean();
 }
 
-export async function findFamiliesForSearch({ campus }) {
+export async function searchFamilies({ campus }) {
   const where = {};
-
   const campusStudentIds = await resolveCampusStudentIds(campus);
-  if (campusStudentIds && !campusStudentIds.length) {
-    return [];
-  }
-
-  if (campusStudentIds) {
-    where.studentIds = { $in: campusStudentIds };
-  }
+  if (campusStudentIds && !campusStudentIds.length) return [];
+  if (campusStudentIds) where.studentIds = { $in: campusStudentIds };
 
   return Family.find(where)
     .sort({ _id: 1 })
@@ -63,3 +57,10 @@ export async function findFamiliesForSearch({ campus }) {
     .populate({ path: 'tutorIds', populate: { path: 'tutorPersonId' } })
     .lean();
 }
+
+export async function findFamilyById(id) {
+  return baseFamilyQuery().findOne({ _id: id }).lean();
+}
+
+export const findFamiliesBase = findFamiliesList;
+export const findFamiliesForSearch = searchFamilies;

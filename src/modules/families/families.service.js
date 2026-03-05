@@ -10,10 +10,11 @@ import { Classroom } from '../../models/classroom.model.js';
 import { Campus } from '../../models/campus.model.js';
 import { Cycle } from '../../models/cycle.model.js';
 import { ApiError } from '../../utils/errors.js';
-import { findFamiliesBase } from './repositories/families.repository.js';
+import { findFamiliesList } from './repositories/families.repository.js';
 import { runInTransaction } from '../../shared/dbSession.js';
 import { registerAuditLog } from '../../shared/audit.service.js';
-import { searchFamilies as searchFamiliesForIntake } from '../../services/search/families.search.js';
+import { searchFamiliesService as searchFamiliesModuleService } from './services/families.search.service.js';
+import { toFamilyListItem } from './presenters/familyListItem.presenter.js';
 
 // Encuentra o crea una persona por DNI
 async function findOrCreatePerson(personData) {
@@ -87,16 +88,21 @@ async function enrichStudentsWithCampusStatus(students) {
   const classroomCampusById = new Map(classrooms.map((item) => [String(item._id), String(item.campusId)]));
 
   const statusByStudentId = new Map();
+  const studentCycleCampusByStudentId = new Map();
   studentCycles.forEach((row) => {
-    const code = campusById.get(String(row.campusId));
-    if (code) statusByStudentId.set(String(row.studentId), code);
+    studentCycleCampusByStudentId.set(String(row.studentId), campusById.get(String(row.campusId)) || null);
   });
 
+  const vacancyCampusByStudentId = new Map();
   vacancies.forEach((row) => {
-    if (statusByStudentId.has(String(row.studentId))) return;
     const campusId = classroomCampusById.get(String(row.classroomId));
-    const code = campusId ? campusById.get(campusId) : null;
-    if (code) statusByStudentId.set(String(row.studentId), code);
+    vacancyCampusByStudentId.set(String(row.studentId), campusId ? campusById.get(campusId) || null : null);
+  });
+
+  studentIds.forEach((id) => {
+    const key = String(id);
+    const code = vacancyCampusByStudentId.get(key) ?? studentCycleCampusByStudentId.get(key) ?? null;
+    if (code) statusByStudentId.set(key, code);
   });
 
   return students.map((student) => {
@@ -282,7 +288,7 @@ export async function createFamilyService({ tutors, students, notes }) {
 export async function listFamiliesBaseService({ limit = 5, cursor, campus } = {}) {
   const normalizedLimit = Math.max(1, Math.min(10, Number(limit) || 5));
 
-  const families = await findFamiliesBase({
+  const families = await findFamiliesList({
     limit: normalizedLimit,
     cursor,
     campus,
@@ -292,15 +298,7 @@ export async function listFamiliesBaseService({ limit = 5, cursor, campus } = {}
   const itemsSource = hasMore ? families.slice(0, normalizedLimit) : families;
 
   const rawItems = await buildFamiliesResponse(itemsSource);
-  const items = rawItems.map((item) => ({
-    ...item,
-    primaryTutor: item.primaryTutor ? {
-      names: item.primaryTutor.names,
-      lastNames: item.primaryTutor.lastNames,
-      dni: item.primaryTutor.dni,
-      phone: item.primaryTutor.phone,
-    } : null,
-  }));
+  const items = rawItems.map((item) => toFamilyListItem(item));
 
   return {
     items,
@@ -311,7 +309,7 @@ export async function listFamiliesBaseService({ limit = 5, cursor, campus } = {}
 export async function searchFamiliesService({ q, limit = 5, cursor, campus }) {
   const normalizedLimit = Math.max(1, Math.min(50, Number(limit) || 5));
   const campusScope = campus || 'ALL';
-  const normalizedRows = await searchFamiliesForIntake({ q, limit: normalizedLimit + 1, campusScope });
+  const normalizedRows = await searchFamiliesModuleService({ q, limit: normalizedLimit + 1, campusScope });
 
   const fromCursor = cursor
     ? normalizedRows.filter((row) => String(row.familyId) > String(cursor))
@@ -320,26 +318,8 @@ export async function searchFamiliesService({ q, limit = 5, cursor, campus }) {
   const hasMore = fromCursor.length > normalizedLimit;
   const selectedRows = hasMore ? fromCursor.slice(0, normalizedLimit) : fromCursor;
 
-  const items = selectedRows.map((row) => ({
-    familyId: String(row.familyId),
-    notes: null,
-    students: row.students || [],
-    studentsCount: row.studentsCount,
-    tutorsCount: row.primaryTutor ? 1 : 0,
-    primaryTutor: row.primaryTutor ? {
-      tutorId: null,
-      names: row.primaryTutor.names,
-      lastNames: row.primaryTutor.lastNames,
-      dni: row.primaryTutor.dni,
-      phone: row.primaryTutor.phone,
-      relationship: null,
-    } : null,
-    campusHints: row.campusHints,
-    updatedAt: null,
-  }));
-
   return {
-    items,
+    items: selectedRows.map((row) => toFamilyListItem(row)),
     nextCursor: hasMore ? String(selectedRows[selectedRows.length - 1].familyId) : null,
   };
 }

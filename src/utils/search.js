@@ -4,4 +4,4 @@ export {
   buildAccentInsensitiveRegex,
   buildSearchScore,
   byScoreThenId,
-} from '../services/search/search.utils.js';
+} from '../modules/_shared/search/search.utils.js';

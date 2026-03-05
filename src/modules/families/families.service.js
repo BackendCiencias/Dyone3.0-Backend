@@ -323,7 +323,7 @@ export async function searchFamiliesService({ q, limit = 5, cursor, campus }) {
   const items = selectedRows.map((row) => ({
     familyId: String(row.familyId),
     notes: null,
-    students: [],
+    students: row.students || [],
     studentsCount: row.studentsCount,
     tutorsCount: row.primaryTutor ? 1 : 0,
     primaryTutor: row.primaryTutor ? {

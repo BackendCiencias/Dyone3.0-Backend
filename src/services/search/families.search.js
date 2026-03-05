@@ -117,10 +117,10 @@ export async function searchFamilies({ q, limit = 20, campusScope = 'ALL' }) {
       campusHintsByStudent.get(key).add(code);
     });
   }
-
-  return families
+  const items = families
     .map((family) => {
       const students = family.studentIds || [];
+      // console.log("[DBG] [students]: ",students)
       const studentsCount = students.length;
       const tutors = family.tutorIds || [];
       const primaryTutor = tutors.find((tutor) => tutor.isPrimary) || tutors[0] || null;
@@ -141,7 +141,7 @@ export async function searchFamilies({ q, limit = 20, campusScope = 'ALL' }) {
           phone: primaryTutor.tutorPersonId?.phone || null,
         } : null,
         studentsCount,
-        students,
+        students: students || [],
         campusHints,
         score: buildSearchScore({
           normalizedQ,
@@ -156,4 +156,8 @@ export async function searchFamilies({ q, limit = 20, campusScope = 'ALL' }) {
     .filter(Boolean)
     .sort(byScoreThenId)
     .slice(0, normalizedLimit);
+
+  // console.log("[DBG] [items]: ",items)
+
+  return items
 }

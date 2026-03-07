@@ -29,6 +29,7 @@ import { runInTransaction } from '../../shared/dbSession.js';
 import { registerAuditLog } from '../../shared/audit.service.js';
 import { buildSearchScore } from '../../utils/search.js';
 import { intakeSearch } from './services/intake.search.service.js';
+import { normalizePersonNameFields } from '../../utils/personNameFormatter.js';
 
 const SCHOOL_MONTHS = 10;
 
@@ -68,9 +69,10 @@ async function nextStudentCodeSession(session) {
 }
 
 async function findOrCreatePersonSession(personData, session) {
-  const existing = await Person.findOne({ dni: personData.dni }).session(session);
+  const normalizedPerson = normalizePersonNameFields(personData);
+  const existing = await Person.findOne({ dni: normalizedPerson.dni }).session(session);
   if (existing) return existing;
-  const person = new Person(personData);
+  const person = new Person(normalizedPerson);
   await person.save({ session });
   return person;
 }

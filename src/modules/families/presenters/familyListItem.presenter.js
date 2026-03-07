@@ -17,6 +17,7 @@ export function toFamilyListItem(family = {}) {
 
   return {
     familyId: String(family._id || family.familyId),
+    address: family.address || null,
     notes: family.notes || null,
     students: family.students || family.studentIds || [],
     studentsCount: family.studentsCount ?? family.studentIds?.length ?? 0,

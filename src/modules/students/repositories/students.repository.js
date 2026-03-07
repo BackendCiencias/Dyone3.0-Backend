@@ -4,6 +4,7 @@ import { Vacancy } from '../../../models/vacancy.model.js';
 import { Campus } from '../../../models/campus.model.js';
 import { Student } from '../../../models/student.model.js';
 import { Person } from '../../../models/person.model.js';
+import { normalizePersonUpdatePayload } from '../../../utils/personNameFormatter.js';
 
 async function hydrateCampus(campusId) {
   if (!campusId) return null;
@@ -68,7 +69,7 @@ export async function findPersonByDni(dni) {
 }
 
 export async function updatePersonById(personId, updates) {
-  return Person.findByIdAndUpdate(personId, updates, { new: true });
+  return Person.findByIdAndUpdate(personId, normalizePersonUpdatePayload(updates), { new: true });
 }
 
 export async function updateStudentById(studentId, updates) {

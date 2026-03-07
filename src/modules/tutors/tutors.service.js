@@ -4,6 +4,7 @@ import { Person } from '../../models/person.model.js';
 import { Tutor } from '../../models/tutor.model.js';
 import { Family } from '../../models/family.model.js';
 import { ApiError } from '../../utils/errors.js';
+import { normalizePersonLastNames, normalizePersonNames, normalizePersonUpdatePayload } from '../../utils/personNameFormatter.js';
 
 function normalizeDni(dni) {
   const normalized = String(dni || '').trim();
@@ -119,29 +120,12 @@ async function resolveTutorPerson({ names, lastNames, dni, phones, phone }, sess
   }
 
   if (Object.keys(setUpdates).length) {
-    await Person.updateOne({ _id: person._id }, { $set: setUpdates }, { session });
+    await Person.updateOne({ _id: person._id }, normalizePersonUpdatePayload({ $set: setUpdates }), { session });
   }
 
   return person;
 }
 
-
-function sanitizeSpaces(value) {
-  return String(value || '').trim().replace(/\s+/g, ' ');
-}
-
-function toTitleCase(value) {
-  return sanitizeSpaces(value)
-    .toLowerCase()
-    .split(' ')
-    .filter(Boolean)
-    .map((part) => part.charAt(0).toUpperCase() + part.slice(1))
-    .join(' ');
-}
-
-function toUpperCaseWords(value) {
-  return sanitizeSpaces(value).toUpperCase();
-}
 
 export async function upsertTutorService(payload) {
   const session = await mongoose.startSession();
@@ -158,7 +142,12 @@ export async function upsertTutorService(payload) {
       if (!requestFamily) throw new ApiError(404, 'La familia indicada en familyId no existe');
     }
 
-    const person = await resolveTutorPerson(payload, session);
+    const personPayload = {
+      ...payload,
+      names: normalizePersonNames(payload.names),
+      lastNames: normalizePersonLastNames(payload.lastNames),
+    };
+    const person = await resolveTutorPerson(personPayload, session);
     const relationship = mapRelationship(payload.relationship);
 
     const tutorIds = [];
@@ -244,18 +233,18 @@ export async function updateTutorService(tutorId, payload) {
     if (!tutor) throw new ApiError(404, 'Tutor no encontrado');
 
     const personUpdates = {};
-    if (payload.names !== undefined) personUpdates.names = toTitleCase(payload.names);
-    if (payload.lastNames !== undefined) personUpdates.lastNames = toUpperCaseWords(payload.lastNames);
+    if (payload.names !== undefined) personUpdates.names = normalizePersonNames(payload.names);
+    if (payload.lastNames !== undefined) personUpdates.lastNames = normalizePersonLastNames(payload.lastNames);
     if (payload.dni !== undefined) personUpdates.dni = normalizeDni(payload.dni);
-    if (payload.phone !== undefined) personUpdates.phone = sanitizeSpaces(payload.phone);
+    if (payload.phone !== undefined) personUpdates.phone = normalizePhone(payload.phone);
     if (payload.gender !== undefined) personUpdates.gender = payload.gender;
 
     if (Object.keys(personUpdates).length) {
-      await Person.updateOne({ _id: tutor.tutorPersonId }, { $set: personUpdates }, { session });
+      await Person.updateOne({ _id: tutor.tutorPersonId }, normalizePersonUpdatePayload({ $set: personUpdates }), { session });
     }
 
     const tutorUpdates = {};
-    if (payload.relationship !== undefined) tutorUpdates.relationship = toTitleCase(payload.relationship);
+    if (payload.relationship !== undefined) tutorUpdates.relationship = mapRelationship(payload.relationship);
     if (payload.isPrimary !== undefined) tutorUpdates.isPrimary = payload.isPrimary;
     if (payload.livesWithStudent !== undefined) tutorUpdates.livesWithStudent = payload.livesWithStudent;
     if (payload.notes !== undefined) tutorUpdates.notes = payload.notes;

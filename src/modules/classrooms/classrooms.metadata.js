@@ -7,12 +7,12 @@ export const moduleEndpointMetadata = [
     module: 'classrooms',
     authRequired: true,
     rolesAllowed: CLASSROOM_ROLES,
-    description: 'Opciones de aulas por nivel y grado en todos los campus',
-    requestSchema: { query: { level: 'string', grade: 'number', includeCapacity: 'boolean?' } },
+    description: 'Opciones de aulas por nivel, grado opcional y campus opcional',
+    requestSchema: { query: { level: 'string', grade: 'number?', campus: 'string?', includeCapacity: 'boolean?' } },
     responseSchema: {
-      grade: 'number',
+      grade: 'number|null',
       level: 'string',
-      items: [{ classroomId: 'ObjectId', label: 'string', grade: 'number', section: 'string', level: 'string', campusCode: 'string', capacity: 'number|null', occupied: 'number|null', available: 'number|null', status: 'OK|FULL|LOW|UNKNOWN' }],
+      items: [{ classroomId: 'ObjectId', label: 'string', grade: 'string|number|null', section: 'string', level: 'string', campusCode: 'string|null', capacity: 'number|null', occupied: 'number|null', available: 'number|null', status: 'OK|FULL|LOW|UNKNOWN' }],
     },
   },
 ];

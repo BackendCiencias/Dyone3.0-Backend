@@ -1,6 +1,17 @@
 import { z } from 'zod';
 
 const objectIdSchema = z.string().regex(/^[a-fA-F0-9]{24}$/, 'ObjectId inválido');
+const SCHOOL_MONTHS = 10;
+
+const feeSchema = z.object({
+  amount: z.number().min(0).optional(),
+  isExempt: z.boolean().optional(),
+  reason: z.string().optional(),
+});
+
+const admissionFeeSchema = feeSchema.extend({
+  applies: z.boolean().optional(),
+});
 
 // Schema de persona reutilizable
 const personSchema = z.object({
@@ -16,7 +27,6 @@ const personSchema = z.object({
   foreignIdNumber: z.string().optional(),
 });
 
-// Tutor con persona y relación
 const tutorSchema = z.object({
   person: personSchema,
   relationship: z.enum(['Padre', 'Madre', 'Abuelo', 'Abuela', 'Tio', 'Tia', 'Apoderado', 'Otro']),
@@ -24,7 +34,6 @@ const tutorSchema = z.object({
   livesWithStudent: z.boolean().optional(),
 });
 
-// Cargo (deuda) inicial para un estudiante
 const chargeSchema = z.object({
   conceptId: z.string().min(1),
   description: z.string().min(1),
@@ -32,17 +41,37 @@ const chargeSchema = z.object({
   dueDate: z.string().optional(),
 });
 
-// Estudiante con sus tutores y cargos
+const enrollmentStudentCostsSchema = z.object({
+  classroomId: objectIdSchema.optional(),
+  monthlyAmount: z.number().nonnegative().optional(),
+  pensionMonthlyAmounts: z.array(z.number().min(-1)).length(SCHOOL_MONTHS).optional(),
+  admissionFee: admissionFeeSchema.optional(),
+  enrollmentFee: feeSchema.optional(),
+  notes: z.string().optional(),
+}).superRefine((data, ctx) => {
+  if (data.monthlyAmount === undefined && data.pensionMonthlyAmounts === undefined) {
+    ctx.addIssue({
+      code: z.ZodIssueCode.custom,
+      message: 'Debe enviar monthlyAmount o pensionMonthlyAmounts',
+    });
+  }
+});
+
 const enrollmentStudentSchema = z.object({
   person: personSchema,
   tutors: z.array(tutorSchema).min(1),
-  classroomId: z.string().min(1),
+  classroomId: objectIdSchema,
   charges: z.array(chargeSchema).optional(),
+  admissionFee: admissionFeeSchema.optional(),
+  enrollmentFee: feeSchema.optional(),
+  monthlyAmount: z.number().nonnegative().optional(),
+  pensionMonthlyAmounts: z.array(z.number().min(-1)).length(SCHOOL_MONTHS).optional(),
+  notes: z.string().optional(),
 });
 
 const legacyEnrollmentSchema = z.object({
-  campusId: z.string().min(1),
-  cycleId: z.string().min(1),
+  campusId: objectIdSchema,
+  cycleId: objectIdSchema,
   originSchool: z.string().min(1),
   students: z.array(enrollmentStudentSchema).min(1),
   contractNumber: z.string().optional(),
@@ -50,18 +79,27 @@ const legacyEnrollmentSchema = z.object({
 });
 
 const quickEnrollmentSchema = z.object({
-  studentId: z.string().min(1),
-  cycleId: z.string().min(1),
-  classroomId: z.string().min(1),
+  studentId: objectIdSchema,
+  cycleId: objectIdSchema,
+  classroomId: objectIdSchema,
   source: z.enum(['RENEWAL', 'NEW', 'TRANSFER']),
+  admissionFee: admissionFeeSchema.optional(),
+  enrollmentFee: feeSchema.optional(),
+  monthlyAmount: z.number().nonnegative().optional(),
+  pensionMonthlyAmounts: z.array(z.number().min(-1)).length(SCHOOL_MONTHS).optional(),
   discounts: z.array(z.object({ name: z.string(), amount: z.number() })).optional(),
   notes: z.string().optional(),
+}).superRefine((data, ctx) => {
+  if (data.monthlyAmount === undefined && data.pensionMonthlyAmounts === undefined) {
+    ctx.addIssue({
+      code: z.ZodIssueCode.custom,
+      path: ['monthlyAmount'],
+      message: 'Debe enviar monthlyAmount o pensionMonthlyAmounts',
+    });
+  }
 });
 
-// Esquema principal de matrícula
 export const enrollmentCreateSchema = z.union([quickEnrollmentSchema, legacyEnrollmentSchema]);
-
-
 
 export const enrollmentListQuerySchema = z.object({
   q: z.string().optional(),
@@ -125,26 +163,25 @@ export const enrollmentIdParamsSchema = z.object({
 });
 
 export const enrollmentConfirmSchema = z.object({
-  cycleId: objectIdSchema,
-  campusId: objectIdSchema,
+  cycleId: objectIdSchema.optional(),
+  campusId: objectIdSchema.optional(),
   students: z.array(z.object({
     studentId: objectIdSchema,
-    monthlyAmount: z.number().nonnegative().optional(),
     classroomId: objectIdSchema.optional(),
-    pensionMonthlyAmounts: z.array(z.number().min(-1)).length(10).optional(),
+    monthlyAmount: z.number().nonnegative().optional(),
+    pensionMonthlyAmounts: z.array(z.number().min(-1)).length(SCHOOL_MONTHS).optional(),
+    admissionFee: admissionFeeSchema.optional(),
+    enrollmentFee: feeSchema.optional(),
     notes: z.string().optional(),
+  }).superRefine((data, ctx) => {
+    if (data.monthlyAmount === undefined && data.pensionMonthlyAmounts === undefined) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        message: 'Cada estudiante debe enviar monthlyAmount o pensionMonthlyAmounts',
+      });
+    }
   })).min(1),
   discounts: z.string().optional(),
   exemptions: z.string().optional(),
   notes: z.string().optional(),
-}).superRefine((data, ctx) => {
-  for (const [index, student] of data.students.entries()) {
-    if (student.monthlyAmount === undefined && student.pensionMonthlyAmounts === undefined) {
-      ctx.addIssue({
-        code: z.ZodIssueCode.custom,
-        path: ['students', index],
-        message: 'Cada estudiante debe enviar monthlyAmount o pensionMonthlyAmounts',
-      });
-    }
-  }
 });

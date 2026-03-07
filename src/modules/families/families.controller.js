@@ -10,6 +10,7 @@ import {
   updateFamilyTutorService,
   deleteFamilyTutorService,
   unlinkStudentFromFamilyService,
+  updateFamilyService,
 } from './families.service.js';
 
 export const createFamily = asyncHandler(async (req, res) => {
@@ -48,6 +49,11 @@ export const setFamilyPrimaryTutor = asyncHandler(async (req, res) => {
 export const getFamilyById = asyncHandler(async (req, res) => {
   const data = await getFamilyByIdService(req.validatedParams.id);
   res.json(data);
+});
+
+export const updateFamily = asyncHandler(async (req, res) => {
+  const result = await updateFamilyService(req.validatedParams.id, req.validated);
+  res.json(result);
 });
 
 

@@ -14,6 +14,7 @@ import {
   familyTutorParamsSchema,
   familyUpdateTutorSchema,
   familyUnlinkStudentSchema,
+  familyUpdateSchema,
 } from './families.schemas.js';
 import {
   createFamily,
@@ -26,6 +27,7 @@ import {
   updateFamilyTutor,
   deleteFamilyTutor,
   unlinkFamilyStudent,
+  updateFamily,
 } from './families.controller.js';
 
 const router = Router();
@@ -40,6 +42,7 @@ router.post('/link-student', requireRoles(FAMILY_WRITE_ROLES), validate(familyLi
 router.get('/', requireRoles(FAMILY_READ_ROLES), validateRequest({ query: familyListSchema }), listFamilies);
 router.get('/search', requireRoles(FAMILY_READ_ROLES), validateRequest({ query: familySearchSchema }), searchFamilies);
 router.get('/:id', requireRoles(FAMILY_READ_ROLES), validateRequest({ params: familyIdParamsSchema }), getFamilyById);
+router.patch('/:id', requireRoles(FAMILY_WRITE_ROLES), validateRequest({ params: familyIdParamsSchema, body: familyUpdateSchema }), updateFamily);
 router.post('/:id/tutors', requireRoles(FAMILY_WRITE_ROLES), validateRequest({ params: familyIdParamsSchema, body: familyAddTutorSchema }), addFamilyTutor);
 router.patch('/:id/primary-tutor', requireRoles(FAMILY_WRITE_ROLES), validateRequest({ params: familyIdParamsSchema, body: familySetPrimaryTutorSchema }), setFamilyPrimaryTutor);
 router.patch('/:id/tutors/:tutorId', requireRoles(FAMILY_WRITE_ROLES), validateRequest({ params: familyTutorParamsSchema, body: familyUpdateTutorSchema }), updateFamilyTutor);

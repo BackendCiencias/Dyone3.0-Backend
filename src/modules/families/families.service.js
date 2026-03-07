@@ -748,6 +748,24 @@ export async function unlinkStudentFromFamilyService(familyId, studentId, userId
 }
 
 
+
+export async function updateFamilyService(familyId, payload) {
+  if (!mongoose.Types.ObjectId.isValid(familyId)) throw new ApiError(400, 'familyId inválido');
+
+  const family = await Family.findByIdAndUpdate(
+    familyId,
+    { $set: payload },
+    { new: true, runValidators: true }
+  )
+    .populate({ path: 'studentIds', populate: { path: 'personId' } })
+    .populate({ path: 'tutorIds', populate: { path: 'tutorPersonId' } })
+    .lean();
+
+  if (!family) throw new ApiError(404, 'Familia no encontrada');
+
+  return mapFamilyDetail(family);
+}
+
 export async function getFamilyByIdService(familyId) {
   if (!mongoose.Types.ObjectId.isValid(familyId)) throw new ApiError(400, 'familyId inválido');
 

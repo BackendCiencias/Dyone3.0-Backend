@@ -107,6 +107,13 @@ export const familyUpdateTutorSchema = z.object({
   message: 'Debe enviar al menos un campo para actualizar tutor',
 });
 
+export const familyUpdateSchema = z.object({
+  address: z.string().trim().optional(),
+  notes: z.string().trim().optional(),
+}).refine((payload) => Object.keys(payload).length > 0, {
+  message: 'Debe enviar al menos un campo para actualizar familia',
+});
+
 export const familyUnlinkStudentSchema = z.object({
   studentId: objectIdSchema,
 });

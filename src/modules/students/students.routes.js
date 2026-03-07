@@ -19,6 +19,7 @@ import {
   studentBankCodeSchema,
   studentUnassignedQuerySchema,
   unassignedSearchQuerySchema,
+  studentPrintCardsSchema,
 } from './students.schemas.js';
 import {
   createStudent,
@@ -38,6 +39,7 @@ import {
   updateStudentBankCode,
   listUnassignedStudents,
   searchUnassigned,
+  printStudentCards,
 } from './students.controller.js';
 import { tutorCreateSchema } from '../tutors/tutors.schemas.js';
 import { upsertTutor } from '../tutors/tutors.controller.js';
@@ -49,6 +51,7 @@ const STUDENT_WRITE_ROLES = ['ADMIN', 'PROMOTER', 'DIRECTOR', 'SECRETARY'];
 router.use(authMiddleware);
 
 router.get('/search', requireRoles(STUDENT_READ_ROLES), validateRequest({ query: studentSearchQuerySchema }), searchStudent);
+router.post('/print-cards', requireRoles(STUDENT_READ_ROLES), validateRequest({ body: studentPrintCardsSchema }), printStudentCards);
 router.get('/', requireRoles(['ADMIN', 'PROMOTER']), listStudents);
 router.get('/campus/:campus', requireRoles(STUDENT_READ_ROLES), listStudentsByCampus);
 router.get('/unassigned/search', requireRoles(STUDENT_READ_ROLES), validateRequest({ query: unassignedSearchQuerySchema }), searchUnassigned);

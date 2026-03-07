@@ -445,6 +445,184 @@ export async function searchStudentsService({ q, limit = 20, cursor }) {
   };
 }
 
+
+function normalizePrintCardFilters(filters = {}) {
+  return {
+    q: String(filters.q || '').trim(),
+    campus: String(filters.campus || '').trim().toUpperCase(),
+    level: String(filters.level || '').trim().toUpperCase(),
+    grade: filters.grade === undefined || filters.grade === null ? '' : String(filters.grade).trim(),
+    section: String(filters.section || '').trim().toUpperCase(),
+  };
+}
+
+async function resolvePrintCardsContext(studentIds = []) {
+  const uniqueStudentIds = [...new Set(studentIds.map((id) => String(id)))].map((id) => new mongoose.Types.ObjectId(id));
+  if (!uniqueStudentIds.length) return new Map();
+
+  const activeCycle = await Cycle.findOne({ isActive: true })
+    .sort({ year: -1, startDate: -1, _id: -1 })
+    .select('_id')
+    .lean();
+
+  if (!activeCycle?._id) {
+    return new Map(uniqueStudentIds.map((id) => [String(id), {
+      campusCode: null,
+      grade: null,
+      section: null,
+      classroomLabel: null,
+      level: null,
+    }]));
+  }
+
+  const [studentCycles, vacancies] = await Promise.all([
+    StudentCycle.find({ studentId: { $in: uniqueStudentIds }, cycleId: activeCycle._id })
+      .select('studentId campusId')
+      .lean(),
+    Vacancy.find({ studentId: { $in: uniqueStudentIds }, cycleId: activeCycle._id })
+      .select('studentId classroomId')
+      .lean(),
+  ]);
+
+  const classroomIds = [...new Set(vacancies.map((row) => String(row.classroomId || '')).filter(Boolean))]
+    .map((id) => new mongoose.Types.ObjectId(id));
+
+  const classrooms = classroomIds.length
+    ? await Classroom.find({ _id: { $in: classroomIds } }).select('_id campusId level grade section displayName').lean()
+    : [];
+
+  const campusIds = [...new Set([
+    ...studentCycles.map((row) => String(row.campusId || '')),
+    ...classrooms.map((row) => String(row.campusId || '')),
+  ].filter(Boolean))].map((id) => new mongoose.Types.ObjectId(id));
+
+  const campuses = campusIds.length
+    ? await Campus.find({ _id: { $in: campusIds } }).select('_id code').lean()
+    : [];
+
+  const campusById = new Map(campuses.map((campus) => [String(campus._id), campus.code || null]));
+  const classroomById = new Map(classrooms.map((classroom) => [String(classroom._id), classroom]));
+  const studentCycleByStudentId = new Map(studentCycles.map((row) => [String(row.studentId), row]));
+  const vacancyByStudentId = new Map(vacancies.map((row) => [String(row.studentId), row]));
+
+  const context = new Map();
+  uniqueStudentIds.forEach((studentId) => {
+    const key = String(studentId);
+    const vacancy = vacancyByStudentId.get(key);
+    const classroom = vacancy?.classroomId ? classroomById.get(String(vacancy.classroomId)) : null;
+    const cycle = studentCycleByStudentId.get(key);
+
+    const campusCode = classroom?.campusId
+      ? campusById.get(String(classroom.campusId)) || null
+      : (cycle?.campusId ? campusById.get(String(cycle.campusId)) || null : null);
+
+    context.set(key, {
+      campusCode,
+      grade: classroom?.grade || null,
+      section: classroom?.section || null,
+      classroomLabel: classroom?.displayName || null,
+      level: classroom?.level || null,
+    });
+  });
+
+  return context;
+}
+
+function mapStudentPrintCard(student, contextByStudentId) {
+  const person = student.personId || {};
+  const context = contextByStudentId.get(String(student._id)) || {
+    campusCode: null,
+    grade: null,
+    section: null,
+    classroomLabel: null,
+    level: null,
+  };
+
+  return {
+    studentId: String(student._id),
+    internalCode: student.internalCode || null,
+    names: person.names || '',
+    lastNames: person.lastNames || '',
+    dni: person.dni || null,
+    campusCode: context.campusCode,
+    grade: context.grade,
+    section: context.section,
+    classroomLabel: context.classroomLabel,
+    level: context.level,
+  };
+}
+
+function matchesPrintCardFilters(item, filters) {
+  if (filters.campus && item.campusCode !== filters.campus) return false;
+  if (filters.level && String(item.level || '').toUpperCase() !== filters.level) return false;
+  if (filters.grade && String(item.grade || '').toUpperCase() !== filters.grade.toUpperCase()) return false;
+  if (filters.section && String(item.section || '').toUpperCase() !== filters.section) return false;
+
+  if (!filters.q) return true;
+
+  const normalizedQ = normalizeSearchTerm(filters.q);
+  const haystacks = [
+    item.internalCode,
+    item.dni,
+    item.names,
+    item.lastNames,
+  ].map((value) => normalizeSearchTerm(value || ''));
+
+  return haystacks.some((value) => value.includes(normalizedQ));
+}
+
+export async function getStudentsPrintCardsService({ studentIds = [], filters = {} }) {
+  const normalizedIds = [...new Set((studentIds || []).map((id) => String(id)))]
+    .filter(Boolean);
+
+  if (normalizedIds.some((id) => !mongoose.Types.ObjectId.isValid(id))) {
+    throw new ApiError(400, 'studentIds inválidos');
+  }
+
+  const normalizedFilters = normalizePrintCardFilters(filters);
+
+  let where = {};
+  if (normalizedIds.length) {
+    where = { _id: { $in: normalizedIds.map((id) => new mongoose.Types.ObjectId(id)) } };
+  } else {
+    where.activeStatus = 'ACTIVE';
+
+    if (normalizedFilters.q) {
+      const queryRegex = buildAccentInsensitiveRegex(normalizedFilters.q);
+      if (queryRegex) {
+        const people = await Person.find({
+          $or: [{ names: queryRegex }, { lastNames: queryRegex }, { dni: queryRegex }],
+        }).select('_id').lean();
+
+        where.$or = [
+          { internalCode: queryRegex },
+          ...(people.length ? [{ personId: { $in: people.map((row) => row._id) } }] : []),
+        ];
+      }
+    }
+  }
+
+  const students = await Student.find(where)
+    .select('_id personId internalCode activeStatus')
+    .populate({ path: 'personId', select: 'names lastNames dni' })
+    .lean();
+
+  const contextByStudentId = await resolvePrintCardsContext(students.map((student) => student._id));
+  let items = students.map((student) => mapStudentPrintCard(student, contextByStudentId));
+
+  if (!normalizedIds.length) {
+    items = items.filter((item) => matchesPrintCardFilters(item, normalizedFilters));
+    items.sort((a, b) => String(a.lastNames || '').localeCompare(String(b.lastNames || ''), 'es') || String(a.names || '').localeCompare(String(b.names || ''), 'es'));
+  } else {
+    const orderById = new Map(normalizedIds.map((id, index) => [id, index]));
+    items.sort((a, b) => (orderById.get(String(a.studentId)) ?? 999999) - (orderById.get(String(b.studentId)) ?? 999999));
+  }
+
+  return {
+    items: items.map(({ level, ...row }) => row),
+  };
+}
+
 export async function getStudentSummaryService(studentId) {
   if (!mongoose.Types.ObjectId.isValid(studentId)) throw new ApiError(400, 'id inválido');
 

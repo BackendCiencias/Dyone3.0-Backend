@@ -86,6 +86,21 @@ export const unassignedSearchQuerySchema = z.object({
   limit: z.coerce.number().int().min(1).max(50).optional(),
 });
 
+
+
+const campusCodeSchema = z.enum(['CIENCIAS', 'CIMAS', 'CIENCIAS_APLICADAS']);
+
+export const studentPrintCardsSchema = z.object({
+  studentIds: z.array(objectIdSchema).optional().default([]),
+  filters: z.object({
+    q: z.string().trim().optional(),
+    campus: z.union([campusCodeSchema, z.literal('')]).optional(),
+    level: z.union([z.enum(['INITIAL', 'PRIMARY', 'SECONDARY']), z.literal('')]).optional(),
+    grade: z.union([z.string(), z.number()]).optional(),
+    section: z.string().trim().optional(),
+  }).optional().default({}),
+});
+
 export const studentSearchQuerySchema = z.object({
   q: z.string().trim().optional(),
   dni: z.string().trim().optional(),

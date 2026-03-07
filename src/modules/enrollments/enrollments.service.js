@@ -9,6 +9,16 @@ import { Vacancy } from '../../models/vacancy.model.js';
 import { getCapacityForClassroom } from './services/enrollmentsCapacity.service.js';
 import { ContractSnapshot } from '../../models/contractSnapshot.model.js';
 import { Charge } from '../../models/charge.model.js';
+import {
+  buildAdmissionFeeCharge,
+  buildContractSnapshot,
+  buildEnrollmentFeeCharge,
+  buildTuitionCharges,
+  derivePreviousSchoolType,
+  isOwnCampus,
+  resolveBillingConceptsByCode,
+  upsertStudentCycleForEnrollment,
+} from './services/enrollmentConfirmation.helpers.js';
 import { Cycle } from '../../models/cycle.model.js';
 import { Campus } from '../../models/campus.model.js';
 import { Classroom } from '../../models/classroom.model.js';
@@ -65,14 +75,37 @@ async function findOrCreatePersonSession(personData, session) {
   return person;
 }
 
-async function createEnrollmentStudentSession({ enrollmentId, studentId, classroomId, userId, monthlyAmount }, session) {
+async function createEnrollmentStudentSession({
+  enrollmentId,
+  studentId,
+  classroomId,
+  userId,
+  monthlyAmount,
+  pensionMonthlyAmounts,
+  admissionFee,
+  enrollmentFee,
+  previousSchoolType,
+}, session) {
   const enrollmentStudent = new EnrollmentStudent({
     enrollmentId,
     studentId,
     classroomId: classroomId || null,
     agreedBy: userId,
     agreedAt: new Date(),
-    pensionMonthlyAmounts: normalizePensionMonthlyAmounts({ monthlyAmount }),
+    pensionMonthlyAmounts: normalizePensionMonthlyAmounts({ pensionMonthlyAmounts, monthlyAmount }),
+    admissionFee: {
+      applies: admissionFee?.applies === true,
+      amount: Number(admissionFee?.amount || 0),
+      isExempt: admissionFee?.isExempt === true,
+      reason: admissionFee?.reason,
+    },
+    enrollmentFee: {
+      amount: Number(enrollmentFee?.amount || 0),
+      isExempt: enrollmentFee?.isExempt === true,
+      reason: enrollmentFee?.reason,
+    },
+    previousSchoolType: previousSchoolType || 'OTHER',
+    previousSchoolName: previousSchoolType === 'OTHER' ? 'EXTERNO' : undefined,
   });
 
   await enrollmentStudent.save({ session });
@@ -123,12 +156,10 @@ async function hydrateLegacyEnrollmentStudents(enrollmentId, session) {
 }
 
 async function createQuickEnrollmentService(data, createdByUserId) {
-  const session = await mongoose.startSession();
-  session.startTransaction();
-
-  try {
+  const result = await runInTransaction(async (session) => {
     const student = await Student.findById(data.studentId).session(session);
     if (!student) throw new ApiError(404, 'Estudiante no encontrado');
+    if (!student.familyId) throw new ApiError(400, 'El estudiante no tiene familia vinculada');
 
     const cycle = await Cycle.findById(data.cycleId).session(session);
     if (!cycle) throw new ApiError(404, 'Ciclo no encontrado');
@@ -136,70 +167,78 @@ async function createQuickEnrollmentService(data, createdByUserId) {
     const classroom = await Classroom.findById(data.classroomId).session(session);
     if (!classroom) throw new ApiError(404, 'Classroom no encontrado');
 
-    if (!student.familyId) throw new ApiError(400, 'El estudiante no tiene familia vinculada');
+    const previousSchoolType = derivePreviousSchoolType(student.previousCampus);
+    const admissionFee = isOwnCampus(student.previousCampus)
+      ? { applies: false, amount: 0, isExempt: true, reason: 'Traslado interno' }
+      : (data.admissionFee || {});
 
-    const existing = await Enrollment.findOne({
-      cycleId: cycle._id,
-      studentIds: student._id,
-      status: 'CONFIRMED',
-    }).session(session);
-
-    if (existing) throw new ApiError(409, 'El estudiante ya tiene matrícula confirmada en este ciclo');
-
-    const enrollment = new Enrollment({
+    let enrollment = await Enrollment.findOne({
       familyId: student.familyId,
       cycleId: cycle._id,
       campusId: classroom.campusId,
-      studentIds: [student._id],
-      enrolledAt: new Date(),
-      status: 'CONFIRMED',
-      confirmedAt: new Date(),
-      createdBy: createdByUserId,
-      createdByUserId: createdByUserId,
-      originSchool: data.source,
-      notes: data.notes || undefined,
-    });
+      status: 'DRAFT',
+    }).session(session);
 
+    if (!enrollment) {
+      enrollment = new Enrollment({
+        familyId: student.familyId,
+        cycleId: cycle._id,
+        campusId: classroom.campusId,
+        studentIds: [student._id],
+        status: 'DRAFT',
+        createdBy: createdByUserId,
+        createdByUserId: createdByUserId,
+        notes: data.notes || undefined,
+      });
+      await enrollment.save({ session });
+    } else {
+      const studentIds = new Set((enrollment.studentIds || []).map((id) => String(id)));
+      studentIds.add(String(student._id));
+      enrollment.studentIds = [...studentIds].map((id) => new mongoose.Types.ObjectId(id));
+      enrollment.notes = data.notes || enrollment.notes;
+      enrollment.updatedBy = createdByUserId;
+      await enrollment.save({ session });
+    }
+
+    const existingEnrollmentStudent = await EnrollmentStudent.findOne({ enrollmentId: enrollment._id, studentId: student._id }).session(session);
+    if (existingEnrollmentStudent) {
+      existingEnrollmentStudent.classroomId = classroom._id;
+      existingEnrollmentStudent.pensionMonthlyAmounts = normalizePensionMonthlyAmounts(data);
+      existingEnrollmentStudent.admissionFee = {
+        applies: admissionFee?.applies === true,
+        amount: Number(admissionFee?.amount || 0),
+        isExempt: admissionFee?.isExempt === true,
+        reason: admissionFee?.reason,
+      };
+      existingEnrollmentStudent.enrollmentFee = {
+        amount: Number(data.enrollmentFee?.amount || 0),
+        isExempt: data.enrollmentFee?.isExempt === true,
+        reason: data.enrollmentFee?.reason,
+      };
+      existingEnrollmentStudent.previousSchoolType = previousSchoolType;
+      existingEnrollmentStudent.previousSchoolName = previousSchoolType === 'OTHER' ? 'EXTERNO' : undefined;
+      existingEnrollmentStudent.notes = data.notes || existingEnrollmentStudent.notes;
+      existingEnrollmentStudent.agreedBy = createdByUserId;
+      existingEnrollmentStudent.agreedAt = new Date();
+      await existingEnrollmentStudent.save({ session });
+    } else {
+      await createEnrollmentStudentSession({
+        enrollmentId: enrollment._id,
+        studentId: student._id,
+        classroomId: classroom._id,
+        userId: createdByUserId,
+        monthlyAmount: data.monthlyAmount,
+        pensionMonthlyAmounts: data.pensionMonthlyAmounts,
+        admissionFee,
+        enrollmentFee: data.enrollmentFee,
+        previousSchoolType,
+      }, session);
+    }
+
+    const enrollmentStudents = await EnrollmentStudent.find({ enrollmentId: enrollment._id }).select('_id').session(session);
+    enrollment.enrollmentStudents = enrollmentStudents.map((row) => row._id);
+    enrollment.updatedBy = createdByUserId;
     await enrollment.save({ session });
-
-    const enrollmentStudent = await createEnrollmentStudentSession({
-      enrollmentId: enrollment._id,
-      studentId: student._id,
-      classroomId: classroom._id,
-      userId: createdByUserId,
-    }, session);
-
-    await Enrollment.updateOne({ _id: enrollment._id }, { $set: { enrollmentStudents: [enrollmentStudent._id] } }, { session });
-
-    await Vacancy.updateOne(
-      { studentId: student._id, cycleId: cycle._id },
-      {
-        $setOnInsert: {
-          studentId: student._id,
-          cycleId: cycle._id,
-        },
-        $set: {
-          classroomId: classroom._id,
-          notes: data.notes || undefined,
-        },
-      },
-      { upsert: true, session }
-    );
-
-    await StudentCycle.updateOne(
-      { studentId: student._id, cycleId: cycle._id, campusId: classroom.campusId },
-      {
-        $set: {
-          status: 'ENROLLED',
-          enrolledAt: new Date(),
-          enrollmentId: enrollment._id,
-          notes: data.notes || undefined,
-        },
-      },
-      { upsert: true, session }
-    );
-
-    await session.commitTransaction();
 
     return {
       enrollment: {
@@ -207,22 +246,17 @@ async function createQuickEnrollmentService(data, createdByUserId) {
         studentId: student._id.toString(),
         cycleId: cycle._id.toString(),
         classroomId: classroom._id.toString(),
-        status: 'CONFIRMED',
-        createdAt: enrollment.enrolledAt,
+        status: 'DRAFT',
+        createdAt: enrollment.createdAt,
       },
     };
-  } catch (err) {
-    await session.abortTransaction();
-    throw err;
-  } finally {
-    session.endSession();
-  }
+  });
+
+  return result;
 }
 
 async function createLegacyEnrollmentService(data, createdByUserId) {
-  const session = await mongoose.startSession();
-  session.startTransaction();
-  try {
+  const result = await runInTransaction(async (session) => {
     const cycle = await Cycle.findById(data.cycleId).session(session);
     if (!cycle) throw new ApiError(404, 'Ciclo no encontrado');
     if (cycle.type !== 'SCHOOL_YEAR') throw new ApiError(400, 'Solo se permiten matrículas en ciclos de año escolar');
@@ -233,7 +267,21 @@ async function createLegacyEnrollmentService(data, createdByUserId) {
     const family = new Family({ notes: data.notes || undefined, tutorIds: [], studentIds: [] });
     await family.save({ session });
 
-    const enrollmentStudents = [];
+    const enrollment = new Enrollment({
+      familyId: family._id,
+      cycleId: data.cycleId,
+      campusId: data.campusId,
+      studentIds: [],
+      status: 'DRAFT',
+      createdBy: createdByUserId,
+      createdByUserId: createdByUserId,
+      originSchool: data.originSchool,
+      notes: data.notes || undefined,
+    });
+    await enrollment.save({ session });
+
+    const enrollmentStudentIds = [];
+
     for (const stu of data.students) {
       const personDoc = await findOrCreatePersonSession(stu.person, session);
       let student = await Student.findOne({ personId: personDoc._id }).session(session);
@@ -250,6 +298,7 @@ async function createLegacyEnrollmentService(data, createdByUserId) {
         student.familyId = family._id;
         await student.save({ session });
       }
+
       family.studentIds.push(student._id);
 
       for (const tut of stu.tutors) {
@@ -265,78 +314,32 @@ async function createLegacyEnrollmentService(data, createdByUserId) {
         family.tutorIds.push(tutorDoc._id);
       }
 
-      await Vacancy.updateOne(
-        { studentId: student._id, cycleId: data.cycleId },
-        {
-          $setOnInsert: {
-            studentId: student._id,
-            cycleId: data.cycleId,
-          },
-          $set: { classroomId: stu.classroomId },
-        },
-        { upsert: true, session }
-      );
+      const previousSchoolType = derivePreviousSchoolType(student.previousCampus);
+      const admissionFee = isOwnCampus(student.previousCampus)
+        ? { applies: false, amount: 0, isExempt: true, reason: 'Traslado interno' }
+        : (stu.admissionFee || {});
 
-      if (stu.charges) {
-        for (const ch of stu.charges) {
-          const charge = new Charge({
-            studentId: student._id,
-            cycleId: data.cycleId,
-            campusId: data.campusId,
-            conceptId: ch.conceptId,
-            description: ch.description,
-            totalAmount: mongoose.Types.Decimal128.fromString(ch.amount.toString()),
-            outstandingAmount: mongoose.Types.Decimal128.fromString(ch.amount.toString()),
-            dueDate: ch.dueDate ? new Date(ch.dueDate) : undefined,
-            status: 'OPEN',
-          });
-          await charge.save({ session });
-        }
-      }
-
-      enrollmentStudents.push({ studentId: student._id, classroomId: stu.classroomId });
-    }
-
-    await family.save({ session });
-
-    const enrollment = new Enrollment({
-      familyId: family._id,
-      cycleId: data.cycleId,
-      campusId: data.campusId,
-      studentIds: family.studentIds,
-      enrolledAt: new Date(),
-      status: 'CONFIRMED',
-      confirmedAt: new Date(),
-      createdBy: createdByUserId,
-      createdByUserId: createdByUserId,
-      originSchool: data.originSchool,
-      notes: data.notes || undefined,
-    });
-    await enrollment.save({ session });
-
-    const enrollmentStudentIds = [];
-    for (const row of enrollmentStudents) {
       const enrollmentStudent = await createEnrollmentStudentSession({
         enrollmentId: enrollment._id,
-        studentId: row.studentId,
-        classroomId: row.classroomId,
+        studentId: student._id,
+        classroomId: stu.classroomId,
         userId: createdByUserId,
+        monthlyAmount: stu.monthlyAmount,
+        pensionMonthlyAmounts: stu.pensionMonthlyAmounts,
+        admissionFee,
+        enrollmentFee: stu.enrollmentFee,
+        previousSchoolType,
       }, session);
+
+      if (stu.notes) enrollmentStudent.notes = stu.notes;
+      await enrollmentStudent.save({ session });
       enrollmentStudentIds.push(enrollmentStudent._id);
     }
 
-    await Enrollment.updateOne({ _id: enrollment._id }, { $set: { enrollmentStudents: enrollmentStudentIds } }, { session });
-
-    const contractSnapshot = new ContractSnapshot({
-      enrollmentId: enrollment._id,
-      matriculaId: enrollment._id,
-      contractNumber: data.contractNumber,
-      createdAt: new Date(),
-      isSigned: false,
-    });
-    await contractSnapshot.save({ session });
-
-    await session.commitTransaction();
+    enrollment.studentIds = family.studentIds;
+    enrollment.enrollmentStudents = enrollmentStudentIds;
+    await enrollment.save({ session });
+    await family.save({ session });
 
     return Enrollment.findById(enrollment._id)
       .populate({ path: 'familyId', populate: [
@@ -345,13 +348,11 @@ async function createLegacyEnrollmentService(data, createdByUserId) {
       ] })
       .populate('cycleId')
       .populate('campusId')
-      .populate({ path: 'enrollmentStudents', populate: [{ path: 'studentId' }, { path: 'classroomId' }] });
-  } catch (err) {
-    await session.abortTransaction();
-    throw err;
-  } finally {
-    session.endSession();
-  }
+      .populate({ path: 'enrollmentStudents', populate: [{ path: 'studentId' }, { path: 'classroomId' }] })
+      .session(session);
+  });
+
+  return result;
 }
 
 export async function createEnrollmentService(data, createdByUserId) {
@@ -437,75 +438,183 @@ export async function confirmEnrollmentService({ enrollmentId, payload, userId }
   const result = await runInTransaction(async (session) => {
     const enrollment = await hydrateLegacyEnrollmentStudents(enrollmentId, session);
     if (!enrollment) throw new ApiError(404, 'Matrícula no encontrada');
-
     if (enrollment.status === 'CONFIRMED') throw new ApiError(409, 'La matrícula ya fue confirmada');
     if (enrollment.status !== 'DRAFT') throw new ApiError(409, 'El estado actual de matrícula no permite confirmación');
 
-    const cycle = await Cycle.findById(payload.cycleId).session(session);
+    if (!enrollment.familyId) throw new ApiError(409, 'La matrícula no tiene familia asignada');
+
+    const cycleId = payload.cycleId || enrollment.cycleId;
+    const campusId = payload.campusId || enrollment.campusId;
+
+    const cycle = await Cycle.findById(cycleId).session(session);
     if (!cycle) throw new ApiError(404, 'Ciclo no encontrado');
 
-    const campus = await Campus.findById(payload.campusId).session(session);
+    const campus = await Campus.findById(campusId).session(session);
     if (!campus) throw new ApiError(404, 'Campus no encontrado');
 
-    const studentIds = payload.students.map((row) => row.studentId);
-    const studentCount = await Student.countDocuments({ _id: { $in: studentIds } }).session(session);
-    if (studentCount !== studentIds.length) throw new ApiError(404, 'Hay estudiantes que no existen');
+    const enrollmentStudents = await EnrollmentStudent.find({ enrollmentId: enrollment._id }).session(session);
+    if (!enrollmentStudents.length) throw new ApiError(409, 'La matrícula no tiene estudiantes para confirmar');
 
-    const enrollmentStudents = await EnrollmentStudent.find({ enrollmentId: enrollment._id, studentId: { $in: studentIds } }).session(session);
     const enrollmentStudentByStudentId = new Map(enrollmentStudents.map((row) => [String(row.studentId), row]));
+    for (const incoming of (payload.students || [])) {
+      const row = enrollmentStudentByStudentId.get(String(incoming.studentId));
+      if (!row) continue;
 
-    for (const row of payload.students) {
-      const current = enrollmentStudentByStudentId.get(String(row.studentId));
-      if (current) {
-        current.pensionMonthlyAmounts = normalizePensionMonthlyAmounts(row);
-        current.classroomId = row.classroomId || current.classroomId || null;
-        current.agreedBy = userId;
-        current.agreedAt = new Date();
-        current.notes = row.notes || current.notes;
-        await current.save({ session });
-      } else {
-        const created = new EnrollmentStudent({
-          enrollmentId: enrollment._id,
-          studentId: row.studentId,
-          classroomId: row.classroomId || null,
-          agreedBy: userId,
-          agreedAt: new Date(),
-          notes: row.notes,
-          pensionMonthlyAmounts: normalizePensionMonthlyAmounts(row),
-        });
-        await created.save({ session });
+      const mergedAdmissionFee = {
+        ...(row.admissionFee?.toObject?.() || row.admissionFee || {}),
+        ...(incoming.admissionFee || {}),
+      };
+      const mergedEnrollmentFee = {
+        ...(row.enrollmentFee?.toObject?.() || row.enrollmentFee || {}),
+        ...(incoming.enrollmentFee || {}),
+      };
+
+      row.classroomId = incoming.classroomId || row.classroomId || null;
+      row.pensionMonthlyAmounts = normalizePensionMonthlyAmounts(incoming);
+      row.admissionFee = {
+        applies: mergedAdmissionFee.applies === true,
+        amount: Number(mergedAdmissionFee.amount || 0),
+        isExempt: mergedAdmissionFee.isExempt === true,
+        reason: mergedAdmissionFee.reason,
+      };
+      row.enrollmentFee = {
+        amount: Number(mergedEnrollmentFee.amount || 0),
+        isExempt: mergedEnrollmentFee.isExempt === true,
+        reason: mergedEnrollmentFee.reason,
+      };
+      row.notes = incoming.notes || row.notes;
+      row.agreedBy = userId;
+      row.agreedAt = new Date();
+      await row.save({ session });
+    }
+
+    const allEnrollmentStudents = await EnrollmentStudent.find({ enrollmentId: enrollment._id }).session(session);
+    const studentIds = allEnrollmentStudents.map((row) => row.studentId);
+
+    const dedup = new Set(studentIds.map((id) => String(id)));
+    if (dedup.size !== studentIds.length) throw new ApiError(409, 'La matrícula contiene estudiantes duplicados');
+
+    const students = await Student.find({ _id: { $in: studentIds } })
+      .populate('personId')
+      .select('_id personId internalCode previousCampus')
+      .session(session);
+    if (students.length !== studentIds.length) throw new ApiError(409, 'Hay estudiantes inválidos para confirmar');
+
+    const studentsById = new Map(students.map((row) => [String(row._id), row]));
+
+    const classroomIds = [...new Set(allEnrollmentStudents.map((row) => String(row.classroomId)).filter(Boolean))]
+      .map((id) => new mongoose.Types.ObjectId(id));
+    const classrooms = await Classroom.find({ _id: { $in: classroomIds } })
+      .select('_id displayName cycleId campusId')
+      .session(session)
+      .lean();
+    const classroomsById = new Map(classrooms.map((row) => [String(row._id), row]));
+
+    for (const row of allEnrollmentStudents) {
+      if (!row.classroomId) throw new ApiError(409, 'Todos los alumnos deben tener aula para confirmar');
+      if (!Array.isArray(row.pensionMonthlyAmounts) || row.pensionMonthlyAmounts.length !== SCHOOL_MONTHS) {
+        throw new ApiError(409, 'Costos de pensión inválidos en la matrícula');
       }
 
-      await StudentCycle.findOneAndUpdate(
-        { studentId: row.studentId, cycleId: payload.cycleId, campusId: payload.campusId },
+      const student = studentsById.get(String(row.studentId));
+      if (!student?.personId?.names) throw new ApiError(409, 'Hay alumnos sin datos base para confirmar');
+
+      const classroom = classroomsById.get(String(row.classroomId));
+      if (!classroom) throw new ApiError(409, 'Hay aulas inválidas en la matrícula');
+
+      if (String(classroom.cycleId) !== String(cycleId)) {
+        throw new ApiError(409, 'El aula seleccionada no corresponde al ciclo de la matrícula');
+      }
+
+      if (String(classroom.campusId) !== String(campusId)) {
+        throw new ApiError(409, 'El aula seleccionada no corresponde al campus de la matrícula');
+      }
+
+      row.previousSchoolType = derivePreviousSchoolType(student.previousCampus);
+      row.previousSchoolName = row.previousSchoolType === 'OTHER' ? 'EXTERNO' : undefined;
+
+      if (isOwnCampus(student.previousCampus)) {
+        row.admissionFee = {
+          applies: false,
+          amount: 0,
+          isExempt: true,
+          reason: 'Traslado interno',
+        };
+      }
+
+      await row.save({ session });
+
+      await upsertStudentCycleForEnrollment({
+        studentId: row.studentId,
+        cycleId,
+        campusId,
+        enrollmentId: enrollment._id,
+        session,
+      });
+
+      await Vacancy.updateOne(
+        { studentId: row.studentId, cycleId },
         {
-          $set: { status: 'ENROLLED', enrolledAt: new Date(), enrollmentId: enrollment._id },
-          $setOnInsert: { studentId: row.studentId, cycleId: payload.cycleId, campusId: payload.campusId },
+          $setOnInsert: { studentId: row.studentId, cycleId },
+          $set: { classroomId: row.classroomId },
         },
-        { upsert: true, new: true, session }
+        { upsert: true, session }
       );
     }
 
-    const allEnrollmentStudents = await EnrollmentStudent.find({ enrollmentId: enrollment._id }).select('_id studentId pensionMonthlyAmounts').session(session);
+    const { byCode, missingCodes } = await resolveBillingConceptsByCode({
+      session,
+      requiredCodes: ['ENROLLMENT_FEE', 'ADMISSION_FEE', 'TUITION'],
+    });
+    if (missingCodes.length) {
+      throw new ApiError(409, `Faltan BillingConcept requeridos: ${missingCodes.join(', ')}`);
+    }
 
-    const snapshotStudents = allEnrollmentStudents.map((entry) => ({
-      studentId: entry.studentId,
-      monthlyAmount: firstApplicablePensionAmount(entry.pensionMonthlyAmounts) ?? 0,
-      pensionMonthlyAmounts: entry.pensionMonthlyAmounts,
-    }));
+    const chargesToCreate = [];
+    for (const row of allEnrollmentStudents) {
+      const student = studentsById.get(String(row.studentId));
 
-    const snapshotData = {
-      enrollmentId: enrollment._id,
-      matriculaId: enrollment._id,
-      cycleId: payload.cycleId,
-      campusId: payload.campusId,
-      students: snapshotStudents,
-      discounts: payload.discounts || undefined,
-      exemptions: payload.exemptions || undefined,
-      notes: payload.notes || undefined,
-      confirmedByUserId: userId,
-      confirmedAt: new Date(),
-    };
+      const admissionCharge = buildAdmissionFeeCharge({
+        enrollmentStudent: row,
+        student,
+        conceptId: byCode.get('ADMISSION_FEE'),
+        cycleId,
+        campusId,
+      });
+      if (admissionCharge) chargesToCreate.push(admissionCharge);
+
+      const enrollmentCharge = buildEnrollmentFeeCharge({
+        enrollmentStudent: row,
+        conceptId: byCode.get('ENROLLMENT_FEE'),
+        cycleId,
+        campusId,
+      });
+      if (enrollmentCharge) chargesToCreate.push(enrollmentCharge);
+
+      const tuitionCharges = buildTuitionCharges({
+        enrollmentStudent: row,
+        conceptId: byCode.get('TUITION'),
+        cycleId,
+        campusId,
+      });
+      chargesToCreate.push(...tuitionCharges);
+
+      row.chargesGeneratedAt = new Date();
+      await row.save({ session });
+    }
+
+    if (chargesToCreate.length) {
+      await Charge.insertMany(chargesToCreate, { session });
+    }
+
+    const snapshotData = buildContractSnapshot({
+      enrollment: { ...enrollment.toObject(), cycleId, campusId },
+      enrollmentStudents: allEnrollmentStudents,
+      studentsById,
+      classroomsById,
+      userId,
+      notes: payload.notes,
+    });
 
     const snapshot = await ContractSnapshot.findOne({ $or: [{ enrollmentId: enrollment._id }, { matriculaId: enrollment._id }] }).session(session);
     if (!snapshot) {
@@ -514,18 +623,16 @@ export async function confirmEnrollmentService({ enrollmentId, payload, userId }
       await ContractSnapshot.updateOne({ _id: snapshot._id }, { $set: snapshotData }, { session });
     }
 
-    const enrollmentStudentIds = allEnrollmentStudents.map((row) => row._id);
-
     await Enrollment.updateOne(
       { _id: enrollment._id },
       {
         $set: {
           status: 'CONFIRMED',
           confirmedAt: new Date(),
-          enrolledAt: enrollment.enrolledAt || new Date(),
-          cycleId: payload.cycleId,
-          campusId: payload.campusId,
-          enrollmentStudents: enrollmentStudentIds,
+          cycleId,
+          campusId,
+          studentIds,
+          enrollmentStudents: allEnrollmentStudents.map((row) => row._id),
           updatedBy: userId,
         },
       },
@@ -534,10 +641,10 @@ export async function confirmEnrollmentService({ enrollmentId, payload, userId }
 
     return {
       enrollmentId: enrollment._id.toString(),
-      campusId: enrollment.campusId,
+      campusId: String(campusId),
       status: 'CONFIRMED',
       snapshotSaved: true,
-      chargeGenerationPending: true,
+      chargesCreated: chargesToCreate.length,
     };
   });
 
@@ -547,14 +654,14 @@ export async function confirmEnrollmentService({ enrollmentId, payload, userId }
     action: 'ENROLLMENT_CONFIRMED',
     performedBy: userId,
     campusId: result.campusId,
-    payloadSnapshot: payload,
+    payloadSnapshot: { students: payload.students?.length || 0, hasNotes: Boolean(payload.notes) },
   });
 
   return {
     enrollmentId: result.enrollmentId,
     status: result.status,
     snapshotSaved: result.snapshotSaved,
-    chargeGenerationPending: result.chargeGenerationPending,
+    chargesCreated: result.chargesCreated,
   };
 }
 

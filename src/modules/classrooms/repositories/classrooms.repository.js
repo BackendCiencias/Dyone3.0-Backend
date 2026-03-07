@@ -6,19 +6,25 @@ export async function findActiveSchoolYearCycleIds() {
   return cycles.map((cycle) => cycle._id);
 }
 
-export async function findClassroomsByLevelAndGradeAcrossCampuses({ level, grade, cycleIds }) {
+export async function findClassroomsByFilters({ level, grade, campus, cycleIds }) {
   const filters = {
     isActive: true,
     level,
-    grade: String(grade),
   };
+
+  if (grade !== null && grade !== undefined) {
+    filters.grade = String(grade);
+  }
 
   if (cycleIds?.length) {
     filters.cycleId = { $in: cycleIds };
   }
 
-  return Classroom.find(filters)
+  const classrooms = await Classroom.find(filters)
     .select('_id displayName level grade section capacity campusId cycleId')
-    .populate({ path: 'campusId', select: 'code' })
+    .populate({ path: 'campusId', select: 'code', ...(campus ? { match: { code: campus } } : {}) })
     .lean();
+
+  if (!campus) return classrooms;
+  return classrooms.filter((classroom) => classroom.campusId);
 }

@@ -1,4 +1,4 @@
-import { findActiveSchoolYearCycleIds, findClassroomsByLevelAndGradeAcrossCampuses } from './repositories/classrooms.repository.js';
+import { findActiveSchoolYearCycleIds, findClassroomsByFilters } from './repositories/classrooms.repository.js';
 import { getCapacityForClassrooms } from '../enrollments/services/enrollmentsCapacity.service.js';
 import { levelLabels } from './classrooms.schemas.js';
 
@@ -16,9 +16,9 @@ function campusSortCode(value) {
   return value;
 }
 
-export async function listClassroomOptions({ level, grade, includeCapacity = true }) {
+export async function listClassroomOptions({ level, grade, campus, includeCapacity = true }) {
   const cycleIds = await findActiveSchoolYearCycleIds();
-  const classrooms = await findClassroomsByLevelAndGradeAcrossCampuses({ level, grade, cycleIds });
+  const classrooms = await findClassroomsByFilters({ level, grade, campus, cycleIds });
 
   let capacityMap = new Map();
   if (includeCapacity) {
@@ -28,6 +28,8 @@ export async function listClassroomOptions({ level, grade, includeCapacity = tru
       capacityMap = new Map();
     }
   }
+
+  const shouldSortByGrade = grade === null || grade === undefined;
 
   const items = classrooms.map((classroom) => {
     const campusCode = classroom?.campusId?.code || null;
@@ -54,7 +56,7 @@ export async function listClassroomOptions({ level, grade, includeCapacity = tru
     return {
       classroomId: String(classroom._id),
       label: classroom.displayName,
-      grade,
+      grade: classroom.grade ?? null,
       section: classroom.section,
       level: levelLabels[level] || level,
       campusCode,
@@ -66,11 +68,17 @@ export async function listClassroomOptions({ level, grade, includeCapacity = tru
   }).sort((a, b) => {
     const campusComparison = campusSortCode(a.campusCode).localeCompare(campusSortCode(b.campusCode));
     if (campusComparison !== 0) return campusComparison;
+
+    if (shouldSortByGrade) {
+      const gradeComparison = Number(a.grade || 0) - Number(b.grade || 0);
+      if (gradeComparison !== 0) return gradeComparison;
+    }
+
     return String(a.section || '').localeCompare(String(b.section || ''));
   });
 
   return {
-    grade,
+    grade: grade ?? null,
     level: levelLabels[level] || level,
     items,
   };

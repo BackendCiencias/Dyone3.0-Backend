@@ -173,18 +173,40 @@ async function hydrateFamily(familyId) {
 }
 
 function mapFamilyDetail(family) {
+  const tutorMap = new Map();
 
-  const tutors = (family.tutorIds || []).map((tutor) => ({
-    _id: tutor._id,
-    relationship: tutor.relationship,
-    isPrimary: tutor.isPrimary,
-    livesWithStudent: tutor.livesWithStudent,
-    studentId: tutor.studentId || null,
-    tutorPerson: tutor.tutorPersonId || null,
-  }));
+  for (const tutor of family.tutorIds || []) {
+    const personId = String(tutor?.tutorPersonId?._id || "");
+    if (!personId) continue;
+
+    if (!tutorMap.has(personId)) {
+      tutorMap.set(personId, {
+        _id: tutor._id,
+        relationship: tutor.relationship,
+        isPrimary: Boolean(tutor.isPrimary),
+        livesWithStudent: Boolean(tutor.livesWithStudent),
+        tutorPerson: tutor.tutorPersonId || null,
+        studentIds: tutor.studentId ? [tutor.studentId] : [],
+      });
+      continue;
+    }
+
+    const existing = tutorMap.get(personId);
+    existing.isPrimary = existing.isPrimary || Boolean(tutor.isPrimary);
+    existing.livesWithStudent = existing.livesWithStudent || Boolean(tutor.livesWithStudent);
+
+    if (tutor.studentId) {
+      const sid = String(tutor.studentId);
+      if (!existing.studentIds.some((id) => String(id) === sid)) {
+        existing.studentIds.push(tutor.studentId);
+      }
+    }
+  }
+
+  const tutors = Array.from(tutorMap.values());
 
   const primaryTutor = tutors.find((tutor) => tutor.isPrimary) || null;
-  const otherTutors = tutors.find((tutor) => tutor.isPrimary == false) || null;
+  const otherTutors = tutors.filter((tutor) => !tutor.isPrimary);
 
   return {
     familyId: family?._id || null,

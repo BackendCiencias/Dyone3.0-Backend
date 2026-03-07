@@ -30,23 +30,15 @@ function normalizePhones(phones) {
 }
 
 function mapRelationship(value) {
-  const relationMap = {
-    PADRE: 'Padre',
-    MADRE: 'Madre',
-    HERMANA: 'Hermana',
-    HERMANO: 'Hermano',
-    ABUELA: 'Abuela',
-    ABUELO: 'Abuelo',
-    APODERADO: 'Apoderado',
-  };
+  if (!value) throw new ApiError(400, 'relationship requerido');
 
-  const normalized = String(value || '').trim().toUpperCase();
-  const mapped = relationMap[normalized];
-  if (!mapped) {
-    throw new ApiError(400, `Relación no permitida. Valores permitidos: ${Object.keys(relationMap).join(', ')}`);
-  }
+  const normalized =
+    String(value)
+      .trim()
+      .toLowerCase()
+      .replace(/^\w/, (c) => c.toUpperCase()); // Padre, Madre, Tia...
 
-  return mapped;
+  return normalized;
 }
 
 function extractStudentCods(payload) {

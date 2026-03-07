@@ -17,6 +17,7 @@ import { getClassroomCapacityService } from '../enrollments/enrollments.service.
 import { runInTransaction } from '../../shared/dbSession.js';
 import { registerAuditLog } from '../../shared/audit.service.js';
 import { buildAccentInsensitiveRegex, normalizeSearchTerm } from '../../utils/search.js';
+import { normalizePersonNameFields, normalizePersonUpdatePayload } from '../../utils/personNameFormatter.js';
 import { searchUnassignedStudentsService as searchUnassignedStudentsModuleService, addCampusToStudents } from './services/unassignedStudents.search.service.js';
 import { toUnassignedStudentListItem } from './presenters/unassignedStudentListItem.presenter.js';
 import {
@@ -70,7 +71,8 @@ async function resolveCurrentCycle(session) {
 }
 
 async function resolveOrCreatePerson(person, session) {
-  const dni = normalizeDni(person.dni);
+  const normalizedPerson = normalizePersonNameFields(person);
+  const dni = normalizeDni(normalizedPerson.dni);
 
   let personDoc = null;
   if (dni) {
@@ -79,7 +81,7 @@ async function resolveOrCreatePerson(person, session) {
 
   if (!personDoc) {
     personDoc = new Person({
-      ...person,
+      ...normalizedPerson,
       ...(dni ? { dni } : {}),
       ...(dni ? {} : { dni: undefined }),
     });
@@ -88,15 +90,15 @@ async function resolveOrCreatePerson(person, session) {
   }
 
   const setUpdates = {};
-  if (person.names && personDoc.names !== person.names) setUpdates.names = person.names;
-  if (person.lastNames && personDoc.lastNames !== person.lastNames) setUpdates.lastNames = person.lastNames;
-  if (person.gender && personDoc.gender !== person.gender) setUpdates.gender = person.gender;
-  if (person.phone && personDoc.phone !== person.phone) setUpdates.phone = person.phone;
-  if (person.address && personDoc.address !== person.address) setUpdates.address = person.address;
-  if (person.email && personDoc.email !== person.email) setUpdates.email = person.email;
+  if (normalizedPerson.names && personDoc.names !== normalizedPerson.names) setUpdates.names = normalizedPerson.names;
+  if (normalizedPerson.lastNames && personDoc.lastNames !== normalizedPerson.lastNames) setUpdates.lastNames = normalizedPerson.lastNames;
+  if (normalizedPerson.gender && personDoc.gender !== normalizedPerson.gender) setUpdates.gender = normalizedPerson.gender;
+  if (normalizedPerson.phone && personDoc.phone !== normalizedPerson.phone) setUpdates.phone = normalizedPerson.phone;
+  if (normalizedPerson.address && personDoc.address !== normalizedPerson.address) setUpdates.address = normalizedPerson.address;
+  if (normalizedPerson.email && personDoc.email !== normalizedPerson.email) setUpdates.email = normalizedPerson.email;
 
   if (Object.keys(setUpdates).length) {
-    await Person.updateOne({ _id: personDoc._id }, { $set: setUpdates }, { session });
+    await Person.updateOne({ _id: personDoc._id }, normalizePersonUpdatePayload({ $set: setUpdates }), { session });
   }
 
   return personDoc;
@@ -1011,7 +1013,7 @@ export async function updateStudentIdentityService(studentId, payload, actor = n
     throw new ApiError(400, 'No se enviaron cambios de identidad válidos');
   }
 
-  await updatePersonById(student.personId._id, { $set: personUpdates });
+  await updatePersonById(student.personId._id, normalizePersonUpdatePayload({ $set: personUpdates }));
 
   if (actor) {
     await registerAuditLog({

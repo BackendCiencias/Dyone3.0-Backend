@@ -20,6 +20,7 @@ export const familyCreateSchema = z.object({
   tutors: z.array(personSchema).min(1, { message: 'Se requiere al menos un tutor' }),
   students: z.array(personSchema).min(1, { message: 'Se requiere al menos un estudiante' }),
   notes: z.string().optional(),
+  address: z.string().trim().optional(),
 });
 
 export const familySearchSchema = z.object({

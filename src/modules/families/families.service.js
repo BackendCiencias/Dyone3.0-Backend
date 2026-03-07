@@ -15,14 +15,16 @@ import { runInTransaction } from '../../shared/dbSession.js';
 import { registerAuditLog } from '../../shared/audit.service.js';
 import { searchFamiliesService as searchFamiliesModuleService } from './services/families.search.service.js';
 import { toFamilyListItem } from './presenters/familyListItem.presenter.js';
+import { normalizePersonNameFields, normalizePersonUpdatePayload } from '../../utils/personNameFormatter.js';
 
 // Encuentra o crea una persona por DNI
 async function findOrCreatePerson(personData) {
-  const existing = await Person.findOne({ dni: personData.dni });
+  const normalizedPerson = normalizePersonNameFields(personData);
+  const existing = await Person.findOne({ dni: normalizedPerson.dni });
   if (existing) {
     return existing;
   }
-  const person = new Person(personData);
+  const person = new Person(normalizedPerson);
   return person.save();
 }
 
@@ -210,6 +212,7 @@ function mapFamilyDetail(family) {
 
   return {
     familyId: family?._id || null,
+    address: family?.address || null,
     notes: family?.notes || null,
     students: family?.studentIds || null,
     primaryTutor,
@@ -224,7 +227,7 @@ async function resolveOrCreateTutorPerson(payload, session) {
     return person;
   }
 
-  const personData = payload.person;
+  const personData = normalizePersonNameFields(payload.person);
   if (!personData) throw new ApiError(400, 'person es requerido');
 
   const normalizedDni = normalizeDni(personData.dni);
@@ -254,7 +257,7 @@ async function resolveOrCreateTutorPerson(payload, session) {
   if (personData.gender && personData.gender !== person.gender) setUpdates.gender = personData.gender;
 
   if (Object.keys(setUpdates).length) {
-    await Person.updateOne({ _id: person._id }, { $set: setUpdates }, { session });
+    await Person.updateOne({ _id: person._id }, normalizePersonUpdatePayload({ $set: setUpdates }), { session });
   }
 
   return person;
@@ -279,8 +282,8 @@ async function resolveFamilyStudent(familyDoc, studentId, session) {
   return student;
 }
 
-export async function createFamilyService({ tutors, students, notes }) {
-  const family = new Family({ notes, tutorIds: [], studentIds: [] });
+export async function createFamilyService({ tutors, students, notes, address }) {
+  const family = new Family({ notes, address, tutorIds: [], studentIds: [] });
   await family.save();
 
   for (const stu of students) {

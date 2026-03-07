@@ -11,6 +11,7 @@ export function toIntakeSearchItems({ families = [], students = [] }) {
         phone: family.primaryTutor.phone || null,
       }
       : null,
+    address: family.address || null,
     studentsCount: family.studentsCount || 0,
     students: Array.isArray(family.students) ? family.students : [],
     campusHints: [...new Set((family.students || []).map((student) => student.currentCampusCode).filter(Boolean))],

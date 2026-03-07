@@ -500,6 +500,7 @@ export async function getStudentSummaryService(studentId) {
   }
   const sendFamily = {
     familyId: student.familyId?._id?.toString() || null,
+    address: student.familyId?.address || null,
     primaryTutor_send: primaryTutor? {
           lastNames: primaryTutor.tutorPersonId?.lastNames || null,
           names: primaryTutor.tutorPersonId?.names || null,
@@ -703,6 +704,7 @@ export async function getStudentDetailService(studentId, cycleId) {
     person: student.personId || null,
     family: family ? {
       _id: family._id,
+      address: family.address || null,
       notes: family.notes || null,
       studentIds: family.studentIds || [],
       tutorIds: family.tutorIds || [],

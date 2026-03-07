@@ -130,6 +130,7 @@ async function buildFamiliesResponse(families) {
 
     return {
       familyId: String(family._id),
+      address: family.address || null,
       notes: family.notes || null,
       students,
       studentsCount: family.studentIds?.length || 0,

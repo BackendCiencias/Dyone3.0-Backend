@@ -1,5 +1,10 @@
 export function toFamilyListItem(family = {}) {
-  const primaryTutorRaw = (family.tutorIds || []).find((tutor) => tutor.isPrimary) || family.tutorIds?.[0] || null;
+
+  // console.log("[DBG] [family]: ",family)
+  
+  const primaryTutorRaw = (family.tutorIds || []).find((tutor) => tutor.isPrimary) || family.primaryTutor || null;
+
+  // console.log("[DBG] [primaryTutorRaw]: ",primaryTutorRaw)
 
   const primaryTutor = primaryTutorRaw
     ? {

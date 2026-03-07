@@ -493,6 +493,7 @@ export async function getStudentSummaryService(studentId) {
     lastNames: person?.lastNames || null,
     birthDate: person?.birthDate || null,
     campusCode: latestVacancy?.classroomId?.campusId?.code || null,
+    previousCampus: student?.previousCampus || null,
     activeStatus: student.activeStatus,
   }
   const sendFamily = {

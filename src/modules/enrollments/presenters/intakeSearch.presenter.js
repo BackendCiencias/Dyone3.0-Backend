@@ -12,6 +12,7 @@ export function toIntakeSearchItems({ families = [], students = [] }) {
       }
       : null,
     studentsCount: family.studentsCount || 0,
+    students: Array.isArray(family.students) ? family.students : [],
     campusHints: [...new Set((family.students || []).map((student) => student.currentCampusCode).filter(Boolean))],
   }));
 

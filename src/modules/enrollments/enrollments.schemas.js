@@ -133,6 +133,7 @@ export const intakeSearchResponseSchema = z.object({
         dni: z.string().nullable(),
         phone: z.string().nullable().optional(),
       }).nullable(),
+      address: z.string().nullable().optional(),
       studentsCount: z.number().int().nonnegative(),
       campusHints: z.array(z.string()),
     }),

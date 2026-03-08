@@ -1,5 +1,6 @@
 import { Router } from 'express';
 import { validate } from '../../middlewares/validate.js';
+import { validateRequest } from '../../middlewares/validateRequest.js';
 import { authMiddleware } from '../../middlewares/auth.js';
 import { requireRoles } from '../../middlewares/roles.js';
 import {
@@ -11,6 +12,8 @@ import {
   postClassroom,
   getBillingConcepts,
   postBillingConcept,
+  postBillingSchedule,
+  getBillingScheduleByCycle,
   getEndpointsCatalog,
   getModelsCatalog,
 } from './admin.controller.js';
@@ -19,6 +22,8 @@ import {
   cycleCreateSchema,
   classroomCreateSchema,
   billingConceptCreateSchema,
+  billingScheduleUpsertSchema,
+  billingScheduleQuerySchema,
 } from './admin.schemas.js';
 
 const router = Router();
@@ -42,6 +47,8 @@ router.post('/classrooms', validate(classroomCreateSchema), postClassroom);
 // Billing concepts
 router.get('/billing-concepts', getBillingConcepts);
 router.post('/billing-concepts', validate(billingConceptCreateSchema), postBillingConcept);
+router.post('/billing-schedule', validate(billingScheduleUpsertSchema), postBillingSchedule);
+router.get('/billing-schedule', validateRequest({ query: billingScheduleQuerySchema }), getBillingScheduleByCycle);
 
 router.get('/endpoints', requireRoles(['ADMIN']), getEndpointsCatalog);
 router.get('/models', requireRoles(['ADMIN']), getModelsCatalog);

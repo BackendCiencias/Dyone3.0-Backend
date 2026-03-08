@@ -7,6 +7,7 @@ import { Vacancy } from '../../models/vacancy.model.js';
 import { getCapacityForClassroom } from './services/enrollmentsCapacity.service.js';
 import { ContractSnapshot } from '../../models/contractSnapshot.model.js';
 import { Charge } from '../../models/charge.model.js';
+import { BillingSchedule } from '../../models/billingSchedule.model.js';
 import {
   buildAdmissionFeeCharge,
   buildContractSnapshot,
@@ -72,7 +73,7 @@ function normalizeFee(fee = {}, { includesApplies = false } = {}) {
     : base;
 }
 
-function buildChargePayload({ studentId, cycleId, campusId, conceptId, concept, amount, monthIndex = null, notes = '' }) {
+function buildChargePayload({ studentId, cycleId, campusId, conceptId, concept, amount, monthIndex = null, dueDate = null, notes = '' }) {
   const decimalAmount = mongoose.Types.Decimal128.fromString(String(amount));
 
   return {
@@ -85,6 +86,7 @@ function buildChargePayload({ studentId, cycleId, campusId, conceptId, concept, 
     description: concept,
     totalAmount: decimalAmount,
     outstandingAmount: decimalAmount,
+    dueDate,
     notes,
   };
 }
@@ -166,6 +168,32 @@ export async function createEnrollmentService(data, createdByUserId) {
       throw new ApiError(409, `Faltan BillingConcept requeridos: ${missingCodes.join(', ')}`);
     }
 
+    const schedules = await BillingSchedule.find({
+      cycleId: cycle._id,
+      conceptCode: { $in: ['TUITION', 'ADMISSION_FEE', 'ENROLLMENT_FEE'] },
+    }).session(session);
+
+    const schedulesByConcept = new Map();
+    for (const row of schedules) {
+      const key = row.conceptCode;
+      if (!schedulesByConcept.has(key)) schedulesByConcept.set(key, []);
+      schedulesByConcept.get(key).push(row);
+    }
+
+    const tuitionSchedule = (schedulesByConcept.get('TUITION') || []).sort((a, b) => {
+      if (a.monthIndex === null && b.monthIndex === null) return 0;
+      if (a.monthIndex === null) return 1;
+      if (b.monthIndex === null) return -1;
+      return a.monthIndex - b.monthIndex;
+    });
+
+    if (!tuitionSchedule.length) {
+      throw new ApiError(409, 'No existe calendario de vencimientos para TUITION en este ciclo');
+    }
+
+    const admissionSchedule = (schedulesByConcept.get('ADMISSION_FEE') || [])[0] || null;
+    const enrollmentSchedule = (schedulesByConcept.get('ENROLLMENT_FEE') || [])[0] || null;
+
     for (const row of data.enrollmentStudents) {
       const normalizedPensions = normalizePensionMonthlyAmounts({ pensionMonthlyAmounts: row.pensionMonthlyAmounts });
       const admissionFee = normalizeFee(row.admissionFee, { includesApplies: true });
@@ -189,6 +217,10 @@ export async function createEnrollmentService(data, createdByUserId) {
       enrollmentStudentDocs.push(enrollmentStudent);
 
       if (admissionFee.applies && !admissionFee.isExempt) {
+        if (!admissionSchedule) {
+          throw new ApiError(409, 'No existe calendario de vencimientos para ADMISSION_FEE en este ciclo');
+        }
+
         chargesToCreate.push(buildChargePayload({
           studentId: row.studentId,
           cycleId: cycle._id,
@@ -196,11 +228,16 @@ export async function createEnrollmentService(data, createdByUserId) {
           conceptId: byCode.get('ADMISSION_FEE'),
           concept: 'ADMISSION',
           amount: admissionFee.amount,
+          dueDate: admissionSchedule.dueDate,
           notes: admissionFee.reason,
         }));
       }
 
       if (!enrollmentFee.isExempt) {
+        if (!enrollmentSchedule) {
+          throw new ApiError(409, 'No existe calendario de vencimientos para ENROLLMENT_FEE en este ciclo');
+        }
+
         chargesToCreate.push(buildChargePayload({
           studentId: row.studentId,
           cycleId: cycle._id,
@@ -208,13 +245,17 @@ export async function createEnrollmentService(data, createdByUserId) {
           conceptId: byCode.get('ENROLLMENT_FEE'),
           concept: 'ENROLLMENT',
           amount: enrollmentFee.amount,
+          dueDate: enrollmentSchedule.dueDate,
           notes: enrollmentFee.reason,
         }));
       }
 
-      for (let monthIndex = 0; monthIndex < normalizedPensions.length; monthIndex += 1) {
+      for (const scheduleRow of tuitionSchedule) {
+        if (scheduleRow.monthIndex === null || scheduleRow.monthIndex === undefined) continue;
+
+        const monthIndex = scheduleRow.monthIndex;
         const amount = normalizedPensions[monthIndex];
-        if (amount < 0) continue;
+        if (amount === undefined || amount < 0) continue;
 
         chargesToCreate.push(buildChargePayload({
           studentId: row.studentId,
@@ -224,6 +265,7 @@ export async function createEnrollmentService(data, createdByUserId) {
           concept: 'TUITION',
           monthIndex,
           amount,
+          dueDate: scheduleRow.dueDate,
         }));
       }
     }

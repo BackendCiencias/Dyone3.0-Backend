@@ -6,7 +6,9 @@ import { Campus } from '../../models/campus.model.js';
 import { Cycle } from '../../models/cycle.model.js';
 import { Classroom } from '../../models/classroom.model.js';
 import { BillingConcept } from '../../models/billingConcept.model.js';
+import { BillingSchedule } from '../../models/billingSchedule.model.js';
 import { allEndpointMetadata, validateEndpointMetadataShape, warnMetadataWithoutRoute } from '../../admin/endpointMetadataRegistry.js';
+import { ApiError } from '../../utils/errors.js';
 
 // Servicios del módulo de administración
 
@@ -49,6 +51,51 @@ export async function createBillingConcept(data) {
 
 export async function listBillingConcepts() {
   return BillingConcept.find();
+}
+
+export async function upsertBillingSchedule({ cycleId, conceptCode, items }) {
+  const cycle = await Cycle.findById(cycleId);
+  if (!cycle) throw new ApiError(404, 'Ciclo no encontrado');
+
+  const concept = await BillingConcept.findOne({ code: conceptCode });
+  if (!concept) throw new ApiError(404, `BillingConcept no encontrado: ${conceptCode}`);
+
+  const seen = new Set();
+  for (const item of items) {
+    const key = item.monthIndex === null ? 'null' : String(item.monthIndex);
+    if (seen.has(key)) throw new ApiError(400, `monthIndex duplicado en items: ${key}`);
+    seen.add(key);
+  }
+
+  await BillingSchedule.deleteMany({ cycleId: cycle._id, conceptCode });
+
+  const docs = items.map((item) => ({
+    cycleId: cycle._id,
+    conceptCode,
+    monthIndex: item.monthIndex,
+    label: item.label || '',
+    dueDate: new Date(item.dueDate),
+  }));
+
+  await BillingSchedule.insertMany(docs);
+
+  return BillingSchedule.find({ cycleId: cycle._id, conceptCode }).sort({ monthIndex: 1, dueDate: 1 }).lean();
+}
+
+export async function getBillingSchedule({ cycleId, conceptCode }) {
+  const schedule = await BillingSchedule.find({ cycleId, conceptCode })
+    .sort({ monthIndex: 1, dueDate: 1 })
+    .lean();
+
+  return {
+    cycleId,
+    conceptCode,
+    items: schedule.map((row) => ({
+      monthIndex: row.monthIndex ?? null,
+      label: row.label || '',
+      dueDate: row.dueDate,
+    })),
+  };
 }
 
 function normalizePath(basePath, routePath) {

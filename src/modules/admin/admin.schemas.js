@@ -34,3 +34,20 @@ export const billingConceptCreateSchema = z.object({
   isBlocking: z.boolean().optional().default(false),
   isActive: z.boolean().optional().default(true),
 });
+
+const billingScheduleItemSchema = z.object({
+  monthIndex: z.number().int().min(0).max(9).nullable(),
+  label: z.string().trim().optional().default(''),
+  dueDate: z.string().refine((value) => !Number.isNaN(Date.parse(value)), { message: 'dueDate inválida' }),
+});
+
+export const billingScheduleUpsertSchema = z.object({
+  cycleId: z.string().min(1),
+  conceptCode: z.string().trim().min(1).max(40).transform((value) => value.toUpperCase()),
+  items: z.array(billingScheduleItemSchema).min(1),
+});
+
+export const billingScheduleQuerySchema = z.object({
+  cycleId: z.string().min(1),
+  conceptCode: z.string().trim().min(1).max(40).transform((value) => value.toUpperCase()).optional().default('TUITION'),
+});

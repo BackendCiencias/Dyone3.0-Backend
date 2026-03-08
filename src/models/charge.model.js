@@ -5,6 +5,8 @@ const chargeSchema = new mongoose.Schema({
   cycleId: { type: mongoose.Schema.Types.ObjectId, ref: 'Cycle', required: true },
   campusId: { type: mongoose.Schema.Types.ObjectId, ref: 'Campus', required: true, index: true },
   conceptId: { type: mongoose.Schema.Types.ObjectId, ref: 'BillingConcept', required: true },
+  concept: { type: String, enum: ['ADMISSION', 'ENROLLMENT', 'TUITION'], index: true },
+  monthIndex: { type: Number, min: 0, max: 9, default: null, index: true },
   description: { type: String, required: true },
   totalAmount: { type: mongoose.Types.Decimal128, required: true },
   outstandingAmount: { type: mongoose.Types.Decimal128, required: true },
@@ -17,5 +19,6 @@ chargeSchema.index({ studentId: 1 });
 chargeSchema.index({ dueDate: 1 });
 chargeSchema.index({ outstandingAmount: 1 });
 chargeSchema.index({ campusId: 1, cycleId: 1 });
+chargeSchema.index({ studentId: 1, cycleId: 1, concept: 1, monthIndex: 1 });
 
 export const Charge = mongoose.model('Charge', chargeSchema);

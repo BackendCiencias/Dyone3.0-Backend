@@ -7,6 +7,8 @@ import {
   listClassrooms,
   createBillingConcept,
   listBillingConcepts,
+  upsertBillingSchedule,
+  getBillingSchedule,
   listAvailableEndpoints,
   listModelsCatalog,
 } from './admin.service.js';
@@ -62,4 +64,22 @@ export const getEndpointsCatalog = asyncHandler(async (req, res) => {
 export const getModelsCatalog = asyncHandler(async (_req, res) => {
   const models = await listModelsCatalog();
   res.json({ items: models });
+});
+
+export const postBillingSchedule = asyncHandler(async (req, res) => {
+  const rows = await upsertBillingSchedule(req.validated);
+  res.status(201).json({
+    cycleId: req.validated.cycleId,
+    conceptCode: req.validated.conceptCode,
+    items: rows.map((row) => ({
+      monthIndex: row.monthIndex ?? null,
+      label: row.label || '',
+      dueDate: row.dueDate,
+    })),
+  });
+});
+
+export const getBillingScheduleByCycle = asyncHandler(async (req, res) => {
+  const data = await getBillingSchedule(req.validatedQuery);
+  res.json(data);
 });

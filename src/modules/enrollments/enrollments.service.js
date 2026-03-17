@@ -106,6 +106,9 @@ export async function createEnrollmentService(data, createdByUserId) {
     const cycle = await Cycle.findById(data.cycleId).session(session);
     if (!cycle) throw new ApiError(404, 'Ciclo no encontrado');
 
+    console.log("cycle._id", cycle._id.toString());
+    console.log("data.cycleId", data.cycleId);
+
     const studentIds = data.enrollmentStudents.map((row) => String(row.studentId));
     const uniqueStudentIds = [...new Set(studentIds)];
     if (uniqueStudentIds.length !== studentIds.length) {
@@ -173,6 +176,29 @@ export async function createEnrollmentService(data, createdByUserId) {
       conceptCode: { $in: ['TUITION', 'ADMISSION_FEE', 'ENROLLMENT_FEE'] },
     }).session(session);
 
+    console.log("Schedules encontrados:", schedules.length);
+
+    console.log(
+      "Schedules cycleId:",
+      schedules.map(s => s.cycleId.toString())
+    );
+
+    console.log(
+      "Schedules conceptCode:",
+      schedules.map(s => s.conceptCode)
+    );
+
+    const debugSchedules = await BillingSchedule.find({}).limit(5);
+
+    console.log(
+      "BillingSchedules en DB:",
+      debugSchedules.map(s => ({
+        cycleId: s.cycleId.toString(),
+        conceptCode: s.conceptCode,
+        monthIndex: s.monthIndex
+      }))
+    );
+
     const schedulesByConcept = new Map();
     for (const row of schedules) {
       const key = row.conceptCode;
@@ -217,10 +243,6 @@ export async function createEnrollmentService(data, createdByUserId) {
       enrollmentStudentDocs.push(enrollmentStudent);
 
       if (admissionFee.applies && !admissionFee.isExempt) {
-        if (!admissionSchedule) {
-          throw new ApiError(409, 'No existe calendario de vencimientos para ADMISSION_FEE en este ciclo');
-        }
-
         chargesToCreate.push(buildChargePayload({
           studentId: row.studentId,
           cycleId: cycle._id,
@@ -228,16 +250,12 @@ export async function createEnrollmentService(data, createdByUserId) {
           conceptId: byCode.get('ADMISSION_FEE'),
           concept: 'ADMISSION',
           amount: admissionFee.amount,
-          dueDate: admissionSchedule.dueDate,
+          dueDate: admissionSchedule?.dueDate || new Date(),
           notes: admissionFee.reason,
         }));
       }
 
       if (!enrollmentFee.isExempt) {
-        if (!enrollmentSchedule) {
-          throw new ApiError(409, 'No existe calendario de vencimientos para ENROLLMENT_FEE en este ciclo');
-        }
-
         chargesToCreate.push(buildChargePayload({
           studentId: row.studentId,
           cycleId: cycle._id,
@@ -245,7 +263,7 @@ export async function createEnrollmentService(data, createdByUserId) {
           conceptId: byCode.get('ENROLLMENT_FEE'),
           concept: 'ENROLLMENT',
           amount: enrollmentFee.amount,
-          dueDate: enrollmentSchedule.dueDate,
+          dueDate: enrollmentSchedule?.dueDate || new Date(),
           notes: enrollmentFee.reason,
         }));
       }

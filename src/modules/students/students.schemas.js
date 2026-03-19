@@ -24,7 +24,44 @@ export const studentCreateSchema = z.object({
   notes: z.string().optional(),
 });
 
-export const studentCreateWithPersonSchema = studentCreateSchema;
+const tutorRelationshipSchema = z.preprocess((value) => {
+  if (typeof value !== 'string') return value;
+
+  const normalized = value.trim().toLowerCase();
+  const map = {
+    padre: 'Padre',
+    madre: 'Madre',
+    abuelo: 'Abuelo',
+    abuela: 'Abuela',
+    hermano: 'Hermano',
+    hermana: 'Hermana',
+    tio: 'Tío',
+    tío: 'Tío',
+    tia: 'Tía',
+    tía: 'Tía',
+    apoderado: 'Apoderado',
+    tutor: 'Apoderado',
+    otro: 'Otro',
+  };
+
+  return map[normalized] || value;
+}, z.enum(['Padre', 'Madre', 'Abuelo', 'Abuela', 'Hermano', 'Hermana', 'Tío', 'Tía', 'Apoderado', 'Otro']));
+
+const familyTutorSchema = z.object({
+  person: personSchema,
+  relationship: tutorRelationshipSchema,
+  livesWithStudent: z.boolean().optional(),
+  notes: z.string().optional(),
+});
+
+export const studentIntakeCreateSchema = z.object({
+  student: studentCreateSchema,
+  family: z.object({
+    notes: z.string().optional(),
+    address: z.string().trim().optional(),
+    primaryTutor: familyTutorSchema,
+  }).optional(),
+});
 
 export const studentIdParamsSchema = z.object({
   id: objectIdSchema,

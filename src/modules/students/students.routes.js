@@ -11,7 +11,7 @@ import {
   studentDetailQuerySchema,
   studentCycleStatusSchema,
   studentClassroomSchema,
-  studentCreateWithPersonSchema,
+  studentIntakeCreateSchema,
   studentFinancialParamsSchema,
   studentIdentitySchema,
   studentInternalNotesSchema,
@@ -30,7 +30,7 @@ import {
   getStudentDetail,
   updateStudentCycleStatus,
   changeStudentClassroom,
-  createStudentWithPerson,
+  createStudentIntake,
   getStudentAccountStatement,
   getStudentCharges,
   getStudentPayments,
@@ -110,7 +110,7 @@ router.patch(
   validateRequest({ params: studentIdParamsSchema, body: studentBankCodeSchema }),
   updateStudentBankCode
 );
-router.post('/with-person', requireRoles(STUDENT_WRITE_ROLES), validate(studentCreateWithPersonSchema), createStudentWithPerson);
+router.post('/intake', requireRoles(STUDENT_WRITE_ROLES), validate(studentIntakeCreateSchema), createStudentIntake);
 router.post('/', requireRoles(STUDENT_WRITE_ROLES), validate(studentCreateSchema), createStudent);
 
 router.post(

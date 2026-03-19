@@ -23,17 +23,13 @@ const ENABLE_STUDENTS_BY_CAMPUS_DEBUG =
   process.env.STUDENTS_BY_CAMPUS_DEBUG === 'true' || process.env.NODE_ENV !== 'production';
 
 export const createStudent = asyncHandler(async (req, res) => {
-  const student = await createStudentService(req.validated);
-  res.status(201).json(student);
+  const result = await createStudentService(req.validated);
+  res.status(201).json(result.student);
 });
 
-export const createStudentWithPerson = asyncHandler(async (req, res) => {
-  // Student puede existir sin familia; matrícula/StudentCycle define su estado activo.
-  const student = await createStudentService(req.validated);
-  res.status(201).json({
-    studentId: student._id,
-    student,
-  });
+export const createStudentIntake = asyncHandler(async (req, res) => {
+  const result = await createStudentService(req.validated.student, req.validated.family);
+  res.status(201).json(result);
 });
 
 export const searchStudent = asyncHandler(async (req, res) => {

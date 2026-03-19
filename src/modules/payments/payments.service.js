@@ -5,10 +5,14 @@ import { PaymentAllocation } from '../../models/paymentAllocation.model.js';
 import { Student } from '../../models/student.model.js';
 import { StudentCycle } from '../../models/studentCycle.model.js';
 import { Campus } from '../../models/campus.model.js';
+import { BillingConcept } from '../../models/billingConcept.model.js';
+import { Counter } from '../../models/counter.model.js';
+import { Person } from '../../models/person.model.js';
 import { ApiError } from '../../utils/errors.js';
 import { runInTransaction } from '../../shared/dbSession.js';
 import { registerAuditLog } from '../../shared/audit.service.js';
 import { createPaymentRequestLog, findPaymentRequestByKey } from './repositories/payments.repository.js';
+import { buildAccentInsensitiveRegex, buildSearchScore, byScoreThenId, normalizeSearchTerm } from '../../utils/search.js';
 
 function toMoney(value) {
   if (value === null || value === undefined) return 0;
@@ -28,6 +32,182 @@ function computeChargeStatus(totalAmount, outstandingAmount) {
   if (outstandingAmount <= 0) return 'PAID';
   if (outstandingAmount < totalAmount) return 'PARTIAL';
   return 'OPEN';
+}
+
+function normalizeReceiptNumber(value) {
+  const raw = String(value || '').trim();
+  if (!raw) return null;
+  const digits = raw.replace(/\D/g, '');
+  if (!digits) return null;
+  if (digits.length > 6) {
+    throw new ApiError(400, 'receiptNumber no puede exceder 6 dígitos');
+  }
+  return digits.padStart(6, '0');
+}
+
+async function nextPaymentInternalCode(session) {
+  const counter = await Counter.findOneAndUpdate(
+    { key: 'payment_internal_code' },
+    { $inc: { seq: 1 } },
+    { new: true, upsert: true, session }
+  );
+
+  return `PAY-${String(counter.seq).padStart(6, '0')}`;
+}
+
+async function resolveScopedCampusFilter({ campus, campusScope = [] }) {
+  const scopeAll = campusScope.includes('ALL');
+  const requestedCampus = campus ? String(campus) : null;
+
+  if (!scopeAll && requestedCampus && !campusScope.includes(requestedCampus)) {
+    throw new ApiError(403, 'No autorizado para este campus');
+  }
+
+  const allowedCodes = requestedCampus
+    ? [requestedCampus]
+    : (scopeAll ? [] : campusScope.filter(Boolean));
+
+  if (!allowedCodes.length) {
+    return { scopeAll, allowedCodes, campusIds: [], campusById: new Map() };
+  }
+
+  const campuses = await Campus.find({ code: { $in: allowedCodes } }).select('_id code').lean();
+  return {
+    scopeAll,
+    allowedCodes,
+    campusIds: campuses.map((row) => row._id),
+    campusById: new Map(campuses.map((row) => [String(row._id), row.code])),
+  };
+}
+
+async function getActiveConceptColumns() {
+  const concepts = await BillingConcept.find({ isActive: true })
+    .select('_id code name')
+    .sort({ code: 1, name: 1 })
+    .lean();
+
+  return concepts.map((concept) => ({
+    conceptId: String(concept._id),
+    code: concept.code,
+    name: concept.name,
+  }));
+}
+
+async function getLatestCampusCodeMap(studentIds) {
+  if (!studentIds.length) return new Map();
+
+  const cycles = await StudentCycle.find({ studentId: { $in: studentIds } })
+    .sort({ updatedAt: -1 })
+    .select('studentId campusId')
+    .lean();
+
+  const latestCampusIdByStudent = new Map();
+  for (const row of cycles) {
+    const key = String(row.studentId);
+    if (!latestCampusIdByStudent.has(key)) {
+      latestCampusIdByStudent.set(key, String(row.campusId));
+    }
+  }
+
+  const campusIds = [...new Set(Array.from(latestCampusIdByStudent.values()))].map((id) => new mongoose.Types.ObjectId(id));
+  const campuses = await Campus.find({ _id: { $in: campusIds } }).select('_id code').lean();
+  const campusCodeById = new Map(campuses.map((row) => [String(row._id), row.code]));
+
+  const result = new Map();
+  for (const [studentId, campusId] of latestCampusIdByStudent.entries()) {
+    result.set(studentId, campusCodeById.get(campusId) || null);
+  }
+  return result;
+}
+
+async function summarizeChargesForStudentIds({ studentIds, cycleId, campusIds = [], conceptId }) {
+  if (!studentIds.length) return new Map();
+
+  const filter = {
+    studentId: { $in: studentIds },
+    status: { $ne: 'CANCELLED' },
+  };
+  if (cycleId) filter.cycleId = new mongoose.Types.ObjectId(cycleId);
+  if (conceptId) filter.conceptId = new mongoose.Types.ObjectId(conceptId);
+  if (campusIds.length) filter.campusId = { $in: campusIds };
+
+  const charges = await Charge.find(filter)
+    .select('studentId conceptId outstandingAmount dueDate')
+    .lean();
+
+  const now = new Date();
+  const summaryByStudent = new Map();
+  for (const charge of charges) {
+    const studentKey = String(charge.studentId);
+    const conceptKey = String(charge.conceptId);
+    const outstanding = roundMoney(toMoney(charge.outstandingAmount));
+    const isOverdue = Boolean(charge.dueDate && new Date(charge.dueDate) < now && outstanding > 0);
+
+    if (!summaryByStudent.has(studentKey)) {
+      summaryByStudent.set(studentKey, {
+        totalPending: 0,
+        totalOverdue: 0,
+        conceptStatusByCode: {},
+      });
+    }
+
+    const row = summaryByStudent.get(studentKey);
+    row.totalPending = roundMoney(row.totalPending + outstanding);
+    if (isOverdue) row.totalOverdue = roundMoney(row.totalOverdue + outstanding);
+
+    if (!row.conceptStatusByCode[conceptKey]) {
+      row.conceptStatusByCode[conceptKey] = {
+        pendingAmount: 0,
+        overdueAmount: 0,
+        owes: false,
+      };
+    }
+
+    row.conceptStatusByCode[conceptKey].pendingAmount = roundMoney(row.conceptStatusByCode[conceptKey].pendingAmount + outstanding);
+    if (isOverdue) {
+      row.conceptStatusByCode[conceptKey].overdueAmount = roundMoney(row.conceptStatusByCode[conceptKey].overdueAmount + outstanding);
+    }
+    row.conceptStatusByCode[conceptKey].owes = row.conceptStatusByCode[conceptKey].pendingAmount > 0;
+  }
+
+  return summaryByStudent;
+}
+
+function toConceptCodeMap(conceptColumns, conceptStatusById) {
+  const result = {};
+  for (const column of conceptColumns) {
+    const source = conceptStatusById?.[column.conceptId];
+    result[column.code] = source || {
+      pendingAmount: 0,
+      overdueAmount: 0,
+      owes: false,
+    };
+  }
+  return result;
+}
+
+async function buildStudentPaymentRows({ students, cycleId, campusIds = [], conceptId, conceptColumns }) {
+  const studentIds = students.map((student) => student._id);
+  const campusMap = await getLatestCampusCodeMap(studentIds);
+  const chargeSummaryMap = await summarizeChargesForStudentIds({ studentIds, cycleId, campusIds, conceptId });
+
+  return students.map((student) => {
+    const key = String(student._id);
+    const person = student.personId || {};
+    const summary = chargeSummaryMap.get(key) || { totalPending: 0, totalOverdue: 0, conceptStatusByCode: {} };
+
+    return {
+      studentId: key,
+      names: person.names || null,
+      lastNames: person.lastNames || null,
+      dni: person.dni || null,
+      code: student.internalCode || null,
+      campus: campusMap.get(key) || null,
+      totalPending: summary.totalPending,
+      totalOverdue: summary.totalOverdue,
+      conceptStatusByCode: toConceptCodeMap(conceptColumns, summary.conceptStatusByCode),
+    };
+  });
 }
 
 async function resolveChargeScope({ studentId, familyId, session }) {
@@ -84,6 +264,7 @@ async function createPaymentAtomic({
   amount,
   paidAt,
   method,
+  receiptNumber,
   voucherNumber,
   allocations,
   createdByUserId,
@@ -140,6 +321,8 @@ async function createPaymentAtomic({
 
     const resolvedCampusId = campusId || scope.campusId;
     if (!resolvedCampusId) throw new ApiError(400, 'No se pudo resolver campusId para registrar el pago');
+    const normalizedReceiptNumber = normalizeReceiptNumber(receiptNumber || voucherNumber);
+    const internalCode = await nextPaymentInternalCode(session);
 
     const [createdPayment] = await Payment.create([
       {
@@ -148,7 +331,9 @@ async function createPaymentAtomic({
         paidAt: paidAt ? new Date(paidAt) : new Date(),
         totalAmount: toDecimal(paymentAmount),
         method,
-        voucherNumber: voucherNumber || `AUTO-${Date.now()}`,
+        internalCode,
+        receiptNumber: normalizedReceiptNumber,
+        voucherNumber: normalizedReceiptNumber || internalCode,
         createdByUserId,
         notes,
       },
@@ -227,80 +412,150 @@ export async function createPaymentService(payload) {
   };
 }
 
-export async function getDebtorsService({ cycleId, conceptId, q, campus, campusScope = [] }) {
-  const filter = {
+export async function getDebtorsService({ cycleId, conceptId, campus, campusScope = [], onlyOverdue = false, limit = 25, page = 1 }) {
+  const normalizedLimit = Math.max(1, Math.min(50, Number(limit) || 25));
+  const normalizedPage = Math.max(1, Number(page) || 1);
+  const { campusIds } = await resolveScopedCampusFilter({ campus, campusScope });
+  const conceptColumns = await getActiveConceptColumns();
+
+  const match = {
     outstandingAmount: { $gt: mongoose.Types.Decimal128.fromString('0') },
     status: { $ne: 'CANCELLED' },
   };
+  if (cycleId) match.cycleId = new mongoose.Types.ObjectId(cycleId);
+  if (conceptId) match.conceptId = new mongoose.Types.ObjectId(conceptId);
+  if (campusIds.length) match.campusId = { $in: campusIds };
+  if (onlyOverdue) match.dueDate = { $lt: new Date() };
 
-  if (cycleId) filter.cycleId = cycleId;
-  if (conceptId) filter.conceptId = conceptId;
+  const zero = mongoose.Types.Decimal128.fromString('0');
+  const grouped = await Charge.aggregate([
+    { $match: match },
+    {
+      $group: {
+        _id: '$studentId',
+        totalPending: { $sum: '$outstandingAmount' },
+        totalOverdue: {
+          $sum: {
+            $cond: [
+              {
+                $and: [
+                  { $ne: ['$dueDate', null] },
+                  { $lt: ['$dueDate', new Date()] },
+                ],
+              },
+              '$outstandingAmount',
+              zero,
+            ],
+          },
+        },
+      },
+    },
+    { $sort: { totalOverdue: -1, totalPending: -1, _id: 1 } },
+    { $skip: (normalizedPage - 1) * normalizedLimit },
+    { $limit: normalizedLimit + 1 },
+  ]);
 
-  const charges = await Charge.find(filter)
-    .populate({ path: 'studentId', populate: { path: 'personId' } })
+  const hasNext = grouped.length > normalizedLimit;
+  const selected = hasNext ? grouped.slice(0, normalizedLimit) : grouped;
+  const studentIds = selected.map((row) => row._id);
+
+  const students = await Student.find({ _id: { $in: studentIds } })
+    .populate({ path: 'personId', select: 'names lastNames dni' })
+    .select('_id personId internalCode')
     .lean();
 
-  const scopeAll = campusScope.includes('ALL');
-  const campusFilter = campus ? String(campus) : null;
-  const studentIds = [...new Set(charges.map((charge) => String(charge.studentId?._id)).filter(Boolean))]
-    .map((id) => new mongoose.Types.ObjectId(id));
+  const studentsById = new Map(students.map((row) => [String(row._id), row]));
+  const rows = await buildStudentPaymentRows({
+    students: selected.map((row) => studentsById.get(String(row._id))).filter(Boolean),
+    cycleId,
+    campusIds,
+    conceptId,
+    conceptColumns,
+  });
 
-  const studentCycles = studentIds.length
-    ? await StudentCycle.find({ studentId: { $in: studentIds } }).sort({ updatedAt: -1 }).select('studentId campusId').lean()
-    : [];
+  const rowById = new Map(rows.map((row) => [row.studentId, row]));
+  const orderedItems = selected
+    .map((row) => rowById.get(String(row._id)))
+    .filter(Boolean)
+    .map((row) => ({
+      ...row,
+      totalPending: roundMoney(row.totalPending),
+      totalOverdue: roundMoney(row.totalOverdue),
+    }));
 
-  const latestCampusByStudent = new Map();
-  for (const row of studentCycles) {
-    const key = String(row.studentId);
-    if (!latestCampusByStudent.has(key)) latestCampusByStudent.set(key, String(row.campusId));
-  }
+  return {
+    conceptColumns,
+    items: orderedItems,
+    pageInfo: {
+      page: normalizedPage,
+      limit: normalizedLimit,
+      hasNext,
+    },
+  };
+}
 
-  const campusIds = [...new Set(Array.from(latestCampusByStudent.values()))].map((id) => new mongoose.Types.ObjectId(id));
-  const campuses = await Campus.find({ _id: { $in: campusIds } }).select('_id code').lean();
-  const campusById = new Map(campuses.map((row) => [String(row._id), row.code]));
+export async function getDebtorsSearchService({ q, cycleId, campus, campusScope = [], limit = 15 }) {
+  const normalizedLimit = Math.max(1, Math.min(60, Number(limit) || 15));
+  const normalizedQ = normalizeSearchTerm(q);
+  const { campusIds, allowedCodes } = await resolveScopedCampusFilter({ campus, campusScope });
+  const conceptColumns = await getActiveConceptColumns();
+  const regex = buildAccentInsensitiveRegex(q);
+  const isMostlyNumeric = /^\d+$/.test(String(q || '').trim());
 
-  if (!scopeAll && campusFilter && !campusScope.includes(campusFilter)) {
-    throw new ApiError(403, 'No autorizado para este campus');
-  }
+  const people = await Person.find({
+    $or: [
+      ...(regex ? [{ names: regex }, { lastNames: regex }] : []),
+      ...(isMostlyNumeric ? [{ dni: new RegExp(`^${String(q).trim()}`) }] : []),
+    ],
+  })
+    .select('_id names lastNames dni')
+    .limit(normalizedLimit * 3)
+    .lean();
 
-  const now = new Date();
-  const grouped = new Map();
+  const personIds = people.map((row) => row._id);
+  const codeRegex = new RegExp(`^${String(q || '').trim().replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}`, 'i');
+  const students = await Student.find({
+    $or: [
+      ...(personIds.length ? [{ personId: { $in: personIds } }] : []),
+      { internalCode: codeRegex },
+    ],
+  })
+    .populate({ path: 'personId', select: 'names lastNames dni' })
+    .select('_id personId internalCode')
+    .limit(normalizedLimit * 3)
+    .lean();
 
-  for (const charge of charges) {
-    const student = charge.studentId;
-    if (!student?._id || !student.personId) continue;
+  const campusCodeMap = await getLatestCampusCodeMap(students.map((row) => row._id));
+  const filteredStudents = students
+    .filter((student) => {
+      const campusCode = campusCodeMap.get(String(student._id)) || null;
+      if (allowedCodes.length && campusCode && !allowedCodes.includes(campusCode)) return false;
+      if (allowedCodes.length && !campusCode) return false;
+      return true;
+    })
+    .map((student) => ({
+      ...student,
+      score: buildSearchScore({
+        normalizedQ,
+        dni: student.personId?.dni,
+        names: student.personId?.names,
+        lastNames: student.personId?.lastNames,
+        internalCode: student.internalCode,
+      }),
+      id: String(student._id),
+    }))
+    .sort(byScoreThenId)
+    .slice(0, normalizedLimit);
 
-    const studentKey = String(student._id);
-    const studentCampusId = latestCampusByStudent.get(studentKey) || null;
-    const studentCampus = studentCampusId ? campusById.get(studentCampusId) || studentCampusId : null;
+  const rows = await buildStudentPaymentRows({
+    students: filteredStudents,
+    cycleId,
+    campusIds,
+    conceptColumns,
+  });
 
-    if (!scopeAll && campusScope.length && !campusScope.includes(studentCampus)) continue;
-    if (campusFilter && campusFilter !== studentCampus) continue;
-
-    if (q) {
-      const term = String(q).toLowerCase();
-      const matches = [student.personId.names, student.personId.lastNames, student.personId.dni, student.internalCode]
-        .some((value) => String(value || '').toLowerCase().includes(term));
-      if (!matches) continue;
-    }
-
-    const outstanding = toMoney(charge.outstandingAmount);
-    if (!grouped.has(studentKey)) {
-      grouped.set(studentKey, {
-        studentId: studentKey,
-        names: student.personId.names || null,
-        lastNames: student.personId.lastNames || null,
-        dni: student.personId.dni || null,
-        campus: studentCampus,
-        totalPending: 0,
-        totalOverdue: 0,
-      });
-    }
-
-    const row = grouped.get(studentKey);
-    row.totalPending = roundMoney(row.totalPending + outstanding);
-    if (charge.dueDate && new Date(charge.dueDate) < now) row.totalOverdue = roundMoney(row.totalOverdue + outstanding);
-  }
-
-  return Array.from(grouped.values()).sort((a, b) => b.totalPending - a.totalPending);
+  return {
+    conceptColumns,
+    items: rows,
+  };
 }

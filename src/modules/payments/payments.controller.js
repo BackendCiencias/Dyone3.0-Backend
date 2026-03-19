@@ -1,5 +1,5 @@
 import { asyncHandler } from '../../utils/asyncHandler.js';
-import { createPaymentService, getDebtorsService } from './payments.service.js';
+import { createPaymentService, getDebtorsSearchService, getDebtorsService } from './payments.service.js';
 
 export const createPayment = asyncHandler(async (req, res) => {
   const result = await createPaymentService({
@@ -12,7 +12,27 @@ export const createPayment = asyncHandler(async (req, res) => {
 });
 
 export const getDebtors = asyncHandler(async (req, res) => {
-  const { cycleId, conceptId, q, campus, campusId } = req.query;
-  const charges = await getDebtorsService({ cycleId, conceptId, q, campus: campus || campusId, campusScope: req.campusScope });
-  res.json(charges);
+  const { cycleId, conceptId, campus, campusId, onlyOverdue, limit, page } = req.validatedQuery || req.query;
+  const result = await getDebtorsService({
+    cycleId,
+    conceptId,
+    campus: campus || campusId,
+    campusScope: req.campusScope,
+    onlyOverdue,
+    limit,
+    page,
+  });
+  res.json(result);
+});
+
+export const searchDebtors = asyncHandler(async (req, res) => {
+  const { q, cycleId, campus, campusId, limit } = req.validatedQuery || req.query;
+  const result = await getDebtorsSearchService({
+    q,
+    cycleId,
+    campus: campus || campusId,
+    campusScope: req.campusScope,
+    limit,
+  });
+  res.json(result);
 });

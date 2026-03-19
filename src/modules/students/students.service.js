@@ -175,7 +175,7 @@ async function buildStudentResponse(items) {
   });
 }
 
-export async function createStudentService({ person, familyId, classroomId, entryDate, notes }) {
+export async function createStudentService({ person, familyId, classroomId, entryDate, notes }, familyPayload = null) {
   const session = await mongoose.startSession();
   session.startTransaction();
 
@@ -188,9 +188,20 @@ export async function createStudentService({ person, familyId, classroomId, entr
     const personDoc = await resolveOrCreatePerson(person, session);
 
     let family = null;
+    if (familyId && familyPayload) {
+      throw new ApiError(400, 'No puedes enviar familyId y family al mismo tiempo');
+    }
+
     if (familyId) {
       family = await Family.findById(familyId).session(session);
       if (!family) throw new ApiError(404, 'Familia no encontrada');
+    } else if (familyPayload) {
+      family = await Family.create([{
+        notes: familyPayload.notes,
+        address: familyPayload.address,
+        tutorIds: [],
+        studentIds: [],
+      }], { session }).then((rows) => rows[0]);
     }
 
     const existingStudent = await Student.findOne({ personId: personDoc._id }).session(session);
@@ -214,7 +225,11 @@ export async function createStudentService({ person, familyId, classroomId, entr
     const studentDoc = student[0];
 
     if (family) {
-      await Family.updateOne({ _id: family._id }, { $addToSet: { studentIds: studentDoc._id } }, { session });
+      await Family.updateOne(
+        { _id: family._id },
+        { $addToSet: { studentIds: studentDoc._id } },
+        { session }
+      );
     }
 
     if (classroom) {
@@ -249,11 +264,55 @@ export async function createStudentService({ person, familyId, classroomId, entr
       );
     }
 
+    let tutorIds = [];
+    if (family && familyPayload?.primaryTutor) {
+      const tutorPersonDoc = await resolveOrCreatePerson(familyPayload.primaryTutor.person, session);
+
+      const tutor = await Tutor.findOneAndUpdate(
+        { studentId: studentDoc._id, tutorPersonId: tutorPersonDoc._id },
+        {
+          $set: {
+            relationship: familyPayload.primaryTutor.relationship,
+            isPrimary: true,
+            livesWithStudent: familyPayload.primaryTutor.livesWithStudent ?? true,
+            ...(familyPayload.primaryTutor.notes ? { notes: familyPayload.primaryTutor.notes } : {}),
+          },
+          $setOnInsert: {
+            studentId: studentDoc._id,
+            tutorPersonId: tutorPersonDoc._id,
+          },
+        },
+        { upsert: true, new: true, session }
+      );
+
+      tutorIds = [String(tutor._id)];
+
+      await Family.updateOne(
+        { _id: family._id },
+        { $addToSet: { tutorIds: tutor._id } },
+        { session }
+      );
+    }
+
     await session.commitTransaction();
 
-    return Student.findById(studentDoc._id)
+    const hydratedStudent = await Student.findById(studentDoc._id)
       .populate('personId')
       .populate('familyId');
+
+    const hydratedFamily = family
+      ? await Family.findById(family._id)
+        .populate({ path: 'studentIds', populate: { path: 'personId' } })
+        .populate({ path: 'tutorIds', populate: { path: 'tutorPersonId' } })
+      : null;
+
+    return {
+      studentId: String(studentDoc._id),
+      familyId: family ? String(family._id) : null,
+      tutorIds,
+      student: hydratedStudent,
+      family: hydratedFamily,
+    };
   } catch (error) {
     await session.abortTransaction();
     throw error;
@@ -1075,6 +1134,20 @@ function mapChargeStatus({ amount, outstandingAmount, dueDate }) {
   return 'PENDING';
 }
 
+function getTuitionMonthLabel(monthIndex) {
+  const labels = ['Marzo', 'Abril', 'Mayo', 'Junio', 'Julio', 'Agosto', 'Septiembre', 'Octubre', 'Noviembre', 'Diciembre'];
+  return Number.isInteger(monthIndex) && monthIndex >= 0 && monthIndex < labels.length ? labels[monthIndex] : null;
+}
+
+function buildChargeLabel(charge) {
+  const baseLabel = charge.conceptId?.name || charge.description || charge.concept || 'Cargo';
+  if (charge.concept === 'TUITION') {
+    const monthLabel = getTuitionMonthLabel(charge.monthIndex);
+    if (monthLabel) return `${baseLabel} - ${monthLabel}`;
+  }
+  return baseLabel;
+}
+
 async function buildStudentFinancialSnapshot(studentId) {
   if (!mongoose.Types.ObjectId.isValid(studentId)) throw new ApiError(400, 'studentId inválido');
 
@@ -1090,6 +1163,7 @@ async function buildStudentFinancialSnapshot(studentId) {
   const allocations = chargeIds.length
     ? await PaymentAllocation.find({ chargeId: { $in: chargeIds } })
       .populate('paymentId')
+      .populate({ path: 'chargeId', populate: { path: 'conceptId', select: 'name' } })
       .sort({ createdAt: -1, _id: -1 })
       .lean()
     : [];
@@ -1103,9 +1177,22 @@ async function buildStudentFinancialSnapshot(studentId) {
       amount: 0,
       date: allocation.paymentId.paidAt,
       method: allocation.paymentId.method,
+      internalCode: allocation.paymentId.internalCode || null,
+      receiptNumber: allocation.paymentId.receiptNumber || null,
       note: allocation.paymentId.notes || null,
+      allocations: [],
     };
     previous.amount = roundMoney(previous.amount + money(allocation.amount));
+    if (allocation.chargeId?._id) {
+      const allocationAmount = roundMoney(money(allocation.amount));
+      const chargeTotalAmount = roundMoney(money(allocation.chargeId?.totalAmount));
+      previous.allocations.push({
+        chargeId: String(allocation.chargeId._id),
+        amount: allocationAmount,
+        concept: buildChargeLabel(allocation.chargeId),
+        isPartial: allocationAmount < chargeTotalAmount,
+      });
+    }
     paymentById.set(key, previous);
   }
 
@@ -1116,7 +1203,10 @@ async function buildStudentFinancialSnapshot(studentId) {
 
     return {
       id: charge._id.toString(),
-      concept: charge.conceptId?.name || charge.description,
+      concept: buildChargeLabel(charge),
+      description: charge.description || null,
+      monthIndex: charge.monthIndex ?? null,
+      conceptCode: charge.concept || null,
       amount,
       outstandingAmount,
       dueDate: charge.dueDate || null,

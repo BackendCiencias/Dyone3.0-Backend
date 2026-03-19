@@ -12,6 +12,7 @@ export const paymentCreateSchema = z.object({
   amount: z.number().positive().optional(),
   paidAt: z.string().optional(),
   method: z.enum(['CASH', 'YAPE', 'TRANSFER']),
+  receiptNumber: z.string().trim().min(1).max(6).optional(),
   voucherNumber: z.string().min(1).optional(),
   allocations: z.array(allocationSchema).min(1).optional(),
   notes: z.string().optional(),
@@ -41,4 +42,15 @@ export const debtorsQuerySchema = z.object({
   cycleId: z.string().optional(),
   conceptId: z.string().optional(),
   q: z.string().optional(),
+  onlyOverdue: z.coerce.boolean().optional(),
+  limit: z.coerce.number().int().min(1).max(50).optional(),
+  page: z.coerce.number().int().min(1).optional(),
+});
+
+export const debtorsSearchQuerySchema = z.object({
+  campus: z.string().optional(),
+  campusId: z.string().optional(),
+  cycleId: z.string().optional(),
+  q: z.string().trim().min(2),
+  limit: z.coerce.number().int().min(1).max(60).optional(),
 });

@@ -4,6 +4,8 @@ import dotenv from 'dotenv';
 import { Campus } from '../src/models/campus.model.js';
 import { Cycle } from '../src/models/cycle.model.js';
 import { Classroom } from '../src/models/classroom.model.js';
+import { BillingConcept } from '../src/models/billingConcept.model.js';
+import { BillingSchedule } from '../src/models/billingSchedule.model.js';
 
 dotenv.config();
 
@@ -40,6 +42,25 @@ const SEED_DATA = {
     isActive: true,
     notes: '',
   },
+  billingConcepts: [
+    { code: 'ENROLLMENT_FEE', name: 'Matrícula', isBlocking: true, isActive: true, notes: '' },
+    { code: 'ADMISSION_FEE', name: 'Derecho de Ingreso', isBlocking: true, isActive: true, notes: '' },
+    { code: 'TUITION', name: 'Pensión', isBlocking: true, isActive: true, notes: '' },
+    { code: 'PLANNER', name: 'Agenda', isBlocking: false, isActive: true, notes: '' },
+    { code: 'SCHOOL_BOOKS', name: 'Libros', isBlocking: true, isActive: true, notes: '' },
+  ],
+  billingSchedule: [
+    { conceptCode: 'TUITION', monthIndex: 0, label: 'Marzo', dueDate: '2026-03-31' },
+    { conceptCode: 'TUITION', monthIndex: 1, label: 'Abril', dueDate: '2026-04-30' },
+    { conceptCode: 'TUITION', monthIndex: 2, label: 'Mayo', dueDate: '2026-05-31' },
+    { conceptCode: 'TUITION', monthIndex: 3, label: 'Junio', dueDate: '2026-06-30' },
+    { conceptCode: 'TUITION', monthIndex: 4, label: 'Julio', dueDate: '2026-07-31' },
+    { conceptCode: 'TUITION', monthIndex: 5, label: 'Agosto', dueDate: '2026-08-31' },
+    { conceptCode: 'TUITION', monthIndex: 6, label: 'Septiembre', dueDate: '2026-09-30' },
+    { conceptCode: 'TUITION', monthIndex: 7, label: 'Octubre', dueDate: '2026-10-31' },
+    { conceptCode: 'TUITION', monthIndex: 8, label: 'Noviembre', dueDate: '2026-11-30' },
+    { conceptCode: 'TUITION', monthIndex: 9, label: 'Diciembre', dueDate: '2026-12-15' },
+  ],
   classrooms: [
     // {
     //   campusCode: 'CIMAS',
@@ -406,6 +427,46 @@ async function upsertCurrentCycle(cycleInput) {
   return cycle;
 }
 
+async function upsertBillingConcepts(conceptsInput) {
+  for (const conceptData of conceptsInput) {
+    const concept = await BillingConcept.findOneAndUpdate(
+      { code: conceptData.code },
+      {
+        $set: {
+          name: conceptData.name,
+          isBlocking: conceptData.isBlocking ?? false,
+          isActive: conceptData.isActive ?? true,
+          notes: conceptData.notes,
+        },
+      },
+      { upsert: true, new: true, setDefaultsOnInsert: true }
+    );
+
+    console.log(`âœ… Concepto de cobro listo: ${concept.code} (${concept.name})`);
+  }
+}
+
+async function upsertBillingSchedule(scheduleInput, cycle) {
+  for (const scheduleData of scheduleInput) {
+    const schedule = await BillingSchedule.findOneAndUpdate(
+      {
+        cycleId: cycle._id,
+        conceptCode: scheduleData.conceptCode,
+        monthIndex: scheduleData.monthIndex ?? null,
+      },
+      {
+        $set: {
+          label: scheduleData.label || '',
+          dueDate: new Date(scheduleData.dueDate),
+        },
+      },
+      { upsert: true, new: true, setDefaultsOnInsert: true }
+    );
+
+    console.log(`âœ… Calendario listo: ${schedule.conceptCode} ${schedule.label || (schedule.monthIndex ?? 'general')}`);
+  }
+}
+
 async function upsertClassrooms(classroomsInput, campusMap, cycle) {
   for (const classroomData of classroomsInput) {
     const campus = campusMap.get(classroomData.campusCode);
@@ -452,6 +513,8 @@ async function seedSchoolStructure() {
 
     const campusMap = await upsertCampuses(SEED_DATA.campuses);
     const cycle = await upsertCurrentCycle(SEED_DATA.cycle);
+    await upsertBillingConcepts(SEED_DATA.billingConcepts);
+    await upsertBillingSchedule(SEED_DATA.billingSchedule, cycle);
     await upsertClassrooms(SEED_DATA.classrooms, campusMap, cycle);
 
     console.log('🎉 Seed de estructura escolar finalizado correctamente');

@@ -54,7 +54,7 @@ export function buildAdmissionFeeCharge({ enrollmentStudent, student, conceptId,
     totalAmount: toDecimal128(amount),
     outstandingAmount: toDecimal128(amount),
     status: 'OPEN',
-    dueDate: null,
+    dueDate: new Date(),
     notes: fee.reason || undefined,
   };
 }
@@ -77,7 +77,7 @@ export function buildEnrollmentFeeCharge({ enrollmentStudent, conceptId, cycleId
     totalAmount: toDecimal128(amount),
     outstandingAmount: toDecimal128(amount),
     status: 'OPEN',
-    dueDate: null,
+    dueDate: new Date(),
     notes: fee.reason || undefined,
   };
 }

@@ -9,9 +9,11 @@
     "start": "node src/server.js",
     "seed:admin": "node scripts/admin.seed.js",
     "seed:school-structure": "node scripts/schoolStructure.seed.js",
-    "import:students": "node scripts/importStudents.js --file ./data/students_2025.csv",
+    "data:fill-genders": "node scripts/fillCsvGender.js",
+    "import:students": "node scripts/importStudents.js",
     "drop:db": "node scripts/dropDatabase.js",
-    "import:tutors": "node scripts/importTutors.js --file ./data/parents.csv",
+    "import:tutors": "node scripts/importTutors.js",
+    "import:bank-codes": "node scripts/importStudentBankCodes.js",
     "backfill:charges-campus": "node scripts/backfillChargesCampus.js"
   },
   "dependencies": {

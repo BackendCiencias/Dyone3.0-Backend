@@ -147,17 +147,67 @@ function resolveCampusCodes(campus) {
 
 async function buildStudentResponse(items) {
   const studentIds = items.map((row) => row._id);
-  const vacancies = await Vacancy.find({ studentId: { $in: studentIds } })
-    .populate({ path: 'classroomId', populate: { path: 'campusId' } })
+  if (!studentIds.length) return [];
+
+  const activeCycle = await Cycle.findOne({ isActive: true })
+    .sort({ year: -1, startDate: -1, _id: -1 })
+    .select('_id')
     .lean();
 
-  const vacancyByStudent = new Map(vacancies.map((vacancy) => [String(vacancy.studentId), vacancy]));
+  const vacancyFilter = { studentId: { $in: studentIds } };
+  const cycleStatusFilter = { studentId: { $in: studentIds } };
+  if (activeCycle?._id) {
+    vacancyFilter.cycleId = activeCycle._id;
+    cycleStatusFilter.cycleId = activeCycle._id;
+  }
+
+  const [vacancies, studentCycles, chargeTotals] = await Promise.all([
+    Vacancy.find(vacancyFilter)
+      .sort({ updatedAt: -1, _id: -1 })
+      .populate({ path: 'classroomId', populate: { path: 'campusId' } })
+      .lean(),
+    StudentCycle.find(cycleStatusFilter)
+      .sort({ updatedAt: -1, _id: -1 })
+      .select('studentId status campusId')
+      .lean(),
+    Charge.aggregate([
+      {
+        $match: {
+          studentId: { $in: studentIds },
+          status: { $ne: 'CANCELLED' },
+        },
+      },
+      {
+        $group: {
+          _id: '$studentId',
+          totalDebt: { $sum: { $toDouble: '$outstandingAmount' } },
+        },
+      },
+    ]),
+  ]);
+
+  const vacancyByStudent = new Map();
+  for (const vacancy of vacancies) {
+    const key = String(vacancy.studentId);
+    if (!vacancyByStudent.has(key)) vacancyByStudent.set(key, vacancy);
+  }
+
+  const cycleStatusByStudent = new Map();
+  for (const row of studentCycles) {
+    const key = String(row.studentId);
+    if (!cycleStatusByStudent.has(key)) cycleStatusByStudent.set(key, row);
+  }
+
+  const debtByStudent = new Map(
+    chargeTotals.map((row) => [String(row._id), roundMoney(Number(row.totalDebt || 0))])
+  );
 
   return items.map((student) => {
     const person = student.personId;
     const vacancy = vacancyByStudent.get(String(student._id));
     const classroom = vacancy?.classroomId;
     const campus = classroom?.campusId;
+    const cycleStatus = cycleStatusByStudent.get(String(student._id));
 
     return {
       id: student._id.toString(),
@@ -169,8 +219,10 @@ async function buildStudentResponse(items) {
       campusCode: campus?.code || null,
       lastKnownGrade: classroom?.grade || null,
       lastKnownSection: classroom?.section || null,
-      classroomName:classroom?.displayName || null,
+      classroomName: classroom?.displayName || null,
       activeStatus: student.activeStatus,
+      enrollmentStatus: cycleStatus?.status || null,
+      totalDebt: debtByStudent.get(String(student._id)) || 0,
     };
   });
 }
@@ -726,6 +778,8 @@ export async function getStudentSummaryService(studentId) {
     id: student._id.toString(),
     dni: person?.dni || null,
     gender: person?.gender || null,
+    phone: person?.phone || null,
+    address: person?.address || null,
     internalCode: student?.internalCode || null,
     bankCode: student?.bankCode || null,
     names: person?.names || null,
@@ -794,23 +848,28 @@ export async function getStudentSummaryService(studentId) {
 
 export async function listStudentsByCampusService({ campus, q = '', limit = 20, cursor, campusScope = [] }) {
   const { normalized, codes } = resolveCampusCodes(campus);
-  console.log('[studentsByCampus][dbg] normalized=', normalized, 'codes=', codes);
   ensureCampusAccess({ campus: normalized, campusScope });
-  console.log('[studentsByCampus][dbg] accessGrantedFor=', normalized, 'campusScope=', campusScope);
   const normalizedLimit = Math.max(1, Math.min(50, toNumber(limit, 20)));
 
   const campuses = await Campus.find({ code: { $in: codes } }).select('_id').lean();
-  console.log('[studentsByCampus][dbg] campusesFound=', campuses.length, campuses.map((c) => c._id));
   if (!campuses.length) {
     return { campus: normalized, items: [], nextCursor: null };
   }
 
-  const cycles = await StudentCycle.find({ campusId: { $in: campuses.map((c) => c._id) } })
+  const activeCycle = await Cycle.findOne({ isActive: true })
+    .sort({ year: -1, startDate: -1, _id: -1 })
+    .select('_id')
+    .lean();
+
+  const studentCycleFilter = { campusId: { $in: campuses.map((c) => c._id) } };
+  if (activeCycle?._id) {
+    studentCycleFilter.cycleId = activeCycle._id;
+  }
+
+  const cycles = await StudentCycle.find(studentCycleFilter)
     .sort({ updatedAt: -1 })
     .select('studentId campusId')
     .lean();
-  console.log('[studentsByCampus][dbg] studentCyclesFound=', cycles.length);
-  console.log('[studentsByCampus][dbg] sampleCycle=', cycles[0]);
 
   const studentIdSet = new Set();
   const studentIds = [];
@@ -821,8 +880,6 @@ export async function listStudentsByCampusService({ campus, q = '', limit = 20, 
       studentIds.push(row.studentId);
     }
   }
-  console.log('[studentsByCampus][dbg] uniqueStudentIds=', studentIds.length);
-
   if (!studentIds.length) {
     return { campus: normalized, items: [], nextCursor: null };
   }
@@ -853,13 +910,10 @@ export async function listStudentsByCampusService({ campus, q = '', limit = 20, 
     .limit(normalizedLimit + 1)
     .populate('personId')
     .lean();
-  console.log('[studentsByCampus][dbg] studentsFound=', rows.length);
-  // console.log('[studentsByCampus][dbg] studentsOne=', rows[0]);
-  
+
   const hasMore = rows.length > normalizedLimit;
   const selected = hasMore ? rows.slice(0, normalizedLimit) : rows;
   const items = await buildStudentResponse(selected);
-  console.log('[items][dbg] itemsOne=', items[0]);
 
   return {
     campus: normalized,
@@ -1283,11 +1337,14 @@ export async function updateStudentIdentityService(studentId, payload, actor = n
     throw new ApiError(400, 'No se enviaron cambios de identidad válidos');
   }
 
-  await updatePersonById(student.personId._id, normalizePersonUpdatePayload({ $set: personUpdates }));
+  const updatedPerson = await updatePersonById(student.personId._id, normalizePersonUpdatePayload({ $set: personUpdates }));
+  if (!updatedPerson) {
+    throw new ApiError(404, 'No se pudo actualizar la persona del estudiante');
+  }
 
   if (actor) {
     await registerAuditLog({
-      entityType: 'STUDENT',
+      entityType: 'CHARGE',
       entityId: student._id,
       action: 'STUDENT_IDENTITY_UPDATED',
       performedBy: actor,
@@ -1295,8 +1352,8 @@ export async function updateStudentIdentityService(studentId, payload, actor = n
     });
   }
 
-  const updated = await Student.findById(student._id).populate('personId').populate('familyId');
-  return { ok: true, student: updated };
+  const summary = await getStudentSummaryService(studentId);
+  return { ok: true, student: summary.student, summary };
 }
 
 export async function updateStudentInternalNotesService(studentId, internalNotes, actor = null) {

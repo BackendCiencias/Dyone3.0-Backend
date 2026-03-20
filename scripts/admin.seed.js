@@ -56,14 +56,14 @@ const usersToSeed = [
     },
   },
   {
-    email: 'auxiliar@cienciasperu.edu.pe',
+    email: 'auxiliar_secundaria@cienciasperu.edu.pe',
     roles: ['AUXILIAR'],
     campusScope: ['CIENCIAS'],
     person: {
       names: 'Auxiliar',
-      lastNames: 'Operaciones',
+      lastNames: 'Secundaria',
       dni: '00000004',
-      gender: 'M',
+      gender: 'F',
     },
   },
 ];

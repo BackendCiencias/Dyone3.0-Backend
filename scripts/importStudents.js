@@ -15,6 +15,8 @@ import { Vacancy } from '../src/models/vacancy.model.js';
 const genderSchema = z.enum(['M', 'F']).or(z.enum(['m', 'f'])).transform((value) => value.toUpperCase());
 const levelSchema = z.enum(['INITIAL', 'PRIMARY', 'SECONDARY']);
 const IMPORT_NOTES = 'Creado por importación inicial';
+const DEFAULT_FILE = './data/students_2025.csv';
+const ALLOWED_CAMPUSES = ['CIENCIAS', 'CIENCIAS_APLICADAS', 'CIMAS'];
 
 const rowSchema = z.object({
   internalCode: z.string().trim().min(1, 'Código interno es obligatorio'),
@@ -223,6 +225,17 @@ function getByAliases(rawRow, aliases = []) {
 
 function normalizeCampusCode(input) {
   return normalizeSpaces(input).toLocaleUpperCase('es-PE');
+}
+
+function resolveCampusOverride(input) {
+  if (!input) return null;
+
+  const normalized = normalizeCampusCode(input);
+  if (!ALLOWED_CAMPUSES.includes(normalized)) {
+    throw new Error(`Campus inválido para --campus: ${input}. Permitidos: ${ALLOWED_CAMPUSES.join(', ')}`);
+  }
+
+  return normalized;
 }
 
 function normalizeGrade(input) {
@@ -449,13 +462,9 @@ async function run() {
   const args = parseArgs(process.argv);
   const debug = parseBooleanFlag(args.debug);
   const quiet = parseBooleanFlag(args.quiet);
-
-  if (!args.file) {
-    console.error('Uso: node scripts/importStudents.js --file ./data/students_2025.csv');
-    process.exit(1);
-  }
-
-  const filePath = path.resolve(process.cwd(), args.file);
+  const selectedFile = String(args.file || DEFAULT_FILE);
+  const campusOverride = resolveCampusOverride(args.campus);
+  const filePath = path.resolve(process.cwd(), selectedFile);
   if (!fs.existsSync(filePath)) {
     console.error(`Archivo no encontrado: ${filePath}`);
     process.exit(1);
@@ -510,6 +519,11 @@ async function run() {
       throw new Error('No existe un ciclo activo (Cycle.isActive=true). No se puede continuar con la importación.');
     }
 
+    if (!quiet) {
+      console.log(`Archivo origen: ${selectedFile}`);
+      console.log(`Campus aplicado: ${campusOverride || 'según CSV'}`);
+    }
+
     const content = fs.readFileSync(filePath, 'utf8');
     const rows = parseCSV(content);
     report.totalRows = rows.length;
@@ -521,6 +535,7 @@ async function run() {
 
     for (const row of rows) {
       const mapped = mapRow(row.raw, report, row.rowNumber);
+      if (campusOverride) mapped.campusCode = campusOverride;
       debugLog(debug, 'Procesando fila', { rowNumber: row.rowNumber, internalCode: mapped.internalCode });
       const parsed = rowSchema.safeParse(mapped);
 

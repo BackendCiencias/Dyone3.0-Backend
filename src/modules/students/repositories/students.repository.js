@@ -69,7 +69,11 @@ export async function findPersonByDni(dni) {
 }
 
 export async function updatePersonById(personId, updates) {
-  return Person.findByIdAndUpdate(personId, normalizePersonUpdatePayload(updates), { new: true });
+  return Person.findByIdAndUpdate(
+    personId,
+    normalizePersonUpdatePayload(updates),
+    { new: true, runValidators: true }
+  );
 }
 
 export async function updateStudentById(studentId, updates) {

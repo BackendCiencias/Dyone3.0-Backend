@@ -50,8 +50,13 @@ export function normalizePersonUpdatePayload(update) {
     normalizedUpdate.$set = normalizePersonNameFields(normalizedUpdate.$set);
   }
 
-  normalizedUpdate.names = normalizePersonNames(normalizedUpdate.names);
-  normalizedUpdate.lastNames = normalizePersonLastNames(normalizedUpdate.lastNames);
+  if (Object.prototype.hasOwnProperty.call(normalizedUpdate, 'names')) {
+    normalizedUpdate.names = normalizePersonNames(normalizedUpdate.names);
+  }
+
+  if (Object.prototype.hasOwnProperty.call(normalizedUpdate, 'lastNames')) {
+    normalizedUpdate.lastNames = normalizePersonLastNames(normalizedUpdate.lastNames);
+  }
 
   return normalizedUpdate;
 }

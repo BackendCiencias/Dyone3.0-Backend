@@ -217,8 +217,7 @@ export async function createEnrollmentService(data, createdByUserId) {
       throw new ApiError(409, 'No existe calendario de vencimientos para TUITION en este ciclo');
     }
 
-    const admissionSchedule = (schedulesByConcept.get('ADMISSION_FEE') || [])[0] || null;
-    const enrollmentSchedule = (schedulesByConcept.get('ENROLLMENT_FEE') || [])[0] || null;
+    const immediateDueDate = new Date();
 
     for (const row of data.enrollmentStudents) {
       const normalizedPensions = normalizePensionMonthlyAmounts({ pensionMonthlyAmounts: row.pensionMonthlyAmounts });
@@ -250,7 +249,7 @@ export async function createEnrollmentService(data, createdByUserId) {
           conceptId: byCode.get('ADMISSION_FEE'),
           concept: 'ADMISSION',
           amount: admissionFee.amount,
-          dueDate: admissionSchedule?.dueDate || new Date(),
+          dueDate: immediateDueDate,
           notes: admissionFee.reason,
         }));
       }
@@ -263,7 +262,7 @@ export async function createEnrollmentService(data, createdByUserId) {
           conceptId: byCode.get('ENROLLMENT_FEE'),
           concept: 'ENROLLMENT',
           amount: enrollmentFee.amount,
-          dueDate: enrollmentSchedule?.dueDate || new Date(),
+          dueDate: immediateDueDate,
           notes: enrollmentFee.reason,
         }));
       }

@@ -16,6 +16,8 @@ import {
   getBillingScheduleByCycle,
   getEndpointsCatalog,
   getModelsCatalog,
+  getAttendancePolicyConfig,
+  putAttendancePolicyConfig,
 } from './admin.controller.js';
 import {
   campusCreateSchema,
@@ -24,6 +26,8 @@ import {
   billingConceptCreateSchema,
   billingScheduleUpsertSchema,
   billingScheduleQuerySchema,
+  attendancePolicyUpsertSchema,
+  attendancePolicyQuerySchema,
 } from './admin.schemas.js';
 
 const router = Router();
@@ -49,6 +53,8 @@ router.get('/billing-concepts', getBillingConcepts);
 router.post('/billing-concepts', validate(billingConceptCreateSchema), postBillingConcept);
 router.post('/billing-schedule', validate(billingScheduleUpsertSchema), postBillingSchedule);
 router.get('/billing-schedule', validateRequest({ query: billingScheduleQuerySchema }), getBillingScheduleByCycle);
+router.get('/attendance-policy', validateRequest({ query: attendancePolicyQuerySchema }), getAttendancePolicyConfig);
+router.put('/attendance-policy', validateRequest({ body: attendancePolicyUpsertSchema }), putAttendancePolicyConfig);
 
 router.get('/endpoints', requireRoles(['ADMIN']), getEndpointsCatalog);
 router.get('/models', requireRoles(['ADMIN']), getModelsCatalog);

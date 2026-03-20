@@ -11,6 +11,8 @@ import {
   getBillingSchedule,
   listAvailableEndpoints,
   listModelsCatalog,
+  getAttendancePolicy,
+  upsertAttendancePolicy,
 } from './admin.service.js';
 import { asyncHandler } from '../../utils/asyncHandler.js';
 
@@ -81,5 +83,15 @@ export const postBillingSchedule = asyncHandler(async (req, res) => {
 
 export const getBillingScheduleByCycle = asyncHandler(async (req, res) => {
   const data = await getBillingSchedule(req.validatedQuery);
+  res.json(data);
+});
+
+export const getAttendancePolicyConfig = asyncHandler(async (req, res) => {
+  const data = await getAttendancePolicy(req.validatedQuery);
+  res.json(data);
+});
+
+export const putAttendancePolicyConfig = asyncHandler(async (req, res) => {
+  const data = await upsertAttendancePolicy(req.validated, req.user);
   res.json(data);
 });

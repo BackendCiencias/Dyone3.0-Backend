@@ -7,6 +7,7 @@ import { Cycle } from '../../models/cycle.model.js';
 import { Classroom } from '../../models/classroom.model.js';
 import { BillingConcept } from '../../models/billingConcept.model.js';
 import { BillingSchedule } from '../../models/billingSchedule.model.js';
+import { AttendancePolicy } from '../../models/attendancePolicy.model.js';
 import { allEndpointMetadata, validateEndpointMetadataShape, warnMetadataWithoutRoute } from '../../admin/endpointMetadataRegistry.js';
 import { ApiError } from '../../utils/errors.js';
 
@@ -96,6 +97,77 @@ export async function getBillingSchedule({ cycleId, conceptCode }) {
       dueDate: row.dueDate,
     })),
   };
+}
+
+function mapAttendancePolicy(policy) {
+  if (!policy) return null;
+
+  return {
+    id: String(policy._id),
+    campusId: String(policy.campusId),
+    cycleId: String(policy.cycleId),
+    level: policy.level || null,
+    name: policy.name,
+    defaultOnTimeUntil: policy.defaultOnTimeUntil,
+    notes: policy.notes || '',
+    isActive: Boolean(policy.isActive),
+    updatedAt: policy.updatedAt,
+  };
+}
+
+export async function getAttendancePolicy({ campusId, cycleId, level }) {
+  const policy = await AttendancePolicy.findOne({
+    scopeType: 'REGULAR_STUDENT',
+    campusId,
+    cycleId,
+    level,
+    classroomId: null,
+    programId: null,
+    isActive: true,
+  })
+    .sort({ updatedAt: -1, createdAt: -1 })
+    .lean();
+
+  return { item: mapAttendancePolicy(policy) };
+}
+
+export async function upsertAttendancePolicy({ campusId, cycleId, level, name, defaultOnTimeUntil, notes }, user) {
+  const payload = {
+    scopeType: 'REGULAR_STUDENT',
+    campusId,
+    cycleId,
+    level,
+    classroomId: null,
+    programId: null,
+    isActive: true,
+    name,
+    defaultOnTimeUntil,
+    notes: notes || null,
+    updatedByUserId: user.id,
+  };
+
+  const existing = await AttendancePolicy.findOne({
+    scopeType: 'REGULAR_STUDENT',
+    campusId,
+    cycleId,
+    level,
+    classroomId: null,
+    programId: null,
+    isActive: true,
+  }).sort({ updatedAt: -1, createdAt: -1 });
+
+  if (existing) {
+    existing.set(payload);
+    await existing.save();
+    return { item: mapAttendancePolicy(existing.toObject()) };
+  }
+
+  const created = await AttendancePolicy.create({
+    ...payload,
+    createdByUserId: user.id,
+  });
+
+  return { item: mapAttendancePolicy(created.toObject()) };
 }
 
 function normalizePath(basePath, routePath) {

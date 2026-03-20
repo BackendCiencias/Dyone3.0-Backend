@@ -51,3 +51,18 @@ export const billingScheduleQuerySchema = z.object({
   cycleId: z.string().min(1),
   conceptCode: z.string().trim().min(1).max(40).transform((value) => value.toUpperCase()).optional().default('TUITION'),
 });
+
+export const attendancePolicyUpsertSchema = z.object({
+  campusId: z.string().min(1),
+  cycleId: z.string().min(1),
+  level: z.enum(['INITIAL', 'PRIMARY', 'SECONDARY']),
+  name: z.string().trim().min(1).max(120).default('Asistencia regular'),
+  defaultOnTimeUntil: z.string().regex(/^([01]\d|2[0-3]):([0-5]\d)$/),
+  notes: z.string().trim().max(1000).optional().default(''),
+});
+
+export const attendancePolicyQuerySchema = z.object({
+  campusId: z.string().min(1),
+  cycleId: z.string().min(1),
+  level: z.enum(['INITIAL', 'PRIMARY', 'SECONDARY']),
+});

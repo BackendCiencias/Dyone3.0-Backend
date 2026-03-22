@@ -22,6 +22,13 @@ function normalizeText(value) {
     .toUpperCase();
 }
 
+function normalizeBankCode(value) {
+  const digitsOnly = String(value || '').replace(/\D/g, '').trim();
+  if (!digitsOnly) return '';
+  if (digitsOnly.length >= 10) return digitsOnly;
+  return digitsOnly.padStart(10, '0');
+}
+
 function parseCsv(content) {
   const lines = content.split(/\r?\n/).map((line) => line.trim()).filter(Boolean);
   if (!lines.length) return [];
@@ -157,7 +164,7 @@ async function run() {
     const errors = [];
 
     for (const row of rows) {
-      const bankCode = String(row.raw['CODIGO CAJA'] || '').trim();
+      const bankCode = normalizeBankCode(row.raw['CODIGO CAJA'] || '');
       const lastNames = normalizeText(`${row.raw['APELLIDO PATERNO'] || ''} ${row.raw['APELLIDO MATERNO'] || ''}`);
       const firstName = normalizeText(row.raw['1ER NOMBRE'] || '');
       const grade = normalizeText(row.raw.CLASIFICACION2 || '');

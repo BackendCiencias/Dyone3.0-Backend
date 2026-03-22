@@ -28,7 +28,10 @@ const FEMALE_TOKENS = new Set([
   'TATIANA', 'TAYRA', 'VALERIA', 'VALERIANA', 'VANESA', 'VERONICA', 'VIANCY', 'VILMA', 'VIVIAN',
   'WENDY', 'XIMENA', 'YAJAIRA', 'YAMILE', 'YANET', 'YANIRA', 'YARET', 'YDIS', 'YEMI', 'YENIFER',
   'YENNY', 'YENY', 'YESENIA', 'YESICA', 'YESSICA', 'YHOMARA', 'YOLA', 'YOLANDA', 'YOVANA',
-  'YULE', 'ZULLY',
+  'YULE', 'ZULLY', 'STEPHANIE', 'NICOLLE', 'NICOLE', 'AYLIN', 'JADE', 'LIZBETH', 'DAYANE',
+  'RACHEL', 'KRISTELL', 'ABBY', 'LIZET', 'SHARON', 'YISSEL', 'ASHLY', 'KAORY', 'SHANTALL',
+  'BECKY', 'YAZMIN', 'LISBETH', 'ALYS', 'ODALIZ', 'ALICE', 'DAYRELY', 'JENYFER', 'MAFER',
+  'YENSI', 'AYLEM', 'KHALEASI', 'MADYSON', 'ITZEL', 'JAANAI', 'KRISTHEN',
 ]);
 
 const MALE_TOKENS = new Set([
@@ -48,6 +51,11 @@ const MALE_TOKENS = new Set([
   'PABLO', 'PAOLO', 'PAULO', 'PEDRO', 'PERCY', 'RAFAEL', 'RAUL', 'REINALDO', 'REYNALDO',
   'ROBERTO', 'RODRIGO', 'RONY', 'ROYER', 'RUSVEL', 'SAID', 'SEBASTIAN', 'SEM', 'SIMON', 'THIAGO',
   'TONY', 'ULISES', 'VICTOR', 'WALTER', 'WILLIAM', 'WILLIAN', 'XAVI', 'YOSUE', 'JAMED',
+  'AZAEL', 'SAMUEL', 'OBED', 'ROY', 'ISRAEL', 'MISAEL', 'CRISTIAN', 'FRANKLIN', 'ESNAYDER',
+  'EITHAN', 'YHESMAR', 'IAM', 'BARUK', 'GERAL', 'MILAN', 'BORAN', 'ROXSON', 'ROXON', 'AXEL',
+  'GERALD', 'AARON', 'JHOSHIMAR', 'ERICK', 'FARID', 'MARK', 'WYLLIAM', 'JONATAN', 'KALETT',
+  'YOSHIMAR', 'OTONIEL', 'DAEL', 'ADRIEL', 'YHONY', 'JACOB', 'ARNOLD', 'ABRAHAM', 'BENJHY',
+  'DAXEL', 'ELIAN', 'RYAN', 'MAYKEL', 'KENNETH',
 ]);
 
 const MALE_ENDING_EXCEPTIONS = new Set(['GUADALUPE', 'ANGELO']);
@@ -163,20 +171,46 @@ function ensureLogsDir() {
   return logsDir;
 }
 
+const FILE_PRESETS = {
+  students: {
+    filePath: './data/students_2025.csv',
+    nameColumn: 'Nombres',
+    genderColumn: 'Genero',
+  },
+  parents: {
+    filePath: './data/parents.csv',
+    nameColumn: 'names',
+    genderColumn: 'gender',
+    relationshipColumn: 'relationship',
+  },
+  students_prim: {
+    filePath: './data/students_2025_prim.csv',
+    nameColumn: 'Nombres',
+    genderColumn: 'Genero',
+  },
+  parents_prim: {
+    filePath: './data/parents_prim.csv',
+    nameColumn: 'names',
+    genderColumn: 'gender',
+    relationshipColumn: 'relationship',
+  },
+};
+
+function getTargetsFromArgs(args) {
+  if (!args.length) return [FILE_PRESETS.students, FILE_PRESETS.parents];
+
+  return args.map((arg) => {
+    const preset = FILE_PRESETS[arg];
+    if (!preset) {
+      throw new Error(`Preset no soportado: ${arg}. Usa uno de: ${Object.keys(FILE_PRESETS).join(', ')}`);
+    }
+    return preset;
+  });
+}
+
 function run() {
-  const results = [
-    updateFile({
-      filePath: './data/students_2025.csv',
-      nameColumn: 'Nombres',
-      genderColumn: 'Genero',
-    }),
-    updateFile({
-      filePath: './data/parents.csv',
-      nameColumn: 'names',
-      genderColumn: 'gender',
-      relationshipColumn: 'relationship',
-    }),
-  ];
+  const targets = getTargetsFromArgs(process.argv.slice(2));
+  const results = targets.map((target) => updateFile(target));
 
   const logsDir = ensureLogsDir();
   fs.writeFileSync(

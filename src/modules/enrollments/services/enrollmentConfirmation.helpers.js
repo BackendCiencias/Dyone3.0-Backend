@@ -34,7 +34,7 @@ export async function resolveBillingConceptsByCode({ session, requiredCodes = []
   return { byCode, missingCodes };
 }
 
-export function buildAdmissionFeeCharge({ enrollmentStudent, student, conceptId, cycleId, campusId }) {
+export function buildAdmissionFeeCharge({ enrollmentStudent, student, conceptId, cycleId, campusId, dueDate = new Date() }) {
   if (!conceptId) return null;
   if (isOwnCampus(student.previousCampus)) return null;
 
@@ -50,16 +50,18 @@ export function buildAdmissionFeeCharge({ enrollmentStudent, student, conceptId,
     cycleId,
     campusId,
     conceptId,
+    concept: 'ADMISSION',
+    monthIndex: null,
     description: 'Derecho de ingreso',
     totalAmount: toDecimal128(amount),
     outstandingAmount: toDecimal128(amount),
     status: 'OPEN',
-    dueDate: new Date(),
+    dueDate,
     notes: fee.reason || undefined,
   };
 }
 
-export function buildEnrollmentFeeCharge({ enrollmentStudent, conceptId, cycleId, campusId }) {
+export function buildEnrollmentFeeCharge({ enrollmentStudent, conceptId, cycleId, campusId, dueDate = new Date() }) {
   if (!conceptId) return null;
 
   const fee = enrollmentStudent?.enrollmentFee || {};
@@ -73,16 +75,18 @@ export function buildEnrollmentFeeCharge({ enrollmentStudent, conceptId, cycleId
     cycleId,
     campusId,
     conceptId,
+    concept: 'ENROLLMENT',
+    monthIndex: null,
     description: 'Matrícula',
     totalAmount: toDecimal128(amount),
     outstandingAmount: toDecimal128(amount),
     status: 'OPEN',
-    dueDate: new Date(),
+    dueDate,
     notes: fee.reason || undefined,
   };
 }
 
-export function buildTuitionCharges({ enrollmentStudent, conceptId, cycleId, campusId }) {
+export function buildTuitionCharges({ enrollmentStudent, conceptId, cycleId, campusId, dueDatesByMonth = new Map() }) {
   if (!conceptId) return [];
 
   const monthly = Array.isArray(enrollmentStudent?.pensionMonthlyAmounts)
@@ -99,11 +103,13 @@ export function buildTuitionCharges({ enrollmentStudent, conceptId, cycleId, cam
       cycleId,
       campusId,
       conceptId,
+      concept: 'TUITION',
+      monthIndex: index,
       description: `Pensión mes ${index + 1}`,
       totalAmount: toDecimal128(amount),
       outstandingAmount: toDecimal128(amount),
       status: 'OPEN',
-      dueDate: null,
+      dueDate: dueDatesByMonth.get(index) || null,
     });
   });
 
@@ -125,6 +131,7 @@ export function buildContractSnapshot({ enrollment, enrollmentStudents, students
       const classroom = classroomsById.get(String(row.classroomId));
       return {
         studentId: row.studentId,
+        campusId: classroom?.campusId || null,
         monthlyAmount: (Array.isArray(row.pensionMonthlyAmounts) ? row.pensionMonthlyAmounts.find((amount) => amount >= 0) : 0) ?? 0,
         pensionMonthlyAmounts: row.pensionMonthlyAmounts,
         names: student?.personId?.names || null,

@@ -4,6 +4,7 @@ import { Person } from '../../models/person.model.js';
 import { Tutor } from '../../models/tutor.model.js';
 import { Family } from '../../models/family.model.js';
 import { ApiError } from '../../utils/errors.js';
+import { buildAccentInsensitiveRegex, buildSearchScore, byScoreThenId, normalizeSearchTerm } from '../../utils/search.js';
 import { normalizePersonLastNames, normalizePersonNames, normalizePersonUpdatePayload } from '../../utils/personNameFormatter.js';
 
 function normalizeDni(dni) {
@@ -40,6 +41,16 @@ function mapRelationship(value) {
       .replace(/^\w/, (c) => c.toUpperCase()); // Padre, Madre, Tia...
 
   return normalized;
+}
+
+function dedupeTutorLinks(rows = []) {
+  const seen = new Set();
+  return rows.filter((row) => {
+    const key = `${String(row.studentId)}::${String(row.relationship || '')}`;
+    if (seen.has(key)) return false;
+    seen.add(key);
+    return true;
+  });
 }
 
 function extractStudentCods(payload) {
@@ -221,6 +232,95 @@ export async function upsertTutorService(payload) {
   } finally {
     session.endSession();
   }
+}
+
+export async function searchTutorsService({ q, limit = 8 }) {
+  const term = String(q || '').trim();
+  if (!term) throw new ApiError(400, 'q es requerido');
+
+  const normalizedLimit = Math.max(1, Math.min(20, Number(limit || 8)));
+  const regex = buildAccentInsensitiveRegex(term);
+  const normalizedQ = normalizeSearchTerm(term);
+
+  const people = await Person.find({
+    $or: [
+      { dni: regex },
+      { names: regex },
+      { lastNames: regex },
+      { phone: regex },
+    ],
+  })
+    .select('_id names lastNames dni phone gender')
+    .limit(normalizedLimit * 4)
+    .lean();
+
+  if (!people.length) {
+    return { items: [], nextCursor: null };
+  }
+
+  const personIds = people.map((person) => person._id);
+  const studentPeople = await Student.find({ personId: { $in: personIds } })
+    .select('personId')
+    .lean();
+  const studentPersonIdSet = new Set(studentPeople.map((row) => String(row.personId)));
+
+  const tutorPeople = people.filter((person) => !studentPersonIdSet.has(String(person._id)));
+  if (!tutorPeople.length) {
+    return { items: [], nextCursor: null };
+  }
+
+  const tutorPersonIds = tutorPeople.map((person) => person._id);
+  const tutorLinks = await Tutor.find({ tutorPersonId: { $in: tutorPersonIds } })
+    .select('tutorPersonId studentId relationship isPrimary')
+    .populate({ path: 'studentId', populate: { path: 'personId', select: 'names lastNames' } })
+    .lean();
+
+  const linksByPersonId = new Map();
+  for (const link of tutorLinks) {
+    const key = String(link.tutorPersonId);
+    if (!linksByPersonId.has(key)) linksByPersonId.set(key, []);
+    linksByPersonId.get(key).push(link);
+  }
+
+  const items = tutorPeople
+    .map((person) => {
+      const relatedRows = dedupeTutorLinks(linksByPersonId.get(String(person._id)) || []);
+      return {
+        id: String(person._id),
+        personId: String(person._id),
+        names: person.names || '',
+        lastNames: person.lastNames || '',
+        fullName: [person.lastNames, person.names].filter(Boolean).join(', '),
+        dni: person.dni || '',
+        phone: person.phone || '',
+        gender: person.gender || 'M',
+        relationshipHints: [...new Set(relatedRows.map((row) => row.relationship).filter(Boolean))],
+        linkedStudents: relatedRows.map((row) => ({
+          studentId: String(row.studentId?._id || row.studentId || ''),
+          fullName: [
+            row.studentId?.personId?.lastNames || '',
+            row.studentId?.personId?.names || '',
+          ].filter(Boolean).join(', '),
+          relationship: row.relationship || 'Apoderado',
+          isPrimary: Boolean(row.isPrimary),
+        })).filter((row) => row.studentId),
+        score: buildSearchScore({
+          normalizedQ,
+          dni: person.dni,
+          names: person.names,
+          lastNames: person.lastNames,
+          internalCode: person.phone,
+        }),
+      };
+    })
+    .sort(byScoreThenId)
+    .slice(0, normalizedLimit)
+    .map(({ score, ...item }) => item);
+
+  return {
+    items,
+    nextCursor: null,
+  };
 }
 
 

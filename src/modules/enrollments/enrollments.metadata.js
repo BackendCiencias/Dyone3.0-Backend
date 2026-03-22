@@ -2,6 +2,7 @@ const ENROLLMENT_WRITE_ROLES = ['ADMIN', 'SECRETARY', 'DIRECTOR', 'PROMOTER'];
 const ENROLLMENT_READ_ROLES = [...ENROLLMENT_WRITE_ROLES, 'SECRETARY_VIEWER', 'AUXILIAR'];
 
 export const moduleEndpointMetadata = [
+  { method: 'POST', path: '/api/enrollments/finalize', module: 'enrollments', authRequired: true, rolesAllowed: ENROLLMENT_WRITE_ROLES, description: 'Confirmación final de matrícula V2', requestSchema: { body: 'enrollmentFinalizeSchema' }, responseSchema: { ok: 'boolean', enrollmentId: 'ObjectId', studentIds: 'ObjectId[]', status: 'string' } },
   { method: 'POST', path: '/api/enrollments', module: 'enrollments', authRequired: true, rolesAllowed: ENROLLMENT_WRITE_ROLES, description: 'Crear matrícula', requestSchema: { body: 'enrollmentCreateSchema' }, responseSchema: 'Enrollment' },
   { method: 'POST', path: '/api/enrollments/:id/confirm', module: 'enrollments', authRequired: true, rolesAllowed: ENROLLMENT_WRITE_ROLES, description: 'Confirmar matrícula', requestSchema: { params: { id: 'ObjectId' }, body: 'enrollmentConfirmSchema' }, responseSchema: 'Enrollment' },
   { method: 'GET', path: '/api/enrollments/intake-search', module: 'enrollments', authRequired: true, rolesAllowed: ENROLLMENT_READ_ROLES, description: 'Búsqueda combinada de familias y alumnos para ventanilla (nueva matrícula)', requestSchema: { query: 'intakeSearchQuerySchema' }, responseSchema: 'intakeSearchResponseSchema' },

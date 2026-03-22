@@ -65,3 +65,8 @@ export const tutorUpdateSchema = z.object({
 }).refine((payload) => Object.keys(payload).length > 0, {
   message: 'Debe enviar al menos un campo para actualizar',
 });
+
+export const tutorSearchQuerySchema = z.object({
+  q: z.string().trim().min(2, 'q debe tener al menos 2 caracteres'),
+  limit: z.coerce.number().int().min(1).max(20).optional(),
+});

@@ -1,6 +1,9 @@
 import mongoose from 'mongoose';
 import { Student } from '../../models/student.model.js';
+import { Person } from '../../models/person.model.js';
 import { Family } from '../../models/family.model.js';
+import { Tutor } from '../../models/tutor.model.js';
+import { Counter } from '../../models/counter.model.js';
 import { Enrollment } from '../../models/enrollment.model.js';
 import { EnrollmentStudent, NO_APLICA_PENSION } from '../../models/enrollmentStudent.model.js';
 import { Vacancy } from '../../models/vacancy.model.js';
@@ -27,6 +30,7 @@ import { runInTransaction } from '../../shared/dbSession.js';
 import { registerAuditLog } from '../../shared/audit.service.js';
 import { buildSearchScore } from '../../utils/search.js';
 import { intakeSearch } from './services/intake.search.service.js';
+import { normalizePersonNameFields } from '../../utils/personNameFormatter.js';
 
 const SCHOOL_MONTHS = 10;
 
@@ -55,6 +59,39 @@ function firstApplicablePensionAmount(values = []) {
   return values.find((amount) => amount >= 0) ?? null;
 }
 
+function normalizeDni(dni) {
+  const normalized = String(dni || '').trim();
+  if (!normalized) return undefined;
+  const lowered = normalized.toLowerCase();
+  if (['null', 'undefined', 'n/a', 'na', '-'].includes(lowered)) return undefined;
+  return normalized;
+}
+
+function normalizePhone(value) {
+  const normalized = String(value || '').trim().replace(/\s+/g, ' ');
+  return normalized || undefined;
+}
+
+function mapTutorRelationship(value) {
+  const normalized = String(value || '').trim().toLowerCase();
+  const map = {
+    padre: 'Padre',
+    madre: 'Madre',
+    abuelo: 'Abuelo',
+    abuela: 'Abuela',
+    hermano: 'Hermano',
+    hermana: 'Hermana',
+    tio: 'Tío',
+    tío: 'Tío',
+    tia: 'Tía',
+    tía: 'Tía',
+    apoderado: 'Apoderado',
+    tutor: 'Apoderado',
+    otro: 'Otro',
+  };
+
+  return map[normalized] || 'Apoderado';
+}
 
 function toNumber(value, fallback = 0) {
   const numberValue = Number(value ?? fallback);
@@ -91,230 +128,430 @@ function buildChargePayload({ studentId, cycleId, campusId, conceptId, concept, 
   };
 }
 
+function buildChargeConflictKey({ studentId, cycleId, concept, monthIndex = null }) {
+  return `${String(studentId)}:${String(cycleId)}:${String(concept)}:${monthIndex ?? 'NONE'}`;
+}
+
+function groupSchedulesByConcept(schedules = []) {
+  const grouped = new Map();
+  for (const row of schedules) {
+    const key = row.conceptCode;
+    if (!grouped.has(key)) grouped.set(key, []);
+    grouped.get(key).push(row);
+  }
+  return grouped;
+}
+
+function sortSchedulesByMonth(rows = []) {
+  return [...rows].sort((a, b) => {
+    if (a.monthIndex === null && b.monthIndex === null) return 0;
+    if (a.monthIndex === null) return 1;
+    if (b.monthIndex === null) return -1;
+    return a.monthIndex - b.monthIndex;
+  });
+}
+
+function getConceptDueDate(schedulesByConcept, conceptCode, fallback = new Date()) {
+  const rows = sortSchedulesByMonth(schedulesByConcept.get(conceptCode) || []);
+  return rows[0]?.dueDate || fallback;
+}
+
+function getTuitionDueDatesByMonth(schedulesByConcept) {
+  return new Map(
+    sortSchedulesByMonth(schedulesByConcept.get('TUITION') || [])
+      .filter((row) => row.monthIndex !== null && row.monthIndex !== undefined)
+      .map((row) => [row.monthIndex, row.dueDate])
+  );
+}
+
+async function loadBillingSetup({ session, cycleId }) {
+  const { byCode, missingCodes } = await resolveBillingConceptsByCode({
+    session,
+    requiredCodes: ['ADMISSION_FEE', 'ENROLLMENT_FEE', 'TUITION'],
+  });
+  if (missingCodes.length) {
+    throw new ApiError(409, `Faltan BillingConcept requeridos: ${missingCodes.join(', ')}`);
+  }
+
+  const schedules = await BillingSchedule.find({
+    cycleId,
+    conceptCode: { $in: ['TUITION', 'ADMISSION_FEE', 'ENROLLMENT_FEE'] },
+  }).session(session);
+
+  const schedulesByConcept = groupSchedulesByConcept(schedules);
+  const tuitionDueDatesByMonth = getTuitionDueDatesByMonth(schedulesByConcept);
+  if (!tuitionDueDatesByMonth.size) {
+    throw new ApiError(409, 'No existe calendario de vencimientos para TUITION en este ciclo');
+  }
+
+  return {
+    byCode,
+    schedulesByConcept,
+    tuitionDueDatesByMonth,
+    admissionDueDate: getConceptDueDate(schedulesByConcept, 'ADMISSION_FEE'),
+    enrollmentDueDate: getConceptDueDate(schedulesByConcept, 'ENROLLMENT_FEE'),
+  };
+}
+
+async function ensureNoDuplicateCharges({ session, charges = [], cycleId }) {
+  if (!charges.length) return;
+
+  const candidateKeys = new Set(charges.map((charge) => buildChargeConflictKey(charge)));
+  const studentIds = [...new Set(charges.map((charge) => String(charge.studentId)))].map((id) => new mongoose.Types.ObjectId(id));
+  const concepts = [...new Set(charges.map((charge) => charge.concept))];
+
+  const existingCharges = await Charge.find({
+    studentId: { $in: studentIds },
+    cycleId,
+    concept: { $in: concepts },
+  })
+    .select('studentId cycleId concept monthIndex')
+    .session(session)
+    .lean();
+
+  const duplicated = existingCharges.find((charge) => candidateKeys.has(buildChargeConflictKey(charge)));
+  if (duplicated) {
+    throw new ApiError(409, 'Ya existen cargos para uno o más estudiantes en el ciclo seleccionado');
+  }
+}
+
+async function ensureClassroomCapacityForRows({ session, cycleId, enrollmentStudents, classroomsById }) {
+  if (!enrollmentStudents.length) return;
+
+  const studentIds = [...new Set(enrollmentStudents.map((row) => String(row.studentId)))].map((id) => new mongoose.Types.ObjectId(id));
+  const currentVacancies = await Vacancy.find({
+    studentId: { $in: studentIds },
+    cycleId,
+  })
+    .select('studentId classroomId')
+    .session(session)
+    .lean();
+
+  const currentVacancyByStudent = new Map(currentVacancies.map((row) => [String(row.studentId), row]));
+  const targetClassroomIds = [...new Set(enrollmentStudents.map((row) => String(row.classroomId)).filter(Boolean))];
+
+  for (const classroomId of targetClassroomIds) {
+    const classroom = classroomsById.get(String(classroomId));
+    if (!classroom) throw new ApiError(409, 'Hay aulas inválidas en la matrícula');
+
+    const occupied = await Vacancy.countDocuments({
+      classroomId: classroom._id,
+      cycleId,
+    }).session(session);
+
+    const incomingRows = enrollmentStudents.filter((row) => String(row.classroomId) === String(classroomId));
+    const carryOverCount = incomingRows.reduce((acc, row) => {
+      const current = currentVacancyByStudent.get(String(row.studentId));
+      return acc + (current && String(current.classroomId) === String(classroomId) ? 1 : 0);
+    }, 0);
+
+    const projectedOccupied = occupied - carryOverCount + incomingRows.length;
+    if (projectedOccupied > Number(classroom.capacity || 0)) {
+      throw new ApiError(409, `No hay vacantes disponibles en el aula ${classroom.displayName || classroom._id}`);
+    }
+  }
+}
+
+async function nextStudentCode(session) {
+  const counter = await Counter.findOneAndUpdate(
+    { key: 'student_internal_code' },
+    { $inc: { seq: 1 } },
+    { new: true, upsert: true, session }
+  );
+
+  return `COD_A${String(counter.seq).padStart(5, '0')}`;
+}
+
+async function resolveOrCreatePersonDraft(personData, session) {
+  const normalizedPerson = normalizePersonNameFields(personData || {});
+  const dni = normalizeDni(normalizedPerson.dni);
+
+  let person = null;
+  if (dni) {
+    person = await Person.findOne({ dni }).session(session);
+  }
+
+  if (!person) {
+    person = new Person({
+      names: normalizedPerson.names,
+      lastNames: normalizedPerson.lastNames,
+      gender: normalizedPerson.gender || 'M',
+      ...(dni ? { dni } : {}),
+      ...(normalizePhone(normalizedPerson.phone) ? { phone: normalizePhone(normalizedPerson.phone) } : {}),
+    });
+    await person.save({ session });
+    return person;
+  }
+
+  const setUpdates = {};
+  if (normalizedPerson.names && normalizedPerson.names !== person.names) setUpdates.names = normalizedPerson.names;
+  if (normalizedPerson.lastNames && normalizedPerson.lastNames !== person.lastNames) setUpdates.lastNames = normalizedPerson.lastNames;
+  if (normalizedPerson.gender && normalizedPerson.gender !== person.gender) setUpdates.gender = normalizedPerson.gender;
+  const phone = normalizePhone(normalizedPerson.phone);
+  if (phone && phone !== person.phone) setUpdates.phone = phone;
+
+  if (Object.keys(setUpdates).length) {
+    await Person.updateOne({ _id: person._id }, { $set: setUpdates }, { session });
+    person = await Person.findById(person._id).session(session);
+  }
+
+  return person;
+}
+
+async function createConfirmedEnrollmentInSession({ session, data, createdByUserId, allowMissingFamily = false, allowMultiCampus = false }) {
+  let family = null;
+  if (data.familyId) {
+    family = await Family.findById(data.familyId).session(session);
+    if (!family) throw new ApiError(404, 'Familia no encontrada');
+  } else if (!allowMissingFamily) {
+    throw new ApiError(400, 'familyId es requerido');
+  }
+
+  const cycle = await Cycle.findById(data.cycleId).session(session);
+  if (!cycle) throw new ApiError(404, 'Ciclo no encontrado');
+
+  const studentIds = data.enrollmentStudents.map((row) => String(row.studentId));
+  const uniqueStudentIds = [...new Set(studentIds)];
+  if (uniqueStudentIds.length !== studentIds.length) {
+    throw new ApiError(400, 'No se permiten estudiantes duplicados en enrollmentStudents');
+  }
+
+  const students = await Student.find({ _id: { $in: uniqueStudentIds } })
+    .populate('personId')
+    .select('_id familyId personId internalCode previousCampus')
+    .session(session);
+  if (students.length !== uniqueStudentIds.length) {
+    throw new ApiError(404, 'Uno o más estudiantes no existen');
+  }
+  const studentsById = new Map(students.map((student) => [String(student._id), student]));
+
+  if (family) {
+    for (const student of students) {
+      if (student.familyId && String(student.familyId) !== String(family._id)) {
+        throw new ApiError(400, `El estudiante ${student._id} no pertenece a la familia indicada`);
+      }
+    }
+  }
+
+  const classroomIds = [...new Set(data.enrollmentStudents.map((row) => String(row.classroomId)))];
+  const classrooms = await Classroom.find({ _id: { $in: classroomIds } })
+    .select('_id displayName cycleId campusId capacity')
+    .session(session)
+    .lean();
+  const classroomsById = new Map(classrooms.map((classroom) => [String(classroom._id), classroom]));
+  const campusIdsFromClassrooms = [...new Set(classrooms.map((classroom) => String(classroom.campusId)).filter(Boolean))];
+
+  let campus = null;
+  if (allowMultiCampus) {
+    if (!campusIdsFromClassrooms.length) throw new ApiError(400, 'No se pudo determinar campus de la matrícula');
+    campus = await Campus.findById(campusIdsFromClassrooms[0]).session(session);
+    if (!campus) throw new ApiError(404, 'Campus principal no encontrado');
+  } else {
+    campus = await Campus.findById(data.campusId).session(session);
+    if (!campus) throw new ApiError(404, 'Campus no encontrado');
+  }
+
+  for (const row of data.enrollmentStudents) {
+    const classroom = classroomsById.get(String(row.classroomId));
+    if (!classroom) throw new ApiError(404, `Aula no encontrada: ${row.classroomId}`);
+    if (!allowMultiCampus && String(classroom.campusId) !== String(campus._id)) {
+      throw new ApiError(400, `El aula ${row.classroomId} no pertenece al campus indicado`);
+    }
+    if (String(classroom.cycleId) !== String(cycle._id)) {
+      throw new ApiError(400, `El aula ${row.classroomId} no pertenece al ciclo indicado`);
+    }
+  }
+
+  await ensureClassroomCapacityForRows({
+    session,
+    cycleId: cycle._id,
+    enrollmentStudents: data.enrollmentStudents,
+    classroomsById,
+  });
+
+  const existingEnrollmentStudents = await EnrollmentStudent.find({
+    studentId: { $in: uniqueStudentIds },
+  })
+    .populate({ path: 'enrollmentId', select: 'cycleId' })
+    .session(session);
+
+  for (const row of existingEnrollmentStudents) {
+    if (String(row.enrollmentId?.cycleId) === String(cycle._id)) {
+      throw new ApiError(409, `El estudiante ${row.studentId} ya tiene matrícula en este ciclo`);
+    }
+  }
+
+  const enrollment = await Enrollment.create([{
+    ...(family ? { familyId: family._id } : {}),
+    campusId: campus._id,
+    campusIds: allowMultiCampus
+      ? campusIdsFromClassrooms.map((id) => new mongoose.Types.ObjectId(id))
+      : [campus._id],
+    cycleId: cycle._id,
+    status: 'CONFIRMED',
+    notes: data.notes || undefined,
+    createdBy: createdByUserId,
+    updatedBy: createdByUserId,
+    confirmedAt: new Date(),
+  }], { session }).then((docs) => docs[0]);
+
+  const enrollmentStudentDocs = [];
+  const chargesToCreate = [];
+  const {
+    byCode,
+    tuitionDueDatesByMonth,
+    admissionDueDate,
+    enrollmentDueDate,
+  } = await loadBillingSetup({ session, cycleId: cycle._id });
+
+  for (const row of data.enrollmentStudents) {
+    const student = studentsById.get(String(row.studentId));
+    const classroom = classroomsById.get(String(row.classroomId));
+    const rowCampusId = classroom?.campusId;
+    if (!rowCampusId) throw new ApiError(400, `No se pudo determinar campus para el aula ${row.classroomId}`);
+    const normalizedPensions = normalizePensionMonthlyAmounts({ pensionMonthlyAmounts: row.pensionMonthlyAmounts });
+    const previousSchoolType = row.previousSchoolType || derivePreviousSchoolType(student?.previousCampus);
+    const admissionFee = isOwnCampus(previousSchoolType)
+      ? { applies: false, amount: 0, isExempt: true, reason: 'Traslado interno' }
+      : normalizeFee(row.admissionFee, { includesApplies: true });
+    const enrollmentFee = normalizeFee(row.enrollmentFee);
+
+    const enrollmentStudent = new EnrollmentStudent({
+      enrollmentId: enrollment._id,
+      studentId: row.studentId,
+      classroomId: row.classroomId,
+      admissionFee,
+      enrollmentFee,
+      pensionMonthlyAmounts: normalizedPensions,
+      previousSchoolType,
+      previousSchoolName: previousSchoolType === 'OTHER' ? (row.previousSchoolName || 'EXTERNO') : undefined,
+      notes: row.notes || undefined,
+      agreedBy: createdByUserId,
+      agreedAt: new Date(),
+    });
+    await enrollmentStudent.save({ session });
+    enrollmentStudentDocs.push(enrollmentStudent);
+
+    if (admissionFee.applies && !admissionFee.isExempt) {
+      chargesToCreate.push(buildChargePayload({
+        studentId: row.studentId,
+        cycleId: cycle._id,
+        campusId: rowCampusId,
+        conceptId: byCode.get('ADMISSION_FEE'),
+        concept: 'ADMISSION',
+        amount: admissionFee.amount,
+        dueDate: admissionDueDate,
+        notes: admissionFee.reason,
+      }));
+    }
+
+    if (!enrollmentFee.isExempt) {
+      chargesToCreate.push(buildChargePayload({
+        studentId: row.studentId,
+        cycleId: cycle._id,
+        campusId: rowCampusId,
+        conceptId: byCode.get('ENROLLMENT_FEE'),
+        concept: 'ENROLLMENT',
+        amount: enrollmentFee.amount,
+        dueDate: enrollmentDueDate,
+        notes: enrollmentFee.reason,
+      }));
+    }
+
+    for (const [monthIndex, dueDate] of tuitionDueDatesByMonth.entries()) {
+      const amount = normalizedPensions[monthIndex];
+      if (amount === undefined || amount < 0) continue;
+
+      chargesToCreate.push(buildChargePayload({
+        studentId: row.studentId,
+        cycleId: cycle._id,
+        campusId: rowCampusId,
+        conceptId: byCode.get('TUITION'),
+        concept: 'TUITION',
+        monthIndex,
+        amount,
+        dueDate,
+      }));
+    }
+  }
+
+  await ensureNoDuplicateCharges({ session, charges: chargesToCreate, cycleId: cycle._id });
+
+  if (chargesToCreate.length) {
+    await Charge.insertMany(chargesToCreate, { session });
+  }
+
+  for (const row of enrollmentStudentDocs) {
+    row.chargesGeneratedAt = chargesToCreate.some((charge) => String(charge.studentId) === String(row.studentId))
+      ? new Date()
+      : row.chargesGeneratedAt;
+    await row.save({ session });
+
+    await upsertStudentCycleForEnrollment({
+      studentId: row.studentId,
+      cycleId: cycle._id,
+      campusId: classroomsById.get(String(row.classroomId))?.campusId,
+      enrollmentId: enrollment._id,
+      session,
+    });
+
+    await Vacancy.updateOne(
+      { studentId: row.studentId, cycleId: cycle._id },
+      {
+        $setOnInsert: { studentId: row.studentId, cycleId: cycle._id },
+        $set: { classroomId: row.classroomId },
+      },
+      { upsert: true, session }
+    );
+  }
+
+  enrollment.enrollmentStudents = enrollmentStudentDocs.map((row) => row._id);
+  enrollment.studentIds = enrollmentStudentDocs.map((row) => row.studentId);
+  await enrollment.save({ session });
+
+  const snapshotData = buildContractSnapshot({
+    enrollment,
+    enrollmentStudents: enrollmentStudentDocs,
+    studentsById,
+    classroomsById,
+    userId: createdByUserId,
+    notes: data.notes,
+  });
+  await new ContractSnapshot(snapshotData).save({ session });
+
+  return {
+    enrollment,
+    cycle,
+    campus,
+    campusIds: allowMultiCampus
+      ? campusIdsFromClassrooms.map((id) => id.toString())
+      : [campus._id.toString()],
+    chargesCount: chargesToCreate.length,
+  };
+}
+
 export async function createEnrollmentService(data, createdByUserId) {
   const session = await mongoose.startSession();
 
   try {
     session.startTransaction();
-
-    const family = await Family.findById(data.familyId).session(session);
-    if (!family) throw new ApiError(404, 'Familia no encontrada');
-
-    const campus = await Campus.findById(data.campusId).session(session);
-    if (!campus) throw new ApiError(404, 'Campus no encontrado');
-
-    const cycle = await Cycle.findById(data.cycleId).session(session);
-    if (!cycle) throw new ApiError(404, 'Ciclo no encontrado');
-
-    console.log("cycle._id", cycle._id.toString());
-    console.log("data.cycleId", data.cycleId);
-
-    const studentIds = data.enrollmentStudents.map((row) => String(row.studentId));
-    const uniqueStudentIds = [...new Set(studentIds)];
-    if (uniqueStudentIds.length !== studentIds.length) {
-      throw new ApiError(400, 'No se permiten estudiantes duplicados en enrollmentStudents');
-    }
-
-    const students = await Student.find({ _id: { $in: uniqueStudentIds } }).session(session);
-    if (students.length !== uniqueStudentIds.length) {
-      throw new ApiError(404, 'Uno o más estudiantes no existen');
-    }
-
-    for (const student of students) {
-      if (String(student.familyId) !== String(family._id)) {
-        throw new ApiError(400, `El estudiante ${student._id} no pertenece a la familia indicada`);
-      }
-    }
-
-    for (const row of data.enrollmentStudents) {
-      const classroom = await Classroom.findById(row.classroomId).session(session);
-      if (!classroom) throw new ApiError(404, `Aula no encontrada: ${row.classroomId}`);
-      if (String(classroom.campusId) !== String(campus._id)) {
-        throw new ApiError(400, `El aula ${row.classroomId} no pertenece al campus indicado`);
-      }
-      if (String(classroom.cycleId) !== String(cycle._id)) {
-        throw new ApiError(400, `El aula ${row.classroomId} no pertenece al ciclo indicado`);
-      }
-    }
-
-    const existingEnrollmentStudents = await EnrollmentStudent.find({
-      studentId: { $in: uniqueStudentIds },
-    })
-      .populate({ path: 'enrollmentId', select: 'cycleId' })
-      .session(session);
-
-    for (const row of existingEnrollmentStudents) {
-      if (String(row.enrollmentId?.cycleId) === String(cycle._id)) {
-        throw new ApiError(409, `El estudiante ${row.studentId} ya tiene matrícula en este ciclo`);
-      }
-    }
-
-    const enrollment = await Enrollment.create([{
-      familyId: family._id,
-      campusId: campus._id,
-      cycleId: cycle._id,
-      status: 'CONFIRMED',
-      notes: data.notes || undefined,
-      createdBy: createdByUserId,
-      updatedBy: createdByUserId,
-      confirmedAt: new Date(),
-    }], { session }).then((docs) => docs[0]);
-
-    const enrollmentStudentDocs = [];
-    const chargesToCreate = [];
-
-    const { byCode, missingCodes } = await resolveBillingConceptsByCode({
+    const { enrollment, campus, chargesCount } = await createConfirmedEnrollmentInSession({
       session,
-      requiredCodes: ['ADMISSION_FEE', 'ENROLLMENT_FEE', 'TUITION'],
+      data,
+      createdByUserId,
+      allowMissingFamily: false,
     });
-    if (missingCodes.length) {
-      throw new ApiError(409, `Faltan BillingConcept requeridos: ${missingCodes.join(', ')}`);
-    }
-
-    const schedules = await BillingSchedule.find({
-      cycleId: cycle._id,
-      conceptCode: { $in: ['TUITION', 'ADMISSION_FEE', 'ENROLLMENT_FEE'] },
-    }).session(session);
-
-    console.log("Schedules encontrados:", schedules.length);
-
-    console.log(
-      "Schedules cycleId:",
-      schedules.map(s => s.cycleId.toString())
-    );
-
-    console.log(
-      "Schedules conceptCode:",
-      schedules.map(s => s.conceptCode)
-    );
-
-    const debugSchedules = await BillingSchedule.find({}).limit(5);
-
-    console.log(
-      "BillingSchedules en DB:",
-      debugSchedules.map(s => ({
-        cycleId: s.cycleId.toString(),
-        conceptCode: s.conceptCode,
-        monthIndex: s.monthIndex
-      }))
-    );
-
-    const schedulesByConcept = new Map();
-    for (const row of schedules) {
-      const key = row.conceptCode;
-      if (!schedulesByConcept.has(key)) schedulesByConcept.set(key, []);
-      schedulesByConcept.get(key).push(row);
-    }
-
-    const tuitionSchedule = (schedulesByConcept.get('TUITION') || []).sort((a, b) => {
-      if (a.monthIndex === null && b.monthIndex === null) return 0;
-      if (a.monthIndex === null) return 1;
-      if (b.monthIndex === null) return -1;
-      return a.monthIndex - b.monthIndex;
-    });
-
-    if (!tuitionSchedule.length) {
-      throw new ApiError(409, 'No existe calendario de vencimientos para TUITION en este ciclo');
-    }
-
-    const immediateDueDate = new Date();
-
-    for (const row of data.enrollmentStudents) {
-      const normalizedPensions = normalizePensionMonthlyAmounts({ pensionMonthlyAmounts: row.pensionMonthlyAmounts });
-      const admissionFee = normalizeFee(row.admissionFee, { includesApplies: true });
-      const enrollmentFee = normalizeFee(row.enrollmentFee);
-
-      const enrollmentStudent = new EnrollmentStudent({
-        enrollmentId: enrollment._id,
-        studentId: row.studentId,
-        classroomId: row.classroomId,
-        admissionFee,
-        enrollmentFee,
-        pensionMonthlyAmounts: normalizedPensions,
-        previousSchoolType: row.previousSchoolType,
-        previousSchoolName: row.previousSchoolType === 'OTHER' ? 'EXTERNO' : undefined,
-        notes: row.notes || undefined,
-        agreedBy: createdByUserId,
-        agreedAt: new Date(),
-        chargesGeneratedAt: new Date(),
-      });
-      await enrollmentStudent.save({ session });
-      enrollmentStudentDocs.push(enrollmentStudent);
-
-      if (admissionFee.applies && !admissionFee.isExempt) {
-        chargesToCreate.push(buildChargePayload({
-          studentId: row.studentId,
-          cycleId: cycle._id,
-          campusId: campus._id,
-          conceptId: byCode.get('ADMISSION_FEE'),
-          concept: 'ADMISSION',
-          amount: admissionFee.amount,
-          dueDate: immediateDueDate,
-          notes: admissionFee.reason,
-        }));
-      }
-
-      if (!enrollmentFee.isExempt) {
-        chargesToCreate.push(buildChargePayload({
-          studentId: row.studentId,
-          cycleId: cycle._id,
-          campusId: campus._id,
-          conceptId: byCode.get('ENROLLMENT_FEE'),
-          concept: 'ENROLLMENT',
-          amount: enrollmentFee.amount,
-          dueDate: immediateDueDate,
-          notes: enrollmentFee.reason,
-        }));
-      }
-
-      for (const scheduleRow of tuitionSchedule) {
-        if (scheduleRow.monthIndex === null || scheduleRow.monthIndex === undefined) continue;
-
-        const monthIndex = scheduleRow.monthIndex;
-        const amount = normalizedPensions[monthIndex];
-        if (amount === undefined || amount < 0) continue;
-
-        chargesToCreate.push(buildChargePayload({
-          studentId: row.studentId,
-          cycleId: cycle._id,
-          campusId: campus._id,
-          conceptId: byCode.get('TUITION'),
-          concept: 'TUITION',
-          monthIndex,
-          amount,
-          dueDate: scheduleRow.dueDate,
-        }));
-      }
-    }
-
-    const tuitionChargeKeys = new Set(
-      chargesToCreate
-        .filter((charge) => charge.concept === 'TUITION')
-        .map((charge) => `${String(charge.studentId)}:${String(charge.cycleId)}:${charge.monthIndex}`)
-    );
-
-    if (tuitionChargeKeys.size) {
-      const existingTuitionCharges = await Charge.find({
-        studentId: { $in: uniqueStudentIds },
-        cycleId: cycle._id,
-        concept: 'TUITION',
-        monthIndex: { $in: [...new Set(chargesToCreate.filter((c) => c.concept === 'TUITION').map((c) => c.monthIndex))] },
-      }).session(session);
-
-      if (existingTuitionCharges.length) {
-        throw new ApiError(409, 'Ya existen cargos de pensión para uno o más estudiantes y meses del ciclo');
-      }
-    }
-
-    if (chargesToCreate.length) {
-      await Charge.insertMany(chargesToCreate, { session });
-    }
-
-    enrollment.enrollmentStudents = enrollmentStudentDocs.map((row) => row._id);
-    enrollment.studentIds = enrollmentStudentDocs.map((row) => row.studentId);
-    await enrollment.save({ session });
 
     await session.commitTransaction();
+
+    await registerAuditLog({
+      entityType: 'ENROLLMENT',
+      entityId: enrollment._id.toString(),
+      action: 'ENROLLMENT_CONFIRMED',
+      performedBy: createdByUserId,
+      campusId: campus._id.toString(),
+      payloadSnapshot: { students: data.enrollmentStudents.length, hasNotes: Boolean(data.notes), chargesCount },
+    });
 
     return Enrollment.findById(enrollment._id)
       .populate('familyId')
@@ -327,6 +564,228 @@ export async function createEnrollmentService(data, createdByUserId) {
   } finally {
     await session.endSession();
   }
+}
+
+export async function finalizeEnrollmentService(payload, userId) {
+  const result = await runInTransaction(async (session) => {
+    const activeCycle = await Cycle.findOne({ isActive: true })
+      .sort({ year: -1, startDate: -1, _id: -1 })
+      .session(session);
+
+    const cycle = payload.activeCycleId
+      ? await Cycle.findById(payload.activeCycleId).session(session)
+      : activeCycle;
+
+    if (!cycle) throw new ApiError(400, 'No hay ciclo activo disponible para matricular');
+    if (payload.activeCycleId && !cycle.isActive) throw new ApiError(409, 'El ciclo enviado ya no está activo');
+
+    const students = Array.isArray(payload.students) ? payload.students : [];
+    if (!students.length) throw new ApiError(400, 'Debe enviar al menos un alumno');
+
+    const seenStudentDnis = new Set();
+    for (const student of students) {
+      const dni = normalizeDni(student?.dni);
+      if (!dni) continue;
+      if (seenStudentDnis.has(dni)) {
+        throw new ApiError(409, `No se permiten alumnos duplicados con DNI ${dni} en la misma matrícula`);
+      }
+      seenStudentDnis.add(dni);
+    }
+
+    const tutors = Array.isArray(payload.tutors) ? payload.tutors : [];
+    if (!tutors.length) throw new ApiError(400, 'Debe enviar al menos un tutor');
+    if (!tutors.some((tutor) => tutor.includeInContract !== false)) {
+      throw new ApiError(400, 'Debe haber al menos un tutor firmante');
+    }
+
+    const resolvedStudents = [];
+    const studentIdByRef = new Map();
+
+    for (const draftStudent of students) {
+      const referenceKey = draftStudent.localId || draftStudent.existingStudentId;
+      if (!referenceKey) throw new ApiError(400, 'Cada alumno debe tener referencia local o id existente');
+
+      let studentDoc = null;
+      if (draftStudent.mode === 'existing') {
+        studentDoc = await Student.findById(draftStudent.existingStudentId)
+          .populate('personId')
+          .session(session);
+        if (!studentDoc) throw new ApiError(404, 'Alumno existente no encontrado');
+      } else {
+        const person = await resolveOrCreatePersonDraft({
+          names: draftStudent.names,
+          lastNames: draftStudent.lastNames,
+          dni: draftStudent.dni,
+          gender: draftStudent.gender,
+        }, session);
+
+        const existingStudent = await Student.findOne({ personId: person._id }).session(session);
+        if (existingStudent) {
+          throw new ApiError(409, `Ya existe un alumno registrado para ${person.names} ${person.lastNames}`);
+        }
+
+        const internalCode = await nextStudentCode(session);
+        studentDoc = await Student.create([{
+          personId: person._id,
+          internalCode,
+          previousCampus: draftStudent.previousSchoolType === 'OTHER'
+            ? (draftStudent.previousSchoolName || 'OTHER')
+            : (draftStudent.previousSchoolType || undefined),
+          notes: draftStudent.notes || undefined,
+        }], { session }).then((rows) => rows[0]);
+
+        studentDoc = await Student.findById(studentDoc._id)
+          .populate('personId')
+          .session(session);
+      }
+
+      const currentStatus = await StudentCycle.findOne({ studentId: studentDoc._id, cycleId: cycle._id })
+        .select('status')
+        .session(session)
+        .lean();
+      if (currentStatus?.status === 'ENROLLED') {
+        throw new ApiError(409, `El alumno ${studentDoc.personId?.names || studentDoc._id} ya se matriculó en el ciclo activo`);
+      }
+
+      if (!draftStudent.classroomId) {
+        throw new ApiError(400, 'Todos los alumnos deben tener salón');
+      }
+
+      const pensionAmount = toNumber(draftStudent?.amounts?.pensionAmount, 0);
+      const pensionMonthlyAmounts = Array.isArray(draftStudent?.amounts?.pensionMonthlyAmounts)
+        ? draftStudent.amounts.pensionMonthlyAmounts.map((value) => Number(value ?? 0))
+        : Array(10).fill(pensionAmount);
+      const admissionFeeAmount = toNumber(draftStudent?.amounts?.admissionFeeAmount, 0);
+      const enrollmentFeeAmount = toNumber(draftStudent?.amounts?.enrollmentFeeAmount, 0);
+      const previousSchoolType = String(draftStudent?.previousSchoolType || 'OTHER').trim().toUpperCase();
+      const previousSchoolName = String(draftStudent?.previousSchoolName || '').trim();
+
+      resolvedStudents.push({
+        referenceKey,
+        student: studentDoc,
+        enrollmentStudent: {
+          studentId: studentDoc._id.toString(),
+          classroomId: draftStudent.classroomId,
+          admissionFee: {
+            applies: previousSchoolType === 'OTHER',
+            isExempt: false,
+            amount: previousSchoolType === 'OTHER' ? admissionFeeAmount : 0,
+            reason: '',
+          },
+          enrollmentFee: {
+            isExempt: false,
+            amount: enrollmentFeeAmount,
+            reason: '',
+          },
+          pensionMonthlyAmounts,
+          previousSchoolType,
+          previousSchoolName: previousSchoolType === 'OTHER' ? previousSchoolName : undefined,
+          notes: draftStudent.notes || undefined,
+        },
+      });
+
+      studentIdByRef.set(referenceKey, studentDoc._id);
+    }
+
+    for (const tutorDraft of tutors) {
+      let person = null;
+      if (tutorDraft.existingTutorId && mongoose.Types.ObjectId.isValid(tutorDraft.existingTutorId)) {
+        person = await Person.findById(tutorDraft.existingTutorId).session(session);
+      }
+
+      if (!person) {
+        person = await resolveOrCreatePersonDraft({
+          names: tutorDraft.names,
+          lastNames: tutorDraft.lastNames,
+          dni: tutorDraft.dni,
+          phone: tutorDraft.phone,
+          gender: 'M',
+        }, session);
+      }
+
+      const linkedStudentIds = Array.isArray(tutorDraft.linkedStudentIds) ? tutorDraft.linkedStudentIds : [];
+      for (const linkedRef of linkedStudentIds) {
+        const studentId = studentIdByRef.get(linkedRef);
+        if (!studentId) continue;
+
+        const existingTutor = await Tutor.findOne({ studentId, tutorPersonId: person._id }).session(session);
+        const relationship = mapTutorRelationship(tutorDraft.relationship);
+
+        if (!existingTutor) {
+          await Tutor.create([{
+            studentId,
+            tutorPersonId: person._id,
+            relationship,
+            isPrimary: false,
+            livesWithStudent: true,
+            notes: tutorDraft.isLegalResponsible ? 'Responsable legal' : undefined,
+          }], { session });
+        } else {
+          await Tutor.updateOne(
+            { _id: existingTutor._id },
+            {
+              $set: {
+                relationship,
+                notes: tutorDraft.isLegalResponsible ? 'Responsable legal' : existingTutor.notes,
+              },
+            },
+            { session }
+          );
+        }
+      }
+    }
+
+    const enrollmentData = {
+      cycleId: String(cycle._id),
+      enrollmentStudents: resolvedStudents.map((row) => row.enrollmentStudent),
+      notes: payload?.observations?.general || '',
+    };
+
+    const { enrollment, chargesCount } = await createConfirmedEnrollmentInSession({
+      session,
+      data: enrollmentData,
+      createdByUserId: userId,
+      allowMissingFamily: true,
+      allowMultiCampus: true,
+    });
+
+    const enrollmentCampusIds = Array.isArray(enrollment?.campusIds) && enrollment.campusIds.length
+      ? enrollment.campusIds.map((id) => String(id))
+      : enrollment?.campusId
+        ? [String(enrollment.campusId)]
+        : [];
+
+    return {
+      enrollmentId: enrollment._id.toString(),
+      cycleId: String(cycle._id),
+      campusId: enrollmentCampusIds[0] || null,
+      campusIds: enrollmentCampusIds,
+      studentIds: resolvedStudents.map((row) => row.student._id.toString()),
+      chargesCount,
+    };
+  });
+
+  await registerAuditLog({
+    entityType: 'ENROLLMENT',
+    entityId: result.enrollmentId,
+    action: 'ENROLLMENT_FINALIZED_V2',
+    performedBy: userId,
+    campusId: result.campusId,
+    payloadSnapshot: {
+      cycleId: result.cycleId,
+      students: result.studentIds.length,
+      chargesCount: result.chargesCount,
+    },
+  });
+
+  return {
+    ok: true,
+    enrollmentId: result.enrollmentId,
+    studentIds: result.studentIds,
+    campusIds: result.campusIds,
+    status: 'CONFIRMED',
+    chargesCreated: result.chargesCount,
+  };
 }
 
 export async function getEnrollmentService(id) {
@@ -469,7 +928,7 @@ export async function confirmEnrollmentService({ enrollmentId, payload, userId }
     const classroomIds = [...new Set(allEnrollmentStudents.map((row) => String(row.classroomId)).filter(Boolean))]
       .map((id) => new mongoose.Types.ObjectId(id));
     const classrooms = await Classroom.find({ _id: { $in: classroomIds } })
-      .select('_id displayName cycleId campusId')
+      .select('_id displayName cycleId campusId capacity')
       .session(session)
       .lean();
     const classroomsById = new Map(classrooms.map((row) => [String(row._id), row]));
@@ -507,7 +966,16 @@ export async function confirmEnrollmentService({ enrollmentId, payload, userId }
       }
 
       await row.save({ session });
+    }
 
+    await ensureClassroomCapacityForRows({
+      session,
+      cycleId,
+      enrollmentStudents: allEnrollmentStudents,
+      classroomsById,
+    });
+
+    for (const row of allEnrollmentStudents) {
       await upsertStudentCycleForEnrollment({
         studentId: row.studentId,
         cycleId,
@@ -526,13 +994,12 @@ export async function confirmEnrollmentService({ enrollmentId, payload, userId }
       );
     }
 
-    const { byCode, missingCodes } = await resolveBillingConceptsByCode({
-      session,
-      requiredCodes: ['ENROLLMENT_FEE', 'ADMISSION_FEE', 'TUITION'],
-    });
-    if (missingCodes.length) {
-      throw new ApiError(409, `Faltan BillingConcept requeridos: ${missingCodes.join(', ')}`);
-    }
+    const {
+      byCode,
+      tuitionDueDatesByMonth,
+      admissionDueDate,
+      enrollmentDueDate,
+    } = await loadBillingSetup({ session, cycleId });
 
     const chargesToCreate = [];
     for (const row of allEnrollmentStudents) {
@@ -544,6 +1011,7 @@ export async function confirmEnrollmentService({ enrollmentId, payload, userId }
         conceptId: byCode.get('ADMISSION_FEE'),
         cycleId,
         campusId,
+        dueDate: admissionDueDate,
       });
       if (admissionCharge) chargesToCreate.push(admissionCharge);
 
@@ -552,6 +1020,7 @@ export async function confirmEnrollmentService({ enrollmentId, payload, userId }
         conceptId: byCode.get('ENROLLMENT_FEE'),
         cycleId,
         campusId,
+        dueDate: enrollmentDueDate,
       });
       if (enrollmentCharge) chargesToCreate.push(enrollmentCharge);
 
@@ -560,12 +1029,15 @@ export async function confirmEnrollmentService({ enrollmentId, payload, userId }
         conceptId: byCode.get('TUITION'),
         cycleId,
         campusId,
+        dueDatesByMonth: tuitionDueDatesByMonth,
       });
       chargesToCreate.push(...tuitionCharges);
 
       row.chargesGeneratedAt = new Date();
       await row.save({ session });
     }
+
+    await ensureNoDuplicateCharges({ session, charges: chargesToCreate, cycleId });
 
     if (chargesToCreate.length) {
       await Charge.insertMany(chargesToCreate, { session });
@@ -597,6 +1069,7 @@ export async function confirmEnrollmentService({ enrollmentId, payload, userId }
           campusId,
           studentIds,
           enrollmentStudents: allEnrollmentStudents.map((row) => row._id),
+          notes: payload.notes || enrollment.notes,
           updatedBy: userId,
         },
       },
@@ -678,7 +1151,8 @@ export async function listEnrollmentsService({ q, campus, cycleId, status, class
       const normalizedCampus = String(campus);
       if (!scopeCampusCodes.has(normalizedCampus)) throw new ApiError(403, 'No autorizado para este campus');
     } else {
-      where.campusId = { $in: [...scopeCampusIds].map((id) => new mongoose.Types.ObjectId(id)) };
+      const scopedIds = [...scopeCampusIds].map((id) => new mongoose.Types.ObjectId(id));
+      where.$or = [{ campusId: { $in: scopedIds } }, { campusIds: { $in: scopedIds } }];
       if (!scopeCampusIds.size) return { items: [], nextCursor: null };
     }
   }
@@ -687,7 +1161,13 @@ export async function listEnrollmentsService({ q, campus, cycleId, status, class
   if (campus) {
     const campusDoc = await Campus.findOne({ $or: [{ _id: toObjectIdOrNull(campus) || null }, { code: campus }] }).select('_id').lean();
     if (!campusDoc) return { items: [], nextCursor: null };
-    where.campusId = campusDoc._id;
+    const campusIdFilter = campusDoc._id;
+    if (where.$or) {
+      where.$and = [{ $or: where.$or }, { $or: [{ campusId: campusIdFilter }, { campusIds: campusIdFilter }] }];
+      delete where.$or;
+    } else {
+      where.$or = [{ campusId: campusIdFilter }, { campusIds: campusIdFilter }];
+    }
   }
   if (cursor) where._id = { $gt: cursor };
 
@@ -709,7 +1189,7 @@ export async function listEnrollmentsService({ q, campus, cycleId, status, class
   const rows = await Enrollment.find(where)
     .sort({ _id: 1 })
     .limit(normalizedLimit + 1)
-    .select('_id studentIds enrollmentStudents cycleId campusId status createdAt')
+    .select('_id studentIds enrollmentStudents cycleId campusId campusIds status createdAt')
     .lean();
 
   const hasMore = rows.length > normalizedLimit;
@@ -740,17 +1220,31 @@ export async function listEnrollmentsService({ q, campus, cycleId, status, class
       .select('studentId cycleId classroomId')
       .lean(),
     StudentCycle.find({ studentId: { $in: allStudentIds }, ...(cycleId ? { cycleId } : {}), ...(status ? { status } : {}) })
-      .select('studentId cycleId status')
+      .select('studentId cycleId status campusId')
       .lean(),
     ContractSnapshot.find({ $or: [{ enrollmentId: { $in: enrollmentIds } }, { matriculaId: { $in: enrollmentIds } }] })
       .select('enrollmentId matriculaId students discounts notes confirmedAt')
       .lean(),
   ]);
 
+  const campusIds = [...new Set([
+    ...selected.flatMap((row) => [
+      ...(Array.isArray(row.campusIds) ? row.campusIds.map((id) => String(id)) : []),
+      ...(row.campusId ? [String(row.campusId)] : []),
+    ]),
+    ...studentCycles.map((row) => String(row.campusId || '')).filter(Boolean),
+  ])].map((id) => new mongoose.Types.ObjectId(id));
+
+  const campuses = campusIds.length
+    ? await Campus.find({ _id: { $in: campusIds } }).select('_id code name').lean()
+    : [];
+
   const studentsMap = new Map(students.map((s) => [String(s._id), s]));
   const cycleMap = new Map(cycles.map((c) => [String(c._id), c]));
   const snapshotMap = new Map(snapshots.map((s) => [String(s.enrollmentId || s.matriculaId), s]));
+  const campusMap = new Map(campuses.map((c) => [String(c._id), c]));
   const cycleStatusMap = new Map(studentCycles.map((c) => [`${String(c.studentId)}:${String(c.cycleId)}`, c.status]));
+  const cycleCampusMap = new Map(studentCycles.map((c) => [`${String(c.studentId)}:${String(c.cycleId)}`, c.campusId ? String(c.campusId) : null]));
   const classroomMap = new Map(classrooms.map((c) => [`${String(c.studentId)}:${String(c.cycleId)}`, c.classroomId]));
 
   const items = [];
@@ -773,6 +1267,11 @@ export async function listEnrollmentsService({ q, campus, cycleId, status, class
 
       const classroom = classroomMap.get(`${String(studentIdItem)}:${String(row.cycleId)}`);
       if (classroomId && String(classroom?._id || classroom) !== String(classroomId)) continue;
+      const campusIdValue =
+        cycleCampusMap.get(`${String(studentIdItem)}:${String(row.cycleId)}`)
+        || (Array.isArray(row.campusIds) && row.campusIds.length ? String(row.campusIds[0]) : null)
+        || (row.campusId ? String(row.campusId) : null);
+      const campus = campusIdValue ? campusMap.get(String(campusIdValue)) : null;
 
       const enrollmentStudent = enrollmentRows.find((entry) => String(entry.studentId) === String(studentIdItem));
       const snapshotStudent = snapshot?.students?.find((entry) => String(entry.studentId) === String(studentIdItem));
@@ -787,7 +1286,11 @@ export async function listEnrollmentsService({ q, campus, cycleId, status, class
           dni: student.personId?.dni || null,
           code: student.internalCode || null,
         },
-        campus: row.campusId?.toString(),
+        campus: campus ? {
+          id: String(campus._id),
+          code: campus.code || null,
+          name: campus.name || campus.code || null,
+        } : (campusIdValue ? { id: campusIdValue, code: null, name: null } : null),
         cycle: cycle ? { id: cycle._id.toString(), name: cycle.name } : null,
         classroom: classroom ? { id: classroom._id.toString(), displayName: classroom.displayName } : null,
         status: statusValue,

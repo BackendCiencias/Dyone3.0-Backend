@@ -1,6 +1,7 @@
 const TUTOR_ROLES = ['ADMIN', 'SECRETARY', 'DIRECTOR', 'PROMOTER'];
 
 export const moduleEndpointMetadata = [
+  { method: 'GET', path: '/api/tutors/search', module: 'tutors', authRequired: true, rolesAllowed: TUTOR_ROLES, description: 'Buscar personas que pueden actuar como tutores, incluyendo tutores ya vinculados y tutores sueltos', requestSchema: { query: 'tutorSearchQuerySchema' }, responseSchema: { items: 'array', nextCursor: 'null' } },
   { method: 'POST', path: '/api/tutors', module: 'tutors', authRequired: true, rolesAllowed: TUTOR_ROLES, description: 'Crear o actualizar tutor para estudiante (body.studentId)', requestSchema: { body: 'tutorCreateSchema' }, responseSchema: 'Tutor' },
   { method: 'POST', path: '/api/tutors/student/:studentId', module: 'tutors', authRequired: true, rolesAllowed: TUTOR_ROLES, description: 'Crear o actualizar tutor por studentId en URL', requestSchema: { params: { studentId: 'ObjectId' }, body: 'tutorCreateSchema' }, responseSchema: 'Tutor' },
   { method: 'PATCH', path: '/api/tutors/:id', module: 'tutors', authRequired: true, rolesAllowed: ['ADMIN'], description: 'Actualizar tutor y persona asociada', requestSchema: { params: { id: 'ObjectId' }, body: 'tutorUpdateSchema' }, responseSchema: 'Tutor' },

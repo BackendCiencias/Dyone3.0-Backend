@@ -101,3 +101,103 @@ export const enrollmentConfirmSchema = z.object({
   exemptions: z.string().optional(),
   notes: z.string().optional(),
 });
+
+const stringOrNumber = z.union([z.string(), z.number()]);
+
+const finalStudentSchema = z.object({
+  localId: z.string().optional(),
+  mode: z.enum(['existing', 'new']),
+  existingStudentId: objectIdSchema.optional(),
+  names: z.string().optional(),
+  lastNames: z.string().optional(),
+  dni: z.string().optional(),
+  gender: z.enum(['M', 'F']).optional(),
+  previousSchoolType: z.enum(['CIMAS', 'CIENCIAS', 'CIENCIAS_APLICADAS', 'OTHER']).optional(),
+  previousSchoolName: z.string().optional(),
+  classroomId: objectIdSchema,
+  level: z.string().optional(),
+  grade: z.string().optional(),
+  notes: z.string().optional(),
+  amounts: z.object({
+    admissionFeeAmount: stringOrNumber.optional(),
+    enrollmentFeeAmount: stringOrNumber.optional(),
+    pensionAmount: stringOrNumber.optional(),
+    pensionMonthlyAmounts: z.array(stringOrNumber).length(SCHOOL_MONTHS).optional(),
+  }).optional(),
+}).superRefine((data, ctx) => {
+  if (data.mode === 'existing' && !data.existingStudentId) {
+    ctx.addIssue({ code: z.ZodIssueCode.custom, message: 'existingStudentId es requerido para alumno existente', path: ['existingStudentId'] });
+  }
+  if (data.mode === 'new') {
+    if (!String(data.names || '').trim()) ctx.addIssue({ code: z.ZodIssueCode.custom, message: 'names es requerido para alumno nuevo', path: ['names'] });
+    if (!String(data.lastNames || '').trim()) ctx.addIssue({ code: z.ZodIssueCode.custom, message: 'lastNames es requerido para alumno nuevo', path: ['lastNames'] });
+  }
+  if (String(data.previousSchoolType || '').trim() === 'OTHER' && !String(data.previousSchoolName || '').trim()) {
+    ctx.addIssue({ code: z.ZodIssueCode.custom, message: 'previousSchoolName es requerido cuando previousSchoolType = OTHER', path: ['previousSchoolName'] });
+  }
+});
+
+const finalTutorSchema = z.object({
+  localId: z.string().optional(),
+  mode: z.string().optional(),
+  existingTutorId: objectIdSchema.optional(),
+  names: z.string().trim().min(1),
+  lastNames: z.string().trim().min(1),
+  dni: z.string().optional(),
+  phone: z.string().optional(),
+  relationship: z.string().optional(),
+  isLegalResponsible: z.boolean().optional(),
+  includeInContract: z.boolean().optional(),
+  linkedStudentIds: z.array(z.string()).optional(),
+}).superRefine((data, ctx) => {
+  if (data.mode === 'existing' && !data.existingTutorId) {
+    ctx.addIssue({ code: z.ZodIssueCode.custom, message: 'existingTutorId es requerido para tutor existente', path: ['existingTutorId'] });
+  }
+  if (!Array.isArray(data.linkedStudentIds) || !data.linkedStudentIds.length) {
+    ctx.addIssue({ code: z.ZodIssueCode.custom, message: 'linkedStudentIds debe tener al menos un alumno vinculado', path: ['linkedStudentIds'] });
+  }
+});
+
+export const enrollmentFinalizeSchema = z.object({
+  activeCycleId: objectIdSchema.optional(),
+  students: z.array(finalStudentSchema).min(1),
+  tutors: z.array(finalTutorSchema).min(1),
+  observations: z.object({
+    general: z.string().optional(),
+    address: z.string().optional(),
+  }).optional(),
+}).superRefine((data, ctx) => {
+  const studentRefs = new Set();
+
+  data.students.forEach((student, index) => {
+    const ref = student.localId || student.existingStudentId;
+    if (!ref) {
+      ctx.addIssue({ code: z.ZodIssueCode.custom, message: 'Cada alumno debe tener localId o existingStudentId', path: ['students', index, 'localId'] });
+      return;
+    }
+
+    if (studentRefs.has(ref)) {
+      ctx.addIssue({ code: z.ZodIssueCode.custom, message: 'No se permiten alumnos duplicados en el draft', path: ['students', index] });
+      return;
+    }
+
+    studentRefs.add(ref);
+  });
+
+  if (!data.tutors.some((tutor) => tutor.includeInContract !== false)) {
+    ctx.addIssue({ code: z.ZodIssueCode.custom, message: 'Debe haber al menos un tutor firmante', path: ['tutors'] });
+  }
+
+  data.tutors.forEach((tutor, index) => {
+    const linkedIds = Array.isArray(tutor.linkedStudentIds) ? tutor.linkedStudentIds : [];
+    linkedIds.forEach((linkedId, linkedIndex) => {
+      if (!studentRefs.has(linkedId)) {
+        ctx.addIssue({
+          code: z.ZodIssueCode.custom,
+          message: 'Tutor vinculado a un alumno inexistente en el draft',
+          path: ['tutors', index, 'linkedStudentIds', linkedIndex],
+        });
+      }
+    });
+  });
+});

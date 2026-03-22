@@ -28,7 +28,6 @@ import { ApiError } from '../../utils/errors.js';
 import { runInTransaction } from '../../shared/dbSession.js';
 import { registerAuditLog } from '../../shared/audit.service.js';
 import { buildSearchScore } from '../../utils/search.js';
-import { intakeSearch } from './services/intake.search.service.js';
 import { normalizePersonNameFields } from '../../utils/personNameFormatter.js';
 
 const SCHOOL_MONTHS = 10;
@@ -1085,29 +1084,6 @@ function toObjectIdOrNull(value) {
 }
 
 export { buildSearchScore };
-
-export async function intakeSearchService({ q, campusScope, limit = 20 }) {
-  const normalizedLimit = Math.max(1, Math.min(50, Number(limit) || 20));
-  const trimmedQ = String(q || '').trim();
-
-  console.log('[IntakeSearch][REQ]', { q: trimmedQ, campusScope, limit: normalizedLimit });
-
-  // Antes fallaba por varios factores combinados:
-  // - $lookup manual sensible a nombre real de colección de Person (person/people).
-  // - $limit prematuro antes de score/filtro por campus, recortando coincidencias relevantes.
-  // - dependencia estricta de ciclo activo que bloqueaba toda la búsqueda.
-  const data = await intakeSearch({ q: trimmedQ, campusScope, limit: normalizedLimit });
-
-  console.log('[IntakeSearch][RES]', {
-    q: trimmedQ,
-    campusScope,
-    total: data.items.length,
-    families: data.items.filter((item) => item.type === 'FAMILY').length,
-    students: data.items.filter((item) => item.type === 'STUDENT').length,
-  });
-
-  return data;
-}
 
 export async function listEnrollmentsService({ q, campus, cycleId, status, classroomId, limit = 20, cursor, campusScope = [] }) {
   const normalizedLimit = Math.max(1, Math.min(100, Number(limit) || 20));

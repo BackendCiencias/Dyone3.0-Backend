@@ -42,7 +42,7 @@ async function nextStudentCode(session) {
     { new: true, upsert: true, session }
   );
 
-  return `COD_A${String(counter.seq).padStart(5, '0')}`;
+  return `COD${String(counter.seq).padStart(6, '0')}`;
 }
 
 async function resolveCurrentCycle(session) {

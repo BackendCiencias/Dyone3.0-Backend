@@ -6,6 +6,7 @@ import { z } from 'zod';
 import { connectDB } from '../src/config/db.js';
 import { Person } from '../src/models/person.model.js';
 import { Student } from '../src/models/student.model.js';
+import { Counter } from '../src/models/counter.model.js';
 import { Cycle } from '../src/models/cycle.model.js';
 import { Campus } from '../src/models/campus.model.js';
 import { Classroom } from '../src/models/classroom.model.js';
@@ -248,6 +249,34 @@ function normalizeSection(input) {
 
 function normalizeLevel(input) {
   return normalizeSpaces(input).toLocaleUpperCase('es-PE');
+}
+
+function extractStudentCodeSequence(input) {
+  const normalized = normalizeSpaces(input).toUpperCase();
+  const match = normalized.match(/^COD(?:_A)?(\d+)$/);
+  if (!match) return null;
+  const seq = Number(match[1]);
+  return Number.isFinite(seq) ? seq : null;
+}
+
+async function syncStudentInternalCodeCounter(report) {
+  const students = await Student.find({})
+    .select('internalCode')
+    .lean();
+
+  let maxSeq = 0;
+  for (const student of students) {
+    const seq = extractStudentCodeSequence(student.internalCode);
+    if (seq && seq > maxSeq) maxSeq = seq;
+  }
+
+  await Counter.findOneAndUpdate(
+    { key: 'student_internal_code' },
+    { $set: { seq: maxSeq } },
+    { upsert: true, new: true }
+  );
+
+  report.counterSyncedTo = maxSeq;
 }
 
 function mapRow(rawRow, report, rowNumber) {
@@ -506,6 +535,7 @@ async function run() {
     studentCyclesCreated: 0,
     vacanciesCreated: 0,
     vacanciesUpdated: 0,
+    counterSyncedTo: 0,
     warnings: 0,
     warningRows: [],
   };
@@ -616,6 +646,7 @@ async function run() {
     fs.writeFileSync(path.join(logsDir, 'import-students-success.json'), JSON.stringify(successRows, null, 2), 'utf8');
     fs.writeFileSync(path.join(logsDir, 'import-students-errors.json'), JSON.stringify(errorRows, null, 2), 'utf8');
     fs.writeFileSync(path.join(logsDir, 'import-students-warnings.json'), JSON.stringify(report.warningRows, null, 2), 'utf8');
+    await syncStudentInternalCodeCounter(report);
 
     console.log('===== Import Students Summary =====');
     console.log(`Total filas: ${report.totalRows}`);
@@ -629,6 +660,7 @@ async function run() {
     console.log(`StudentCycles creados: ${report.studentCyclesCreated}`);
     console.log(`Vacancies creadas: ${report.vacanciesCreated}`);
     console.log(`Vacancies actualizadas: ${report.vacanciesUpdated}`);
+    console.log(`Counter student_internal_code sincronizado a: ${report.counterSyncedTo}`);
     console.log(`Warnings: ${report.warnings}`);
     console.log(`Errores de proceso: ${report.errors}`);
     console.log(`Logs: ${logsDir}`);

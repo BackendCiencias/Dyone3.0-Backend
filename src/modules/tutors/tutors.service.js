@@ -2,7 +2,6 @@ import mongoose from 'mongoose';
 import { Student } from '../../models/student.model.js';
 import { Person } from '../../models/person.model.js';
 import { Tutor } from '../../models/tutor.model.js';
-import { Family } from '../../models/family.model.js';
 import { ApiError } from '../../utils/errors.js';
 import { buildAccentInsensitiveRegex, buildSearchScore, byScoreThenId, normalizeSearchTerm } from '../../utils/search.js';
 import { normalizePersonLastNames, normalizePersonNames, normalizePersonUpdatePayload } from '../../utils/personNameFormatter.js';
@@ -145,13 +144,6 @@ export async function upsertTutorService(payload) {
   try {
     const studentCods = extractStudentCods(payload);
     const students = await resolveStudents({ studentId: payload.studentId, studentCods }, session);
-    const requestFamilyId = payload.familyId;
-
-    if (requestFamilyId) {
-      if (!mongoose.Types.ObjectId.isValid(requestFamilyId)) throw new ApiError(400, 'familyId inválido');
-      const requestFamily = await Family.findById(requestFamilyId).session(session);
-      if (!requestFamily) throw new ApiError(404, 'La familia indicada en familyId no existe');
-    }
 
     const personPayload = {
       ...payload,
@@ -162,7 +154,6 @@ export async function upsertTutorService(payload) {
     const relationship = mapRelationship(payload.relationship);
 
     const tutorIds = [];
-    const affectedFamilyIds = new Set();
 
     for (const student of students) {
       const existing = await Tutor.findOne({
@@ -198,16 +189,6 @@ export async function upsertTutorService(payload) {
       );
 
       tutorIds.push(tutor._id);
-
-      if (student.familyId) {
-        await Family.updateOne({ _id: student.familyId }, { $addToSet: { tutorIds: tutor._id } }, { session });
-        affectedFamilyIds.add(String(student.familyId));
-      }
-
-      if (requestFamilyId) {
-        await Family.updateOne({ _id: requestFamilyId }, { $addToSet: { tutorIds: tutor._id } }, { session });
-        affectedFamilyIds.add(String(requestFamilyId));
-      }
     }
 
     await session.commitTransaction();
@@ -219,12 +200,10 @@ export async function upsertTutorService(payload) {
     const tutorsById = new Map(tutors.map((tutor) => [String(tutor._id), tutor]));
     const orderedTutors = tutorIds.map((id) => tutorsById.get(String(id))).filter(Boolean);
 
-    // Contrato final: se retorna un resumen multiestudiante y compatibilidad con primaryTutor (primer alumno resuelto).
     return {
       primaryTutor: orderedTutors[0] || null,
       tutors: orderedTutors,
       tutorsCount: orderedTutors.length,
-      familyIds: [...affectedFamilyIds],
     };
   } catch (error) {
     await session.abortTransaction();
@@ -381,15 +360,6 @@ export async function deleteTutorService(tutorId) {
   try {
     const tutor = await Tutor.findById(tutorId).session(session);
     if (!tutor) throw new ApiError(404, 'Tutor no encontrado');
-
-    const student = await Student.findById(tutor.studentId).session(session);
-    if (student?.familyId) {
-      await Family.updateOne(
-        { _id: student.familyId },
-        { $pull: { tutorIds: tutor._id } },
-        { session }
-      );
-    }
 
     await Tutor.deleteOne({ _id: tutor._id }, { session });
 

@@ -1,7 +1,6 @@
 import mongoose from 'mongoose';
 import { Student } from '../../models/student.model.js';
 import { Person } from '../../models/person.model.js';
-import { Family } from '../../models/family.model.js';
 import { Tutor } from '../../models/tutor.model.js';
 import { Counter } from '../../models/counter.model.js';
 import { Enrollment } from '../../models/enrollment.model.js';
@@ -298,15 +297,7 @@ async function resolveOrCreatePersonDraft(personData, session) {
   return person;
 }
 
-async function createConfirmedEnrollmentInSession({ session, data, createdByUserId, allowMissingFamily = false, allowMultiCampus = false }) {
-  let family = null;
-  if (data.familyId) {
-    family = await Family.findById(data.familyId).session(session);
-    if (!family) throw new ApiError(404, 'Familia no encontrada');
-  } else if (!allowMissingFamily) {
-    throw new ApiError(400, 'familyId es requerido');
-  }
-
+async function createConfirmedEnrollmentInSession({ session, data, createdByUserId, allowMultiCampus = false }) {
   const cycle = await Cycle.findById(data.cycleId).session(session);
   if (!cycle) throw new ApiError(404, 'Ciclo no encontrado');
 
@@ -318,20 +309,12 @@ async function createConfirmedEnrollmentInSession({ session, data, createdByUser
 
   const students = await Student.find({ _id: { $in: uniqueStudentIds } })
     .populate('personId')
-    .select('_id familyId personId internalCode previousCampus')
+    .select('_id personId internalCode previousCampus')
     .session(session);
   if (students.length !== uniqueStudentIds.length) {
     throw new ApiError(404, 'Uno o más estudiantes no existen');
   }
   const studentsById = new Map(students.map((student) => [String(student._id), student]));
-
-  if (family) {
-    for (const student of students) {
-      if (student.familyId && String(student.familyId) !== String(family._id)) {
-        throw new ApiError(400, `El estudiante ${student._id} no pertenece a la familia indicada`);
-      }
-    }
-  }
 
   const classroomIds = [...new Set(data.enrollmentStudents.map((row) => String(row.classroomId)))];
   const classrooms = await Classroom.find({ _id: { $in: classroomIds } })
@@ -382,7 +365,6 @@ async function createConfirmedEnrollmentInSession({ session, data, createdByUser
   }
 
   const enrollment = await Enrollment.create([{
-    ...(family ? { familyId: family._id } : {}),
     campusId: campus._id,
     campusIds: allowMultiCampus
       ? campusIdsFromClassrooms.map((id) => new mongoose.Types.ObjectId(id))
@@ -539,7 +521,6 @@ export async function createEnrollmentService(data, createdByUserId) {
       session,
       data,
       createdByUserId,
-      allowMissingFamily: false,
     });
 
     await session.commitTransaction();
@@ -554,7 +535,6 @@ export async function createEnrollmentService(data, createdByUserId) {
     });
 
     return Enrollment.findById(enrollment._id)
-      .populate('familyId')
       .populate('cycleId')
       .populate('campusId')
       .populate({ path: 'enrollmentStudents', populate: [{ path: 'studentId', populate: { path: 'personId' } }, { path: 'classroomId' }] });
@@ -745,7 +725,6 @@ export async function finalizeEnrollmentService(payload, userId) {
       session,
       data: enrollmentData,
       createdByUserId: userId,
-      allowMissingFamily: true,
       allowMultiCampus: true,
     });
 
@@ -791,10 +770,6 @@ export async function finalizeEnrollmentService(payload, userId) {
 export async function getEnrollmentService(id) {
 
   const enrollment = await Enrollment.findById(id)
-    .populate({ path: 'familyId', populate: [
-      { path: 'studentIds', populate: { path: 'personId' } },
-      { path: 'tutorIds', populate: { path: 'tutorPersonId' } },
-    ] })
     .populate('cycleId')
     .populate('campusId')
     .populate({ path: 'enrollmentStudents', populate: [{ path: 'studentId', populate: { path: 'personId' } }, { path: 'classroomId' }] });
@@ -863,8 +838,6 @@ export async function confirmEnrollmentService({ enrollmentId, payload, userId }
     if (!enrollment) throw new ApiError(404, 'Matrícula no encontrada');
     if (enrollment.status === 'CONFIRMED') throw new ApiError(409, 'La matrícula ya fue confirmada');
     if (enrollment.status !== 'DRAFT') throw new ApiError(409, 'El estado actual de matrícula no permite confirmación');
-
-    if (!enrollment.familyId) throw new ApiError(409, 'La matrícula no tiene familia asignada');
 
     const cycleId = payload.cycleId || enrollment.cycleId;
     const campusId = payload.campusId || enrollment.campusId;

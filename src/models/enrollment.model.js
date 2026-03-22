@@ -2,7 +2,6 @@ import mongoose from 'mongoose';
 
 const enrollmentSchema = new mongoose.Schema(
   {
-    familyId: { type: mongoose.Schema.Types.ObjectId, ref: 'Family', index: true },
     cycleId: { type: mongoose.Schema.Types.ObjectId, ref: 'Cycle', required: true, index: true },
     campusId: { type: mongoose.Schema.Types.ObjectId, ref: 'Campus', required: true, index: true },
     campusIds: [{ type: mongoose.Schema.Types.ObjectId, ref: 'Campus', index: true }],
@@ -24,7 +23,6 @@ const enrollmentSchema = new mongoose.Schema(
 );
 
 enrollmentSchema.index({ campusId: 1, cycleId: 1, status: 1, createdAt: 1 });
-enrollmentSchema.index({ familyId: 1 });
 enrollmentSchema.index({ enrollmentStudents: 1 });
 
 enrollmentSchema.pre('save', function syncLegacyFields(next) {

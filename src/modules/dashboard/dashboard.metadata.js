@@ -12,7 +12,7 @@ export const moduleEndpointMetadata = [
     responseSchema: {
       summary: 'object',
       critical: 'object',
-      studentsWithoutFamily: 'array',
+      studentsWithoutTutors: 'array',
       incompleteStudents: 'array',
       topDebtors: 'array',
       upcomingDue: 'array',

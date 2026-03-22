@@ -1,7 +1,6 @@
 import mongoose from 'mongoose';
 import { Person } from '../../models/person.model.js';
 import { Student } from '../../models/student.model.js';
-import { Family } from '../../models/family.model.js';
 import { Counter } from '../../models/counter.model.js';
 import { Classroom } from '../../models/classroom.model.js';
 import { Campus } from '../../models/campus.model.js';
@@ -227,7 +226,7 @@ async function buildStudentResponse(items) {
   });
 }
 
-export async function createStudentService({ person, familyId, classroomId, entryDate, notes }, familyPayload = null) {
+export async function createStudentService({ person, classroomId, entryDate, notes }, tutorPayload = null) {
   const session = await mongoose.startSession();
   session.startTransaction();
 
@@ -238,23 +237,6 @@ export async function createStudentService({ person, familyId, classroomId, entr
     }
 
     const personDoc = await resolveOrCreatePerson(person, session);
-
-    let family = null;
-    if (familyId && familyPayload) {
-      throw new ApiError(400, 'No puedes enviar familyId y family al mismo tiempo');
-    }
-
-    if (familyId) {
-      family = await Family.findById(familyId).session(session);
-      if (!family) throw new ApiError(404, 'Familia no encontrada');
-    } else if (familyPayload) {
-      family = await Family.create([{
-        notes: familyPayload.notes,
-        address: familyPayload.address,
-        tutorIds: [],
-        studentIds: [],
-      }], { session }).then((rows) => rows[0]);
-    }
 
     const existingStudent = await Student.findOne({ personId: personDoc._id }).session(session);
     if (existingStudent) {
@@ -267,7 +249,6 @@ export async function createStudentService({ person, familyId, classroomId, entr
     const student = await Student.create([
       {
         personId: personDoc._id,
-        ...(family ? { familyId: family._id } : {}),
         internalCode,
         entryDate: entryDate ? new Date(entryDate) : undefined,
         notes,
@@ -275,14 +256,6 @@ export async function createStudentService({ person, familyId, classroomId, entr
     ], { session });
 
     const studentDoc = student[0];
-
-    if (family) {
-      await Family.updateOne(
-        { _id: family._id },
-        { $addToSet: { studentIds: studentDoc._id } },
-        { session }
-      );
-    }
 
     if (classroom) {
       const cycle = await resolveCurrentCycle(session);
@@ -317,17 +290,17 @@ export async function createStudentService({ person, familyId, classroomId, entr
     }
 
     let tutorIds = [];
-    if (family && familyPayload?.primaryTutor) {
-      const tutorPersonDoc = await resolveOrCreatePerson(familyPayload.primaryTutor.person, session);
+    if (tutorPayload?.primaryTutor) {
+      const tutorPersonDoc = await resolveOrCreatePerson(tutorPayload.primaryTutor.person, session);
 
       const tutor = await Tutor.findOneAndUpdate(
         { studentId: studentDoc._id, tutorPersonId: tutorPersonDoc._id },
         {
           $set: {
-            relationship: familyPayload.primaryTutor.relationship,
+            relationship: tutorPayload.primaryTutor.relationship,
             isPrimary: true,
-            livesWithStudent: familyPayload.primaryTutor.livesWithStudent ?? true,
-            ...(familyPayload.primaryTutor.notes ? { notes: familyPayload.primaryTutor.notes } : {}),
+            livesWithStudent: tutorPayload.primaryTutor.livesWithStudent ?? true,
+            ...(tutorPayload.primaryTutor.notes ? { notes: tutorPayload.primaryTutor.notes } : {}),
           },
           $setOnInsert: {
             studentId: studentDoc._id,
@@ -338,32 +311,17 @@ export async function createStudentService({ person, familyId, classroomId, entr
       );
 
       tutorIds = [String(tutor._id)];
-
-      await Family.updateOne(
-        { _id: family._id },
-        { $addToSet: { tutorIds: tutor._id } },
-        { session }
-      );
     }
 
     await session.commitTransaction();
 
     const hydratedStudent = await Student.findById(studentDoc._id)
-      .populate('personId')
-      .populate('familyId');
-
-    const hydratedFamily = family
-      ? await Family.findById(family._id)
-        .populate({ path: 'studentIds', populate: { path: 'personId' } })
-        .populate({ path: 'tutorIds', populate: { path: 'tutorPersonId' } })
-      : null;
+      .populate('personId');
 
     return {
       studentId: String(studentDoc._id),
-      familyId: family ? String(family._id) : null,
       tutorIds,
       student: hydratedStudent,
-      family: hydratedFamily,
     };
   } catch (error) {
     await session.abortTransaction();
@@ -376,7 +334,7 @@ export async function createStudentService({ person, familyId, classroomId, entr
 export async function findStudentByDniService(dni) {
   const person = await Person.findOne({ dni });
   if (!person) return null;
-  const student = await Student.findOne({ personId: person._id }).populate('personId').populate('familyId');
+  const student = await Student.findOne({ personId: person._id }).populate('personId');
   return student;
 }
 
@@ -439,10 +397,9 @@ export async function searchStudentAutocompleteService({ q, dni, limit }) {
 
   const orderedPersonIds = Array.from(personIdSet).map((id) => new mongoose.Types.ObjectId(id));
   const students = await Student.find({ personId: { $in: orderedPersonIds } })
-    .select('_id personId familyId')
+    .select('_id personId')
     .populate({ path: 'personId', select: 'names lastNames dni' })
     .lean();
-  console.log(students)
   const mapped = students
     .filter((student) => student.personId)
     .map((student) => ({
@@ -453,7 +410,6 @@ export async function searchStudentAutocompleteService({ q, dni, limit }) {
         lastNames: student.personId.lastNames,
         dni: student.personId.dni ?? null,
       },
-      familyId: student.familyId || null,
     }));
 
   if (normalizedDni && normalizedDni.length === 8 && isNumericTerm(normalizedDni)) {
@@ -476,8 +432,6 @@ export async function searchStudentAutocompleteService({ q, dni, limit }) {
       return String(a._id).localeCompare(String(b._id));
     });
   }
-  console.log("mapped_ ",mapped)
-  console.log("x ",mapped.slice(0, normalizedLimit))
   return mapped.slice(0, normalizedLimit);
 }
 
@@ -737,7 +691,7 @@ export async function getStudentsPrintCardsService({ studentIds = [], filters = 
 export async function getStudentSummaryService(studentId) {
   if (!mongoose.Types.ObjectId.isValid(studentId)) throw new ApiError(400, 'id inválido');
 
-  const student = await Student.findById(studentId).populate('personId').populate('familyId').lean();
+  const student = await Student.findById(studentId).populate('personId').lean();
   if (!student) throw new ApiError(404, 'Estudiante no encontrado');
 
   const person = student.personId;
@@ -770,8 +724,16 @@ export async function getStudentSummaryService(studentId) {
     if (charge.dueDate && charge.dueDate < now) overdueTotal += outstanding;
   }
 
-  const lastPayment = student.familyId
-    ? await Payment.findOne({ familyId: student.familyId._id }).sort({ paidAt: -1 }).lean()
+  const paidCharges = await Charge.find({ studentId: student._id, status: 'PAID' })
+    .select('_id')
+    .lean();
+  const paymentAllocations = paidCharges.length
+    ? await PaymentAllocation.find({ chargeId: { $in: paidCharges.map((charge) => charge._id) } })
+      .select('paymentId')
+      .lean()
+    : [];
+  const lastPayment = paymentAllocations.length
+    ? await Payment.findOne({ _id: { $in: paymentAllocations.map((row) => row.paymentId) } }).sort({ paidAt: -1 }).lean()
     : null;
 
   const sendStudent = {
@@ -789,9 +751,15 @@ export async function getStudentSummaryService(studentId) {
     previousCampus: student?.previousCampus || null,
     activeStatus: student.activeStatus,
   }
-  const sendFamily = {
-    familyId: student.familyId?._id?.toString() || null,
-    address: student.familyId?.address || null,
+  const tutorLink = {
+    address: null,
+    primaryTutor: primaryTutor ? {
+      lastNames: primaryTutor.tutorPersonId?.lastNames || null,
+      names: primaryTutor.tutorPersonId?.names || null,
+      phone: primaryTutor.tutorPersonId?.phone || null,
+      relationship: primaryTutor.relationship || null,
+      livesWithStudent: primaryTutor.livesWithStudent ?? null
+    } : null,
     primaryTutor_send: primaryTutor? {
           lastNames: primaryTutor.tutorPersonId?.lastNames || null,
           names: primaryTutor.tutorPersonId?.names || null,
@@ -800,18 +768,24 @@ export async function getStudentSummaryService(studentId) {
           livesWithStudent: primaryTutor.livesWithStudent ?? null
         }
       : null,
+    otherTutors: (otherTutors || []).map(tutor => ({
+      lastNames: tutor.tutorPersonId?.lastNames || null,
+      names: tutor.tutorPersonId?.names || null,
+      phone: tutor.tutorPersonId?.phone || null,
+      relationship: tutor.relationship || null,
+      livesWithStudent: tutor.livesWithStudent ?? null
+    })),
     otherTutors_send: (otherTutors || []).map(tutor => ({
       lastNames: tutor.tutorPersonId?.lastNames || null,
       names: tutor.tutorPersonId?.names || null,
-      phone: primaryTutor.tutorPersonId?.phone || null,
+      phone: tutor.tutorPersonId?.phone || null,
       relationship: tutor.relationship || null,
       livesWithStudent: tutor.livesWithStudent ?? null
     }))
   };
   // console.log('[sendStudent][dbg] content=', sendStudent);
   // console.log('[Student][dbg] content=', student);
-  // console.log('[sendFamily][dbg] content=', sendFamily);
-  // console.log('[Family][dbg] content=', sendFamily);
+  // console.log('[tutorLink][dbg] content=', tutorLink);
 
   const sendEnrollmentStatus = {
     cycle: {
@@ -835,7 +809,8 @@ export async function getStudentSummaryService(studentId) {
 
   return {
     student: sendStudent,
-    familyLink: sendFamily,
+    tutorLink,
+    familyLink: tutorLink,
     enrollmentStatus: sendEnrollmentStatus,
     debtsSummary: {
       pendingTotal,
@@ -960,7 +935,6 @@ async function resolveCampusForCycleStatus(studentId, cycleId) {
 export async function getStudentDetailService(studentId, cycleId) {
   const student = await Student.findById(studentId)
     .populate('personId')
-    .populate('familyId')
     .lean();
 
   if (!student) throw new ApiError(404, 'Estudiante no encontrado');
@@ -972,13 +946,6 @@ export async function getStudentDetailService(studentId, cycleId) {
     .limit(10)
     .populate('tutorPersonId')
     .lean();
-
-  let family = null;
-  if (student.familyId?._id) {
-    family = await Family.findById(student.familyId._id)
-      .populate({ path: 'tutorIds', populate: { path: 'tutorPersonId' } })
-      .lean();
-  }
 
   const studentCycle = cycle
     ? await StudentCycle.findOne({ studentId: student._id, cycleId: cycle._id }).lean()
@@ -993,13 +960,6 @@ export async function getStudentDetailService(studentId, cycleId) {
   return {
     student,
     person: student.personId || null,
-    family: family ? {
-      _id: family._id,
-      address: family.address || null,
-      notes: family.notes || null,
-      studentIds: family.studentIds || [],
-      tutorIds: family.tutorIds || [],
-    } : null,
     tutors,
     currentCycle: cycle ? {
       _id: cycle._id,

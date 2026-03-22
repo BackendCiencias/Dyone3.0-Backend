@@ -1,19 +1,12 @@
 import { asyncHandler } from '../../utils/asyncHandler.js';
 import {
-  createEnrollmentService,
   getEnrollmentService,
   getClassroomCapacityService,
   getCampusCapacityService,
   confirmEnrollmentService,
   finalizeEnrollmentService,
   listEnrollmentsService,
-  intakeSearchService,
 } from './enrollments.service.js';
-
-export const createEnrollment = asyncHandler(async (req, res) => {
-  const enrollment = await createEnrollmentService(req.validated, req.user.id);
-  res.status(201).json(enrollment);
-});
 
 export const getEnrollmentById = asyncHandler(async (req, res) => {
   const { id } = req.params;
@@ -57,11 +50,5 @@ export const finalizeEnrollment = asyncHandler(async (req, res) => {
 
 export const listEnrollments = asyncHandler(async (req, res) => {
   const data = await listEnrollmentsService({ ...(req.validatedQuery || req.query), campusScope: req.campusScope });
-  res.json(data);
-});
-
-
-export const intakeSearch = asyncHandler(async (req, res) => {
-  const data = await intakeSearchService(req.validatedQuery || req.query);
   res.json(data);
 });

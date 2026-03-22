@@ -3,6 +3,7 @@ import { Campus } from '../../models/campus.model.js';
 import { Cycle } from '../../models/cycle.model.js';
 import { Student } from '../../models/student.model.js';
 import { StudentCycle } from '../../models/studentCycle.model.js';
+import { Tutor } from '../../models/tutor.model.js';
 import { Charge } from '../../models/charge.model.js';
 import { Enrollment } from '../../models/enrollment.model.js';
 import { EnrollmentStudent } from '../../models/enrollmentStudent.model.js';
@@ -32,7 +33,6 @@ function getMissingStudentFields(student = {}) {
   if (!person.dni) missing.push('DNI');
   if (!person.phone) missing.push('Telefono');
   if (!person.address) missing.push('Direccion');
-  if (!student.familyId) missing.push('Familia');
 
   return missing;
 }
@@ -232,12 +232,12 @@ export async function getSecretaryOverviewService({ campus, campusScope = [] }) 
         openIssues: 0,
       },
       critical: {
-        studentsWithoutFamilyCount: 0,
+        studentsWithoutTutorsCount: 0,
         incompleteStudentsCount: 0,
         overdueStudentsCount: 0,
         draftEnrollmentsCount: 0,
       },
-      studentsWithoutFamily: [],
+      studentsWithoutTutors: [],
       incompleteStudents: [],
       topDebtors: [],
       upcomingDue: [],
@@ -257,11 +257,15 @@ export async function getSecretaryOverviewService({ campus, campusScope = [] }) 
 
   const scopedStudentIds = Array.from(latestCycleByStudentId.keys()).map((id) => new mongoose.Types.ObjectId(id));
   const studentMap = await getStudentMap(scopedStudentIds);
+  const tutorRows = scopedStudentIds.length
+    ? await Tutor.find({ studentId: { $in: scopedStudentIds } }).select('studentId').lean()
+    : [];
+  const studentIdsWithTutors = new Set(tutorRows.map((row) => String(row.studentId)));
 
   const activeStudents = Array.from(latestCycleByStudentId.values()).filter((row) => row.status === 'ENROLLED').length;
 
-  const studentsWithoutFamily = Array.from(studentMap.values())
-    .filter((student) => !student.familyId)
+  const studentsWithoutTutors = Array.from(studentMap.values())
+    .filter((student) => !studentIdsWithTutors.has(String(student._id)))
     .map((student) => {
       const cycleRow = latestCycleByStudentId.get(String(student._id));
       return {
@@ -381,7 +385,7 @@ export async function getSecretaryOverviewService({ campus, campusScope = [] }) 
     .slice(0, 6);
 
   const overdueStudentsCount = groupedOverdue.length;
-  const studentsWithoutFamilyCount = Array.from(studentMap.values()).filter((student) => !student.familyId).length;
+  const studentsWithoutTutorsCount = Array.from(studentMap.values()).filter((student) => !studentIdsWithTutors.has(String(student._id))).length;
   const incompleteStudentsCount = incompleteStudentsAll.length;
 
   return {
@@ -389,15 +393,15 @@ export async function getSecretaryOverviewService({ campus, campusScope = [] }) 
       activeStudents,
       recentEnrollments,
       paymentsToday,
-      openIssues: studentsWithoutFamilyCount + incompleteStudentsCount + overdueStudentsCount + draftEnrollmentsCount,
+      openIssues: studentsWithoutTutorsCount + incompleteStudentsCount + overdueStudentsCount + draftEnrollmentsCount,
     },
     critical: {
-      studentsWithoutFamilyCount,
+      studentsWithoutTutorsCount,
       incompleteStudentsCount,
       overdueStudentsCount,
       draftEnrollmentsCount,
     },
-    studentsWithoutFamily,
+    studentsWithoutTutors,
     incompleteStudents: incompleteStudentsAll.slice(0, 5),
     topDebtors,
     upcomingDue,

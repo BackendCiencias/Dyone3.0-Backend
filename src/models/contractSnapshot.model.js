@@ -6,7 +6,6 @@ const contractSnapshotSchema = new mongoose.Schema({
   contractNumber: { type: String },
   createdAt: { type: Date, default: Date.now },
   isSigned: { type: Boolean, default: false },
-  familyId: { type: mongoose.Schema.Types.ObjectId, ref: 'Family' },
   cycleId: { type: mongoose.Schema.Types.ObjectId, ref: 'Cycle' },
   campusId: { type: mongoose.Schema.Types.ObjectId, ref: 'Campus' },
   students: [{

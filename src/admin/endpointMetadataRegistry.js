@@ -1,5 +1,4 @@
 import { moduleEndpointMetadata as studentsMetadata } from '../modules/students/students.metadata.js';
-import { moduleEndpointMetadata as familiesMetadata } from '../modules/families/families.metadata.js';
 import { moduleEndpointMetadata as enrollmentsMetadata } from '../modules/enrollments/enrollments.metadata.js';
 import { moduleEndpointMetadata as paymentsMetadata } from '../modules/payments/payments.metadata.js';
 import { moduleEndpointMetadata as adminMetadata } from '../modules/admin/admin.metadata.js';
@@ -9,7 +8,6 @@ import { moduleEndpointMetadata as dashboardMetadata } from '../modules/dashboar
 
 export const allEndpointMetadata = [
   ...studentsMetadata,
-  ...familiesMetadata,
   ...enrollmentsMetadata,
   ...paymentsMetadata,
   ...adminMetadata,

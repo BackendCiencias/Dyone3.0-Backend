@@ -36,7 +36,6 @@ export const tutorCreateSchema = z.object({
   studentCod: z.string().optional(),
   studentCods: z.array(z.string().trim().min(1)).optional(),
   studentsCod: z.array(z.string().trim().min(1)).optional(),
-  familyId: z.string().optional(),
   relationship: relationshipSchema,
   names: z.string().trim().min(1),
   lastNames: z.string().trim().min(1),

@@ -120,7 +120,6 @@ export function buildContractSnapshot({ enrollment, enrollmentStudents, students
   return {
     enrollmentId: enrollment._id,
     matriculaId: enrollment._id,
-    familyId: enrollment.familyId,
     cycleId: enrollment.cycleId,
     campusId: enrollment.campusId,
     confirmedByUserId: userId,

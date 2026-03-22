@@ -6,7 +6,6 @@ const allocationSchema = z.object({
 });
 
 export const paymentCreateSchema = z.object({
-  familyId: z.string().min(1).optional(),
   campusId: z.string().min(1).optional(),
   studentId: z.string().min(1).optional(),
   amount: z.number().positive().optional(),
@@ -19,11 +18,11 @@ export const paymentCreateSchema = z.object({
   note: z.string().optional(),
   idempotencyKey: z.string().min(8).max(128).optional(),
 }).superRefine((data, ctx) => {
-  if (!data.studentId && !data.familyId) {
+  if (!data.studentId) {
     ctx.addIssue({
       code: z.ZodIssueCode.custom,
       path: ['studentId'],
-      message: 'Debes enviar studentId o familyId',
+      message: 'Debes enviar studentId',
     });
   }
 

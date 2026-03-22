@@ -210,31 +210,16 @@ async function buildStudentPaymentRows({ students, cycleId, campusIds = [], conc
   });
 }
 
-async function resolveChargeScope({ studentId, familyId, session }) {
-  if (studentId) {
-    const student = await Student.findById(studentId).session(session);
-    if (!student) throw new ApiError(404, 'Estudiante no encontrado');
+async function resolveChargeScope({ studentId, session }) {
+  const student = await Student.findById(studentId).session(session);
+  if (!student) throw new ApiError(404, 'Estudiante no encontrado');
 
-    const latestCycle = await StudentCycle.findOne({ studentId: student._id }).sort({ updatedAt: -1 }).session(session);
-
-    return {
-      familyId: student.familyId,
-      studentIds: [student._id],
-      campusId: latestCycle?.campusId || null,
-    };
-  }
-
-  const students = await Student.find({ familyId }).select('_id').session(session);
-  if (!students.length) throw new ApiError(404, 'No hay estudiantes asociados a la familia');
-
-  const latestFamilyCycle = await StudentCycle.findOne({ studentId: { $in: students.map((s) => s._id) } })
-    .sort({ updatedAt: -1 })
-    .session(session);
+  const latestCycle = await StudentCycle.findOne({ studentId: student._id }).sort({ updatedAt: -1 }).session(session);
 
   return {
-    familyId,
-    studentIds: students.map((s) => s._id),
-    campusId: latestFamilyCycle?.campusId || null,
+    studentId: student._id,
+    studentIds: [student._id],
+    campusId: latestCycle?.campusId || null,
   };
 }
 
@@ -258,7 +243,6 @@ function autoAllocate(charges, amount) {
 }
 
 async function createPaymentAtomic({
-  familyId,
   campusId,
   studentId,
   amount,
@@ -273,10 +257,10 @@ async function createPaymentAtomic({
 }) {
   return runInTransaction(async (session) => {
     if (idempotencyKey) {
-      const existingRequest = await findPaymentRequestByKey(idempotencyKey, session);
+        const existingRequest = await findPaymentRequestByKey(idempotencyKey, session);
       if (existingRequest?.paymentId) {
         const existingPayment = await Payment.findById(existingRequest.paymentId)
-          .populate('familyId')
+          .populate('studentId')
           .populate('campusId')
           .lean();
         const allocationsSaved = await PaymentAllocation.find({ paymentId: existingRequest.paymentId }).populate('chargeId').lean();
@@ -289,7 +273,7 @@ async function createPaymentAtomic({
       }
     }
 
-    const scope = await resolveChargeScope({ studentId, familyId, session });
+    const scope = await resolveChargeScope({ studentId, session });
     const paymentAmount = roundMoney(amount || allocations?.reduce((acc, item) => acc + item.amount, 0) || 0);
     if (paymentAmount <= 0) throw new ApiError(400, 'Monto de pago inválido');
 
@@ -326,7 +310,8 @@ async function createPaymentAtomic({
 
     const [createdPayment] = await Payment.create([
       {
-        familyId: scope.familyId,
+        studentId: scope.studentId,
+        studentIds: scope.studentIds,
         campusId: resolvedCampusId,
         paidAt: paidAt ? new Date(paidAt) : new Date(),
         totalAmount: toDecimal(paymentAmount),
@@ -343,7 +328,7 @@ async function createPaymentAtomic({
       const charge = await Charge.findById(alloc.chargeId).session(session);
       if (!charge) throw new ApiError(404, `Cargo no encontrado: ${alloc.chargeId}`);
       if (!scope.studentIds.some((id) => String(id) === String(charge.studentId))) {
-        throw new ApiError(400, `El cargo ${alloc.chargeId} no pertenece al alumno/familia indicada`);
+        throw new ApiError(400, `El cargo ${alloc.chargeId} no pertenece al alumno indicado`);
       }
 
       const currentOutstanding = roundMoney(toMoney(charge.outstandingAmount));
@@ -386,7 +371,7 @@ export async function createPaymentService(payload) {
   const result = await createPaymentAtomic(payload);
 
   const paymentDoc = await Payment.findById(result.payment._id || result.payment.id)
-    .populate('familyId')
+    .populate('studentId')
     .populate('campusId');
 
   if (!result.idempotentReplay) {

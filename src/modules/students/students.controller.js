@@ -28,7 +28,7 @@ export const createStudent = asyncHandler(async (req, res) => {
 });
 
 export const createStudentIntake = asyncHandler(async (req, res) => {
-  const result = await createStudentService(req.validated.student, req.validated.family);
+  const result = await createStudentService(req.validated.student, req.validated.tutorBundle);
   res.status(201).json(result);
 });
 

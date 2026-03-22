@@ -19,7 +19,6 @@ const personSchema = z.object({
 export const studentCreateSchema = z.object({
   person: personSchema,
   classroomId: z.string().min(1).optional(),
-  familyId: z.string().optional(),
   entryDate: z.string().optional(),
   notes: z.string().optional(),
 });
@@ -56,7 +55,7 @@ const familyTutorSchema = z.object({
 
 export const studentIntakeCreateSchema = z.object({
   student: studentCreateSchema,
-  family: z.object({
+  tutorBundle: z.object({
     notes: z.string().optional(),
     address: z.string().trim().optional(),
     primaryTutor: familyTutorSchema,

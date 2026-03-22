@@ -4,6 +4,7 @@ import { Vacancy } from '../../../models/vacancy.model.js';
 import { Campus } from '../../../models/campus.model.js';
 import { Student } from '../../../models/student.model.js';
 import { Person } from '../../../models/person.model.js';
+import { Tutor } from '../../../models/tutor.model.js';
 import { normalizePersonUpdatePayload } from '../../../utils/personNameFormatter.js';
 
 async function hydrateCampus(campusId) {
@@ -29,26 +30,39 @@ export async function findStudentCampusById(studentId, cycleId = null) {
 }
 
 export async function findUnassignedList({ limit, cursor }) {
-  const filter = { $or: [{ familyId: null }, { familyId: { $exists: false } }] };
-  if (cursor) filter._id = { $gt: new mongoose.Types.ObjectId(cursor) };
+  const rows = [];
+  let nextCursor = cursor ? new mongoose.Types.ObjectId(cursor) : null;
+  const batchSize = Math.max((Number(limit) || 20) * 3, 50);
 
-  return Student.find(filter)
-    .sort({ _id: 1 })
-    .limit(limit + 1)
-    .populate({ path: 'personId', select: 'names lastNames dni gender' })
-    .lean();
+  while (rows.length < limit + 1) {
+    const filter = nextCursor ? { _id: { $gt: nextCursor } } : {};
+    const batch = await Student.find(filter)
+      .sort({ _id: 1 })
+      .limit(batchSize)
+      .populate({ path: 'personId', select: 'names lastNames dni gender' })
+      .lean();
+
+    if (!batch.length) break;
+
+    const tutorStudentIds = await Tutor.distinct('studentId', { studentId: { $in: batch.map((row) => row._id) } });
+    const tutorStudentIdSet = new Set(tutorStudentIds.map((id) => String(id)));
+    const rowsWithoutTutors = batch.filter((row) => !tutorStudentIdSet.has(String(row._id)));
+    rows.push(...rowsWithoutTutors);
+
+    nextCursor = batch[batch.length - 1]._id;
+    if (batch.length < batchSize) break;
+  }
+
+  return rows.slice(0, limit + 1);
 }
 
 export async function searchUnassigned({ regex, limit }) {
-  const rows = await Student.find({
-    $or: [{ familyId: null }, { familyId: { $exists: false } }],
-  })
+  const rows = await Student.find({})
     .populate({ path: 'personId', select: 'names lastNames dni gender' })
-    .select('_id personId internalCode activeStatus familyId')
-    .limit(limit * 5)
+    .select('_id personId internalCode activeStatus')
     .lean();
 
-  return rows.filter((row) => {
+  const matchingRows = rows.filter((row) => {
     const person = row.personId;
     if (!person) return false;
     const fullName = `${person.lastNames || ''} ${person.names || ''}`.trim();
@@ -58,6 +72,15 @@ export async function searchUnassigned({ regex, limit }) {
       || regex.test(person.lastNames || '')
       || regex.test(fullName);
   });
+
+  if (!matchingRows.length) return [];
+
+  const tutorStudentIds = await Tutor.distinct('studentId', { studentId: { $in: matchingRows.map((row) => row._id) } });
+  const tutorStudentIdSet = new Set(tutorStudentIds.map((id) => String(id)));
+
+  return matchingRows
+    .filter((row) => !tutorStudentIdSet.has(String(row._id)))
+    .slice(0, limit * 5);
 }
 
 export async function findStudentWithPersonById(studentId) {
@@ -77,5 +100,5 @@ export async function updatePersonById(personId, updates) {
 }
 
 export async function updateStudentById(studentId, updates) {
-  return Student.findByIdAndUpdate(studentId, updates, { new: true }).populate('personId').populate('familyId');
+  return Student.findByIdAndUpdate(studentId, updates, { new: true }).populate('personId');
 }

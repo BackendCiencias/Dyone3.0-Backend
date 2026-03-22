@@ -10,7 +10,6 @@ import { connectDB, getDbStatus } from './config/db.js';
 // Import routers
 import authRouter from './modules/auth/auth.routes.js';
 import adminRouter from './modules/admin/admin.routes.js';
-import familiesRouter from './modules/families/families.routes.js';
 import studentsRouter from './modules/students/students.routes.js';
 import paymentsRouter from './modules/payments/payments.routes.js';
 import tutorsRouter from './modules/tutors/tutors.routes.js';
@@ -110,7 +109,6 @@ app.use('/api', ensureDb);
 const routeCatalogMounts = [
   { basePath: '/api/auth', module: 'auth', router: authRouter, authRequired: null, rolesAllowed: null },
   { basePath: '/api/admin', module: 'admin', router: adminRouter, authRequired: true, rolesAllowed: null },
-  { basePath: '/api/families', module: 'families', router: familiesRouter, authRequired: true, rolesAllowed: null },
   { basePath: '/api/students', module: 'students', router: studentsRouter, authRequired: true, rolesAllowed: null },
   { basePath: '/api/payments', module: 'payments', router: paymentsRouter, authRequired: true, rolesAllowed: null },
   { basePath: '/api/tutors', module: 'tutors', router: tutorsRouter, authRequired: true, rolesAllowed: null },

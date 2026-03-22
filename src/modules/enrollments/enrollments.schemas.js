@@ -1,5 +1,4 @@
 import { z } from 'zod';
-import { enrollmentCreateSchema } from './schemas/enrollmentCreateSchema.js';
 
 const objectIdSchema = z.string().regex(/^[a-fA-F0-9]{24}$/, 'ObjectId inválido');
 const SCHOOL_MONTHS = 10;
@@ -14,8 +13,6 @@ const admissionFeeSchema = feeSchema.extend({
   applies: z.boolean().optional(),
 });
 
-export { enrollmentCreateSchema };
-
 export const enrollmentListQuerySchema = z.object({
   q: z.string().optional(),
   campus: z.string().optional(),
@@ -24,54 +21,6 @@ export const enrollmentListQuerySchema = z.object({
   classroomId: objectIdSchema.optional(),
   limit: z.coerce.number().int().min(1).max(100).optional(),
   cursor: objectIdSchema.optional(),
-});
-
-export const intakeSearchQuerySchema = z.object({
-  q: z.string().trim().min(2, 'q muy corto').max(80),
-  campusScope: z.enum(['ALL', 'CIENCIAS', 'CIENCIAS_APLICADAS', 'CIMAS']),
-  limit: z.coerce.number().int().min(1).max(50).optional(),
-});
-
-const objectId = z.union([objectIdSchema, z.any()]);
-
-export const intakeSearchResponseSchema = z.object({
-  q: z.string(),
-  campusScope: z.enum(['ALL', 'CIENCIAS', 'CIENCIAS_APLICADAS', 'CIMAS']),
-  items: z.array(z.discriminatedUnion('type', [
-    z.object({
-      type: z.literal('FAMILY'),
-      familyId: objectId,
-      primaryTutor: z.object({
-        personId: objectId,
-        names: z.string(),
-        lastNames: z.string(),
-        dni: z.string().nullable(),
-        phone: z.string().nullable().optional(),
-      }).nullable(),
-      address: z.string().nullable().optional(),
-      studentsCount: z.number().int().nonnegative(),
-      campusHints: z.array(z.string()),
-    }),
-    z.object({
-      type: z.literal('STUDENT'),
-      studentId: objectId,
-      person: z.object({
-        names: z.string(),
-        lastNames: z.string(),
-        dni: z.string().nullable(),
-        gender: z.enum(['M', 'F']),
-      }),
-      familyId: objectId.nullable(),
-      activeStatus: z.enum(['ACTIVE', 'INACTIVE', 'GRADUATED']),
-      campusCode: z.enum(['CIENCIAS', 'CIENCIAS_APLICADAS', 'CIMAS']).nullable(),
-      cycleStatus: z.enum(['ABSENT', 'ENROLLED', 'TRANSFERRED']).nullable(),
-      hasVacancy: z.boolean(),
-      classroom: z.object({
-        classroomId: objectId,
-        label: z.string(),
-      }).nullable(),
-    }),
-  ])),
 });
 
 export const enrollmentIdParamsSchema = z.object({

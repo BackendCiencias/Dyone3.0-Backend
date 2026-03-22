@@ -467,6 +467,19 @@ async function upsertBillingSchedule(scheduleInput, cycle) {
   }
 }
 
+async function ensureClassroomIndexes() {
+  const legacyIndexName = 'campusId_1_cycleId_1_grade_1_section_1';
+  const indexes = await Classroom.collection.indexes();
+  const hasLegacyIndex = indexes.some((index) => index.name === legacyIndexName);
+
+  if (hasLegacyIndex) {
+    await Classroom.collection.dropIndex(legacyIndexName);
+    console.log('Legacy classroom index eliminado para incluir level en la unicidad');
+  }
+
+  await Classroom.syncIndexes();
+}
+
 async function upsertClassrooms(classroomsInput, campusMap, cycle) {
   for (const classroomData of classroomsInput) {
     const campus = campusMap.get(classroomData.campusCode);
@@ -478,6 +491,7 @@ async function upsertClassrooms(classroomsInput, campusMap, cycle) {
     const query = {
       campusId: campus._id,
       cycleId: cycle._id,
+      level: classroomData.level,
       grade: classroomData.grade,
       section: classroomData.section,
     };
@@ -515,6 +529,7 @@ async function seedSchoolStructure() {
     const cycle = await upsertCurrentCycle(SEED_DATA.cycle);
     await upsertBillingConcepts(SEED_DATA.billingConcepts);
     await upsertBillingSchedule(SEED_DATA.billingSchedule, cycle);
+    await ensureClassroomIndexes();
     await upsertClassrooms(SEED_DATA.classrooms, campusMap, cycle);
 
     console.log('🎉 Seed de estructura escolar finalizado correctamente');

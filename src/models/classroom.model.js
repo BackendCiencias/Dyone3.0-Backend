@@ -13,6 +13,6 @@ const classroomSchema = new mongoose.Schema({
 });
 
 // Índice para asegurar que no haya duplicados por sede, ciclo, grado y sección
-classroomSchema.index({ campusId: 1, cycleId: 1, grade: 1, section: 1 }, { unique: true });
+classroomSchema.index({ campusId: 1, cycleId: 1, level: 1, grade: 1, section: 1 }, { unique: true });
 
 export const Classroom = mongoose.model('Classroom', classroomSchema);

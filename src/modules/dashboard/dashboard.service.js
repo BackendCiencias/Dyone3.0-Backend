@@ -61,6 +61,33 @@ function buildCategoryMeta(category) {
   return { code: 'OTHER', label: 'Otros', order: 4 };
 }
 
+function buildCategoryMetaFromCharge(charge = {}) {
+  const conceptId = charge.conceptId || {};
+  const conceptCode = String(conceptId.code || '').trim().toUpperCase();
+  const conceptName = String(conceptId.name || '').trim();
+
+  if (conceptCode === 'TUITION' || conceptCode === 'TUITION_FEE') {
+    return { code: 'TUITION', label: conceptName || 'Pension', order: 1 };
+  }
+  if (conceptCode === 'ENROLLMENT_FEE' || conceptCode === 'ENROLLMENT') {
+    return { code: 'ENROLLMENT_FEE', label: conceptName || 'Matricula', order: 2 };
+  }
+  if (conceptCode === 'ADMISSION_FEE' || conceptCode === 'ADMISSION') {
+    return { code: 'ADMISSION_FEE', label: conceptName || 'Derecho de ingreso', order: 3 };
+  }
+  if (conceptCode) {
+    return { code: conceptCode, label: conceptName || conceptCode, order: 10 };
+  }
+
+  const fallbackConcept = String(charge.concept || '').trim().toUpperCase();
+  if (fallbackConcept) return buildCategoryMeta(fallbackConcept);
+
+  const fallbackLabel = String(charge.description || conceptName || '').trim();
+  if (fallbackLabel) return { code: `DESC:${fallbackLabel.toUpperCase()}`, label: fallbackLabel, order: 20 };
+
+  return { code: 'OTHER', label: 'Otros', order: 99 };
+}
+
 function getMethodLabel(method) {
   const normalized = String(method || '').toUpperCase();
   if (normalized === 'CASH') return 'Efectivo';
@@ -300,11 +327,27 @@ async function getCashTodaySummary({ campusIds = [] }) {
   const enrollmentContexts = await getEnrollmentContextMapByStudentIds(Array.from(studentIdsFromAllocations));
   const categoryMap = new Map();
   const recentPayments = [];
+  const totalsByMethod = {
+    CASH: { method: 'CASH', label: getMethodLabel('CASH'), totalAmount: 0, paymentsCount: 0 },
+    YAPE: { method: 'YAPE', label: getMethodLabel('YAPE'), totalAmount: 0, paymentsCount: 0 },
+    TRANSFER: { method: 'TRANSFER', label: getMethodLabel('TRANSFER'), totalAmount: 0, paymentsCount: 0 },
+  };
 
   for (const payment of payments) {
     const paymentId = String(payment._id);
     const paymentAllocations = allocationsByPaymentId.get(paymentId) || [];
     const paymentAmount = roundMoney(toMoney(payment.totalAmount));
+    const paymentMethodKey = String(payment.method || '').toUpperCase();
+    if (!totalsByMethod[paymentMethodKey]) {
+      totalsByMethod[paymentMethodKey] = {
+        method: paymentMethodKey || 'UNKNOWN',
+        label: getMethodLabel(payment.method),
+        totalAmount: 0,
+        paymentsCount: 0,
+      };
+    }
+    totalsByMethod[paymentMethodKey].totalAmount = roundMoney(totalsByMethod[paymentMethodKey].totalAmount + paymentAmount);
+    totalsByMethod[paymentMethodKey].paymentsCount += 1;
 
     const paymentCategories = new Set();
     let firstStudentName = null;
@@ -316,7 +359,7 @@ async function getCashTodaySummary({ campusIds = [] }) {
       const student = charge.studentId || {};
       const studentId = String(student?._id || charge?.studentId || '');
       const context = studentId ? enrollmentContexts.get(studentId) : null;
-      const categoryMeta = buildCategoryMeta(charge.concept);
+      const categoryMeta = buildCategoryMetaFromCharge(charge);
       const detailAmount = roundMoney(toMoney(allocation.amount));
       const detailCampusCode = charge.campusId?.code || context?.campus?.code || payment.campusId?.code || null;
       const detailCampusName = charge.campusId?.name || context?.campus?.name || payment.campusId?.name || null;
@@ -427,6 +470,16 @@ async function getCashTodaySummary({ campusIds = [] }) {
 
   const totalIncome = roundMoney(payments.reduce((acc, row) => acc + roundMoney(toMoney(row.totalAmount)), 0));
   const paymentsCount = payments.length;
+  const totalsByMethodList = Object.values(totalsByMethod)
+    .filter((row) => row.paymentsCount > 0)
+    .map((row) => ({
+      method: row.method,
+      label: row.label,
+      totalAmount: roundMoney(row.totalAmount),
+      paymentsCount: row.paymentsCount,
+      share: totalIncome > 0 ? roundMoney((row.totalAmount / totalIncome) * 100) : 0,
+    }))
+    .sort((a, b) => b.totalAmount - a.totalAmount);
 
   for (const category of byCategory) {
     category.share = totalIncome > 0 ? roundMoney((category.totalAmount / totalIncome) * 100) : 0;
@@ -439,6 +492,7 @@ async function getCashTodaySummary({ campusIds = [] }) {
     paymentsCount,
     averageTicket: paymentsCount ? roundMoney(totalIncome / paymentsCount) : 0,
     categoriesCount: byCategory.length,
+    totalsByMethod: totalsByMethodList,
     byCategory,
     recentPayments: recentPayments.slice(0, 8),
   };
@@ -473,6 +527,7 @@ export async function getSecretaryOverviewService({ campus, campusScope = [] }) 
         paymentsCount: 0,
         averageTicket: 0,
         categoriesCount: 0,
+        totalsByMethod: [],
         byCategory: [],
         recentPayments: [],
       },

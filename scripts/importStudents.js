@@ -342,9 +342,15 @@ function derivePreviousSchoolType(previousCampus) {
   return ALLOWED_CAMPUSES.includes(normalized) ? normalized : 'OTHER';
 }
 
-async function upsertDraftEnrollmentForStudent({ student, classroom, cycleId, campusId, notes }, report) {
-  const existingEnrollmentStudent = await EnrollmentStudent.findOne({ studentId: student._id })
+async function findEnrollmentStudentForCycle(studentId, cycleId) {
+  const rows = await EnrollmentStudent.find({ studentId })
     .populate({ path: 'enrollmentId', select: '_id cycleId status campusId enrollmentStudents notes' });
+
+  return rows.find((row) => String(row?.enrollmentId?.cycleId) === String(cycleId)) || null;
+}
+
+async function upsertDraftEnrollmentForStudent({ student, classroom, cycleId, campusId, notes }, report) {
+  const existingEnrollmentStudent = await findEnrollmentStudentForCycle(student._id, cycleId);
 
   const previousSchoolType = derivePreviousSchoolType(student.previousCampus);
   const enrollmentStudentPayload = {
@@ -357,16 +363,24 @@ async function upsertDraftEnrollmentForStudent({ student, classroom, cycleId, ca
     notes: notes || undefined,
   };
 
-  if (existingEnrollmentStudent?.enrollmentId && String(existingEnrollmentStudent.enrollmentId.cycleId) === String(cycleId)) {
+  if (existingEnrollmentStudent?.enrollmentId) {
     const enrollment = existingEnrollmentStudent.enrollmentId;
+    const currentStatus = String(enrollment.status || '').toUpperCase();
+    const setUpdates = {
+      campusId,
+      ...(notes ? { notes } : {}),
+    };
+
+    if (!['ENROLLED', 'TRANSFERRED'].includes(currentStatus)) {
+      setUpdates.status = 'ABSENT';
+    } else {
+      report.enrollmentStatusesPreserved += 1;
+    }
+
     await Enrollment.updateOne(
       { _id: enrollment._id },
       {
-        $set: {
-          status: 'ABSENT',
-          campusId,
-          ...(notes ? { notes } : {}),
-        },
+        $set: setUpdates,
         $addToSet: {
           enrollmentStudents: existingEnrollmentStudent._id,
         },
@@ -435,7 +449,7 @@ async function run() {
     enrollmentsUpdated: 0,
     enrollmentStudentsCreated: 0,
     enrollmentStudentsUpdated: 0,
-    studentCyclesCreated: 0,
+    enrollmentStatusesPreserved: 0,
     vacanciesCreated: 0,
     vacanciesUpdated: 0,
     counterSyncedTo: 0,
@@ -536,6 +550,7 @@ async function run() {
     console.log(`Campus resueltos: ${report.campusesResolved}`);
     console.log(`Matriculas ausentes creadas: ${report.enrollmentsCreated}`);
     console.log(`Matriculas ausentes actualizadas: ${report.enrollmentsUpdated}`);
+    console.log(`Matriculas con estado real preservado: ${report.enrollmentStatusesPreserved}`);
     console.log(`EnrollmentStudents creados: ${report.enrollmentStudentsCreated}`);
     console.log(`EnrollmentStudents actualizados: ${report.enrollmentStudentsUpdated}`);
     console.log(`Vacancies creadas: ${report.vacanciesCreated}`);

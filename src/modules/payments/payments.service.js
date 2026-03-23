@@ -45,6 +45,11 @@ function normalizeReceiptNumber(value) {
   return digits.padStart(6, '0');
 }
 
+function normalizeVoucherNumber(value) {
+  const normalized = String(value || '').trim();
+  return normalized || null;
+}
+
 function resolvePaidAt(value) {
   const raw = String(value || '').trim();
   if (!raw) return new Date();
@@ -395,6 +400,49 @@ export async function createPaymentService(payload) {
     summary: result.summary,
     idempotentReplay: Boolean(result.idempotentReplay),
   };
+}
+
+export async function updatePaymentReceiptService({ paymentId, payload, userId }) {
+  if (!mongoose.Types.ObjectId.isValid(paymentId)) throw new ApiError(400, 'paymentId inválido');
+
+  const payment = await Payment.findById(paymentId)
+    .populate('studentId')
+    .populate('campusId');
+  if (!payment) throw new ApiError(404, 'Pago no encontrado');
+
+  const previous = {
+    method: payment.method,
+    receiptNumber: payment.receiptNumber || null,
+    voucherNumber: payment.voucherNumber || null,
+    notes: payment.notes || null,
+  };
+
+  payment.method = payload.method;
+  payment.receiptNumber = normalizeReceiptNumber(payload.receiptNumber || '') || null;
+  payment.voucherNumber = normalizeVoucherNumber(payload.voucherNumber || '') || payment.internalCode;
+  payment.notes = String(payload.notes || '').trim() || undefined;
+
+  await payment.save();
+
+  await registerAuditLog({
+    entityType: 'PAYMENT',
+    entityId: payment._id,
+    action: 'PAYMENT_RECEIPT_CORRECTED',
+    performedBy: userId,
+    campusId: payment.campusId?._id || payment.campusId,
+    payloadSnapshot: {
+      correctionReason: payload.correctionReason,
+      previous,
+      next: {
+        method: payment.method,
+        receiptNumber: payment.receiptNumber || null,
+        voucherNumber: payment.voucherNumber || null,
+        notes: payment.notes || null,
+      },
+    },
+  });
+
+  return payment;
 }
 
 export async function getDebtorsService({ cycleId, conceptId, campus, campusScope = [], onlyOverdue = false, limit = 25, page = 1 }) {

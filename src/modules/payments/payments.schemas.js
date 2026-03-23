@@ -5,6 +5,8 @@ const allocationSchema = z.object({
   amount: z.number().positive(),
 });
 
+const objectIdSchema = z.string().regex(/^[a-fA-F0-9]{24}$/, 'ObjectId inválido');
+
 export const paymentCreateSchema = z.object({
   campusId: z.string().min(1).optional(),
   studentId: z.string().min(1).optional(),
@@ -33,6 +35,18 @@ export const paymentCreateSchema = z.object({
       message: 'Debes enviar amount o allocations',
     });
   }
+});
+
+export const paymentIdParamsSchema = z.object({
+  id: objectIdSchema,
+});
+
+export const paymentReceiptCorrectionSchema = z.object({
+  method: z.enum(['CASH', 'YAPE', 'TRANSFER']),
+  receiptNumber: z.string().trim().max(6).optional().or(z.literal('')),
+  voucherNumber: z.string().trim().max(64).optional().or(z.literal('')),
+  notes: z.string().trim().max(500).optional().or(z.literal('')),
+  correctionReason: z.string().trim().min(5, 'Debes indicar el motivo de la corrección'),
 });
 
 export const debtorsQuerySchema = z.object({

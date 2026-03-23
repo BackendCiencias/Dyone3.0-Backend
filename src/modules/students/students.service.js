@@ -1102,6 +1102,7 @@ async function buildStudentFinancialSnapshot(studentId) {
       method: allocation.paymentId.method,
       internalCode: allocation.paymentId.internalCode || null,
       receiptNumber: allocation.paymentId.receiptNumber || null,
+      voucherNumber: allocation.paymentId.voucherNumber || null,
       note: allocation.paymentId.notes || null,
       allocations: [],
     };

@@ -1,5 +1,5 @@
 import { asyncHandler } from '../../utils/asyncHandler.js';
-import { createPaymentService, getDebtorsSearchService, getDebtorsService } from './payments.service.js';
+import { createPaymentService, getDebtorsSearchService, getDebtorsService, updatePaymentReceiptService } from './payments.service.js';
 
 export const createPayment = asyncHandler(async (req, res) => {
   const result = await createPaymentService({
@@ -33,6 +33,15 @@ export const searchDebtors = asyncHandler(async (req, res) => {
     campus: campus || campusId,
     campusScope: req.campusScope,
     limit,
+  });
+  res.json(result);
+});
+
+export const updatePaymentReceipt = asyncHandler(async (req, res) => {
+  const result = await updatePaymentReceiptService({
+    paymentId: req.params.id,
+    payload: req.validated,
+    userId: req.user.id,
   });
   res.json(result);
 });

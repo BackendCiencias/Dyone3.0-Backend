@@ -45,6 +45,23 @@ function normalizeReceiptNumber(value) {
   return digits.padStart(6, '0');
 }
 
+function resolvePaidAt(value) {
+  const raw = String(value || '').trim();
+  if (!raw) return new Date();
+
+  const dateOnlyMatch = raw.match(/^(\d{4})-(\d{2})-(\d{2})$/);
+  if (dateOnlyMatch) {
+    const [, year, month, day] = dateOnlyMatch;
+    return new Date(`${year}-${month}-${day}T12:00:00.000Z`);
+  }
+
+  const parsed = new Date(raw);
+  if (Number.isNaN(parsed.getTime())) {
+    throw new ApiError(400, 'paidAt inválido');
+  }
+  return parsed;
+}
+
 async function nextPaymentInternalCode(session) {
   const counter = await Counter.findOneAndUpdate(
     { key: 'payment_internal_code' },
@@ -296,7 +313,7 @@ async function createPaymentAtomic({
         studentId: scope.studentId,
         studentIds: scope.studentIds,
         campusId: resolvedCampusId,
-        paidAt: paidAt ? new Date(paidAt) : new Date(),
+        paidAt: resolvePaidAt(paidAt),
         totalAmount: toDecimal(paymentAmount),
         method,
         internalCode,

@@ -14,7 +14,8 @@
     "drop:db": "node scripts/dropDatabase.js",
     "import:tutors": "node scripts/importTutors.js",
     "import:bank-codes": "node scripts/importStudentBankCodes.js",
-    "backfill:charges-campus": "node scripts/backfillChargesCampus.js"
+    "backfill:charges-campus": "node scripts/backfillChargesCampus.js",
+    "fix:payments-paid-at": "node scripts/fixPaymentPaidAtFromAudit.js"
   },
   "dependencies": {
     "bcryptjs": "^2.4.3",

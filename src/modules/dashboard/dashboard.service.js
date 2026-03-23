@@ -53,6 +53,29 @@ function buildChargeLabel(charge = {}) {
   return charge.description || charge.concept || 'Cargo';
 }
 
+function buildCategoryMeta(category) {
+  const normalized = String(category || '').toUpperCase();
+  if (normalized === 'TUITION') return { code: 'TUITION', label: 'Pension', order: 1 };
+  if (normalized === 'ENROLLMENT') return { code: 'ENROLLMENT', label: 'Matricula', order: 2 };
+  if (normalized === 'ADMISSION') return { code: 'ADMISSION', label: 'Derecho de ingreso', order: 3 };
+  return { code: 'OTHER', label: 'Otros', order: 4 };
+}
+
+function getMethodLabel(method) {
+  const normalized = String(method || '').toUpperCase();
+  if (normalized === 'CASH') return 'Efectivo';
+  if (normalized === 'YAPE') return 'Yape';
+  if (normalized === 'TRANSFER') return 'Transferencia';
+  return method || 'Sin metodo';
+}
+
+function buildGradeLabel(classroom = {}) {
+  const grade = String(classroom?.grade || '').trim();
+  const section = String(classroom?.section || '').trim();
+  if (!grade && !section) return null;
+  return [grade, section].filter(Boolean).join(' ');
+}
+
 async function resolveScopedCampusFilter({ campus, campusScope = [] }) {
   const scopeAll = campusScope.includes('ALL');
   const requestedCampus = campus ? String(campus).trim().toUpperCase() : '';
@@ -219,6 +242,208 @@ async function getRecentPaymentActivity({ campusIds, limit = 4 }) {
   });
 }
 
+async function getCashTodaySummary({ campusIds = [] }) {
+  const todayStart = new Date();
+  todayStart.setHours(0, 0, 0, 0);
+  const tomorrowStart = new Date(todayStart);
+  tomorrowStart.setDate(tomorrowStart.getDate() + 1);
+
+  const paymentMatch = {
+    paidAt: {
+      $gte: todayStart,
+      $lt: tomorrowStart,
+    },
+  };
+  if (campusIds.length) paymentMatch.campusId = { $in: campusIds };
+
+  const payments = await Payment.find(paymentMatch)
+    .sort({ paidAt: -1, _id: -1 })
+    .populate('studentId')
+    .populate('campusId', 'code name')
+    .lean();
+
+  if (!payments.length) {
+    return {
+      date: todayStart.toISOString(),
+      totalIncome: 0,
+      paymentsCount: 0,
+      averageTicket: 0,
+      categoriesCount: 0,
+      byCategory: [],
+      recentPayments: [],
+    };
+  }
+
+  const paymentIds = payments.map((row) => row._id);
+  const allocations = await PaymentAllocation.find({ paymentId: { $in: paymentIds } })
+    .populate({
+      path: 'chargeId',
+      populate: [
+        { path: 'studentId', populate: { path: 'personId' } },
+        { path: 'campusId', select: 'code name' },
+        { path: 'conceptId', select: 'code name' },
+      ],
+    })
+    .lean();
+
+  const allocationsByPaymentId = new Map();
+  const studentIdsFromAllocations = new Set();
+  for (const allocation of allocations) {
+    const paymentId = String(allocation.paymentId || '');
+    if (!allocationsByPaymentId.has(paymentId)) allocationsByPaymentId.set(paymentId, []);
+    allocationsByPaymentId.get(paymentId).push(allocation);
+
+    const studentId = allocation.chargeId?.studentId?._id || allocation.chargeId?.studentId;
+    if (studentId) studentIdsFromAllocations.add(String(studentId));
+  }
+
+  const enrollmentContexts = await getEnrollmentContextMapByStudentIds(Array.from(studentIdsFromAllocations));
+  const categoryMap = new Map();
+  const recentPayments = [];
+
+  for (const payment of payments) {
+    const paymentId = String(payment._id);
+    const paymentAllocations = allocationsByPaymentId.get(paymentId) || [];
+    const paymentAmount = roundMoney(toMoney(payment.totalAmount));
+
+    const paymentCategories = new Set();
+    let firstStudentName = null;
+    let firstGradeLabel = null;
+    let firstCampusCode = payment.campusId?.code || null;
+
+    for (const allocation of paymentAllocations) {
+      const charge = allocation.chargeId || {};
+      const student = charge.studentId || {};
+      const studentId = String(student?._id || charge?.studentId || '');
+      const context = studentId ? enrollmentContexts.get(studentId) : null;
+      const categoryMeta = buildCategoryMeta(charge.concept);
+      const detailAmount = roundMoney(toMoney(allocation.amount));
+      const detailCampusCode = charge.campusId?.code || context?.campus?.code || payment.campusId?.code || null;
+      const detailCampusName = charge.campusId?.name || context?.campus?.name || payment.campusId?.name || null;
+      const detailGradeLabel = buildGradeLabel(context?.classroom);
+      const detailStudentName = student?.personId ? buildFullName(student.personId) : 'Alumno';
+
+      if (!firstStudentName) firstStudentName = detailStudentName;
+      if (!firstGradeLabel) firstGradeLabel = detailGradeLabel;
+      if (!firstCampusCode) firstCampusCode = detailCampusCode;
+
+      paymentCategories.add(categoryMeta.code);
+
+      if (!categoryMap.has(categoryMeta.code)) {
+        categoryMap.set(categoryMeta.code, {
+          category: categoryMeta.code,
+          label: categoryMeta.label,
+          order: categoryMeta.order,
+          totalAmount: 0,
+          paymentsCount: 0,
+          details: [],
+          paymentIds: new Set(),
+        });
+      }
+
+      const categoryRow = categoryMap.get(categoryMeta.code);
+      categoryRow.totalAmount = roundMoney(categoryRow.totalAmount + detailAmount);
+      categoryRow.details.push({
+        paymentId,
+        paymentInternalCode: payment.internalCode || null,
+        paidAt: payment.paidAt,
+        studentId: studentId || null,
+        studentName: detailStudentName,
+        gradeLabel: detailGradeLabel,
+        campusCode: detailCampusCode,
+        campusName: detailCampusName,
+        amount: detailAmount,
+        method: payment.method,
+        methodLabel: getMethodLabel(payment.method),
+        concept: charge.concept || null,
+        conceptLabel: buildChargeLabel(charge),
+      });
+      categoryRow.paymentIds.add(paymentId);
+    }
+
+    if (!paymentAllocations.length) {
+      const uncategorizedMeta = buildCategoryMeta('OTHER');
+      if (!categoryMap.has(uncategorizedMeta.code)) {
+        categoryMap.set(uncategorizedMeta.code, {
+          category: uncategorizedMeta.code,
+          label: uncategorizedMeta.label,
+          order: uncategorizedMeta.order,
+          totalAmount: 0,
+          paymentsCount: 0,
+          details: [],
+          paymentIds: new Set(),
+        });
+      }
+      const categoryRow = categoryMap.get(uncategorizedMeta.code);
+      categoryRow.totalAmount = roundMoney(categoryRow.totalAmount + paymentAmount);
+      categoryRow.details.push({
+        paymentId,
+        paymentInternalCode: payment.internalCode || null,
+        paidAt: payment.paidAt,
+        studentId: payment.studentId?._id ? String(payment.studentId._id) : null,
+        studentName: firstStudentName || 'Alumno',
+        gradeLabel: firstGradeLabel,
+        campusCode: firstCampusCode,
+        campusName: payment.campusId?.name || null,
+        amount: paymentAmount,
+        method: payment.method,
+        methodLabel: getMethodLabel(payment.method),
+        concept: null,
+        conceptLabel: 'Pago sin categoria',
+      });
+      categoryRow.paymentIds.add(paymentId);
+      paymentCategories.add(uncategorizedMeta.code);
+    }
+
+    recentPayments.push({
+      paymentId,
+      internalCode: payment.internalCode || null,
+      paidAt: payment.paidAt,
+      studentName: firstStudentName || 'Pago registrado',
+      gradeLabel: firstGradeLabel,
+      campusCode: firstCampusCode,
+      amount: paymentAmount,
+      method: payment.method,
+      methodLabel: getMethodLabel(payment.method),
+      categoryLabel: paymentCategories.size === 1
+        ? buildCategoryMeta(Array.from(paymentCategories)[0]).label
+        : 'Mixto',
+      to: payment.studentId?._id ? `/dashboard/payments/${payment.studentId._id}` : '/dashboard/payments',
+    });
+  }
+
+  const byCategory = Array.from(categoryMap.values())
+    .map((row) => ({
+      category: row.category,
+      label: row.label,
+      totalAmount: roundMoney(row.totalAmount),
+      paymentsCount: row.paymentIds.size,
+      details: row.details.sort((a, b) => new Date(b.paidAt) - new Date(a.paidAt)),
+      detailsCount: row.details.length,
+      share: 0,
+      order: row.order,
+    }))
+    .sort((a, b) => a.order - b.order || b.totalAmount - a.totalAmount);
+
+  const totalIncome = roundMoney(payments.reduce((acc, row) => acc + roundMoney(toMoney(row.totalAmount)), 0));
+  const paymentsCount = payments.length;
+
+  for (const category of byCategory) {
+    category.share = totalIncome > 0 ? roundMoney((category.totalAmount / totalIncome) * 100) : 0;
+    delete category.order;
+  }
+
+  return {
+    date: todayStart.toISOString(),
+    totalIncome,
+    paymentsCount,
+    averageTicket: paymentsCount ? roundMoney(totalIncome / paymentsCount) : 0,
+    categoriesCount: byCategory.length,
+    byCategory,
+    recentPayments: recentPayments.slice(0, 8),
+  };
+}
+
 export async function getSecretaryOverviewService({ campus, campusScope = [] }) {
   const { campusIds, campusCodeById } = await resolveScopedCampusFilter({ campus, campusScope });
   const currentCycle = await resolveCurrentCycle();
@@ -242,6 +467,15 @@ export async function getSecretaryOverviewService({ campus, campusScope = [] }) 
       topDebtors: [],
       upcomingDue: [],
       recentActivity: [],
+      cashToday: {
+        date: new Date().toISOString(),
+        totalIncome: 0,
+        paymentsCount: 0,
+        averageTicket: 0,
+        categoriesCount: 0,
+        byCategory: [],
+        recentPayments: [],
+      },
     };
   }
 
@@ -397,6 +631,7 @@ export async function getSecretaryOverviewService({ campus, campusScope = [] }) 
   const overdueStudentsCount = groupedOverdue.length;
   const studentsWithoutTutorsCount = Array.from(studentMap.values()).filter((student) => !studentIdsWithTutors.has(String(student._id))).length;
   const incompleteStudentsCount = incompleteStudentsAll.length;
+  const cashToday = await getCashTodaySummary({ campusIds });
 
   return {
     summary: {
@@ -416,5 +651,6 @@ export async function getSecretaryOverviewService({ campus, campusScope = [] }) 
     topDebtors,
     upcomingDue,
     recentActivity,
+    cashToday,
   };
 }

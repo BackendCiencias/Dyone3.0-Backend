@@ -6,7 +6,6 @@ import {
   getStudentSummaryService,
   listStudentsByCampusService,
   getStudentDetailService,
-  updateStudentCycleStatusService,
   changeStudentClassroomService,
   getStudentAccountStatementService,
   getStudentChargesService,
@@ -72,11 +71,6 @@ export const studentSummary = asyncHandler(async (req, res) => {
 
 export const getStudentDetail = asyncHandler(async (req, res) => {
   const data = await getStudentDetailService(req.validatedParams.id, req.validatedQuery?.cycleId);
-  res.json(data);
-});
-
-export const updateStudentCycleStatus = asyncHandler(async (req, res) => {
-  const data = await updateStudentCycleStatusService(req.validatedParams.id, req.validated, req.user.id);
   res.json(data);
 });
 

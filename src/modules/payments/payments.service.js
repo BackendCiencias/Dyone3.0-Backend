@@ -3,7 +3,6 @@ import { Charge } from '../../models/charge.model.js';
 import { Payment } from '../../models/payment.model.js';
 import { PaymentAllocation } from '../../models/paymentAllocation.model.js';
 import { Student } from '../../models/student.model.js';
-import { StudentCycle } from '../../models/studentCycle.model.js';
 import { Campus } from '../../models/campus.model.js';
 import { BillingConcept } from '../../models/billingConcept.model.js';
 import { Counter } from '../../models/counter.model.js';
@@ -13,6 +12,7 @@ import { runInTransaction } from '../../shared/dbSession.js';
 import { registerAuditLog } from '../../shared/audit.service.js';
 import { createPaymentRequestLog, findPaymentRequestByKey } from './repositories/payments.repository.js';
 import { buildAccentInsensitiveRegex, buildSearchScore, byScoreThenId, normalizeSearchTerm } from '../../utils/search.js';
+import { getEnrollmentContextForStudent, getEnrollmentContextMapByStudentIds } from '../../shared/enrollmentCurrent.js';
 
 function toMoney(value) {
   if (value === null || value === undefined) return 0;
@@ -95,27 +95,11 @@ async function getActiveConceptColumns() {
 
 async function getLatestCampusCodeMap(studentIds) {
   if (!studentIds.length) return new Map();
-
-  const cycles = await StudentCycle.find({ studentId: { $in: studentIds } })
-    .sort({ updatedAt: -1 })
-    .select('studentId campusId')
-    .lean();
-
-  const latestCampusIdByStudent = new Map();
-  for (const row of cycles) {
-    const key = String(row.studentId);
-    if (!latestCampusIdByStudent.has(key)) {
-      latestCampusIdByStudent.set(key, String(row.campusId));
-    }
-  }
-
-  const campusIds = [...new Set(Array.from(latestCampusIdByStudent.values()))].map((id) => new mongoose.Types.ObjectId(id));
-  const campuses = await Campus.find({ _id: { $in: campusIds } }).select('_id code').lean();
-  const campusCodeById = new Map(campuses.map((row) => [String(row._id), row.code]));
-
+  const contexts = await getEnrollmentContextMapByStudentIds(studentIds);
   const result = new Map();
-  for (const [studentId, campusId] of latestCampusIdByStudent.entries()) {
-    result.set(studentId, campusCodeById.get(campusId) || null);
+  for (const studentId of studentIds) {
+    const context = contexts.get(String(studentId));
+    result.set(String(studentId), context?.campus?.code || null);
   }
   return result;
 }
@@ -213,13 +197,12 @@ async function buildStudentPaymentRows({ students, cycleId, campusIds = [], conc
 async function resolveChargeScope({ studentId, session }) {
   const student = await Student.findById(studentId).session(session);
   if (!student) throw new ApiError(404, 'Estudiante no encontrado');
-
-  const latestCycle = await StudentCycle.findOne({ studentId: student._id }).sort({ updatedAt: -1 }).session(session);
+  const currentEnrollment = await getEnrollmentContextForStudent(student._id, { session });
 
   return {
     studentId: student._id,
     studentIds: [student._id],
-    campusId: latestCycle?.campusId || null,
+    campusId: currentEnrollment?.campus?._id || currentEnrollment?.enrollment?.campusId || null,
   };
 }
 

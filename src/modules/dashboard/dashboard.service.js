@@ -2,7 +2,6 @@ import mongoose from 'mongoose';
 import { Campus } from '../../models/campus.model.js';
 import { Cycle } from '../../models/cycle.model.js';
 import { Student } from '../../models/student.model.js';
-import { StudentCycle } from '../../models/studentCycle.model.js';
 import { Tutor } from '../../models/tutor.model.js';
 import { Charge } from '../../models/charge.model.js';
 import { Enrollment } from '../../models/enrollment.model.js';
@@ -10,6 +9,7 @@ import { EnrollmentStudent } from '../../models/enrollmentStudent.model.js';
 import { Payment } from '../../models/payment.model.js';
 import { PaymentAllocation } from '../../models/paymentAllocation.model.js';
 import { ApiError } from '../../utils/errors.js';
+import { getEnrollmentContextMapByStudentIds } from '../../shared/enrollmentCurrent.js';
 
 function toMoney(value) {
   if (value === null || value === undefined) return 0;
@@ -94,21 +94,21 @@ async function resolveCurrentCycle() {
     .lean();
 }
 
-async function getScopedStudentCycles({ cycleId, campusIds }) {
+async function getScopedEnrollments({ cycleId, campusIds }) {
   const match = { cycleId };
   if (campusIds.length) match.campusId = { $in: campusIds };
 
-  return StudentCycle.find(match)
+  return Enrollment.find(match)
     .sort({ updatedAt: -1, _id: -1 })
     .lean();
 }
 
-async function ensureCampusCodeMap({ campusCodeById, studentCycles = [] }) {
-  if (campusCodeById.size > 0 || !studentCycles.length) return campusCodeById;
+async function ensureCampusCodeMap({ campusCodeById, enrollments = [] }) {
+  if (campusCodeById.size > 0 || !enrollments.length) return campusCodeById;
 
   const missingCampusIds = Array.from(
     new Set(
-      studentCycles
+      enrollments
         .map((row) => String(row.campusId || ''))
         .filter(Boolean),
     ),
@@ -245,13 +245,23 @@ export async function getSecretaryOverviewService({ campus, campusScope = [] }) 
     };
   }
 
-  const cycles = await getScopedStudentCycles({ cycleId: currentCycle._id, campusIds });
-  const scopedCampusCodeById = await ensureCampusCodeMap({ campusCodeById, studentCycles: cycles });
+  const enrollments = await getScopedEnrollments({ cycleId: currentCycle._id, campusIds });
+  const scopedCampusCodeById = await ensureCampusCodeMap({ campusCodeById, enrollments });
+  const enrollmentStudents = enrollments.length
+    ? await EnrollmentStudent.find({ enrollmentId: { $in: enrollments.map((row) => row._id) } }).select('enrollmentId studentId').lean()
+    : [];
+  const enrollmentById = new Map(enrollments.map((row) => [String(row._id), row]));
   const latestCycleByStudentId = new Map();
-  for (const row of cycles) {
+  for (const row of enrollmentStudents) {
+    const enrollment = enrollmentById.get(String(row.enrollmentId));
+    if (!enrollment) continue;
     const key = String(row.studentId);
     if (!latestCycleByStudentId.has(key)) {
-      latestCycleByStudentId.set(key, row);
+      latestCycleByStudentId.set(key, {
+        studentId: row.studentId,
+        status: enrollment.status,
+        campusId: enrollment.campusId,
+      });
     }
   }
 
@@ -373,9 +383,9 @@ export async function getSecretaryOverviewService({ campus, campusScope = [] }) 
   if (campusIds.length) paymentsTodayMatch.campusId = { $in: campusIds };
   const paymentsToday = await Payment.countDocuments(paymentsTodayMatch);
 
-  const draftEnrollmentsMatch = { cycleId: currentCycle._id, status: 'DRAFT' };
-  if (campusIds.length) draftEnrollmentsMatch.campusId = { $in: campusIds };
-  const draftEnrollmentsCount = await Enrollment.countDocuments(draftEnrollmentsMatch);
+  const absentEnrollmentsMatch = { cycleId: currentCycle._id, status: 'ABSENT' };
+  if (campusIds.length) absentEnrollmentsMatch.campusId = { $in: campusIds };
+  const draftEnrollmentsCount = await Enrollment.countDocuments(absentEnrollmentsMatch);
 
   const recentActivity = [
     ...(await getRecentEnrollmentActivity({ cycleId: currentCycle._id, campusIds, limit: 4 })),

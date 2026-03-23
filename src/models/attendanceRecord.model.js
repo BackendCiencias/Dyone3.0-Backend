@@ -3,7 +3,7 @@ import mongoose from 'mongoose';
 const attendanceRecordSchema = new mongoose.Schema({
   sessionId: { type: mongoose.Schema.Types.ObjectId, ref: 'AttendanceSession', required: true, index: true },
   studentId: { type: mongoose.Schema.Types.ObjectId, ref: 'Student', required: true, index: true },
-  studentCycleId: { type: mongoose.Schema.Types.ObjectId, ref: 'StudentCycle', required: true, index: true },
+  enrollmentId: { type: mongoose.Schema.Types.ObjectId, ref: 'Enrollment', required: true, index: true },
   personId: { type: mongoose.Schema.Types.ObjectId, ref: 'Person', default: null },
   status: { type: String, enum: ['PRESENT', 'LATE', 'ABSENT'], required: true, index: true },
   arrivalTime: { type: String, default: null },
@@ -20,7 +20,7 @@ const attendanceRecordSchema = new mongoose.Schema({
 
 attendanceRecordSchema.index({ sessionId: 1, studentId: 1 }, { unique: true });
 attendanceRecordSchema.index({ studentId: 1, createdAt: 1 });
-attendanceRecordSchema.index({ studentCycleId: 1, createdAt: 1 });
+attendanceRecordSchema.index({ enrollmentId: 1, createdAt: 1 });
 attendanceRecordSchema.index({ sessionId: 1, markedAt: -1 });
 attendanceRecordSchema.index({ sessionId: 1, status: 1 });
 

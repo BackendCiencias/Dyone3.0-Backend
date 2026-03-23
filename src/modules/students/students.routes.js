@@ -9,7 +9,6 @@ import {
   studentCreateSchema,
   studentIdParamsSchema,
   studentDetailQuerySchema,
-  studentCycleStatusSchema,
   studentClassroomSchema,
   studentIntakeCreateSchema,
   studentFinancialParamsSchema,
@@ -28,7 +27,6 @@ import {
   studentSummary,
   listStudentsByCampus,
   getStudentDetail,
-  updateStudentCycleStatus,
   changeStudentClassroom,
   createStudentIntake,
   getStudentAccountStatement,
@@ -78,12 +76,6 @@ router.get(
   requireRoles(STUDENT_READ_ROLES),
   validateRequest({ params: studentIdParamsSchema, query: studentDetailQuerySchema }),
   getStudentDetail
-);
-router.patch(
-  '/:id/cycle-status',
-  requireRoles(STUDENT_WRITE_ROLES),
-  validateRequest({ params: studentIdParamsSchema, body: studentCycleStatusSchema }),
-  updateStudentCycleStatus
 );
 router.patch(
   '/:id/classroom',

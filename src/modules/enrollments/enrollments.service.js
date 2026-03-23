@@ -18,17 +18,16 @@ import {
   derivePreviousSchoolType,
   isOwnCampus,
   resolveBillingConceptsByCode,
-  upsertStudentCycleForEnrollment,
 } from './services/enrollmentConfirmation.helpers.js';
 import { Cycle } from '../../models/cycle.model.js';
 import { Campus } from '../../models/campus.model.js';
 import { Classroom } from '../../models/classroom.model.js';
-import { StudentCycle } from '../../models/studentCycle.model.js';
 import { ApiError } from '../../utils/errors.js';
 import { runInTransaction } from '../../shared/dbSession.js';
 import { registerAuditLog } from '../../shared/audit.service.js';
 import { buildSearchScore } from '../../utils/search.js';
 import { normalizePersonNameFields } from '../../utils/personNameFormatter.js';
+import { getEnrollmentContextForStudent, getEnrollmentContextMapByStudentIds } from '../../shared/enrollmentCurrent.js';
 
 const SCHOOL_MONTHS = 10;
 
@@ -365,11 +364,8 @@ async function createConfirmedEnrollmentInSession({ session, data, createdByUser
 
   const enrollment = await Enrollment.create([{
     campusId: campus._id,
-    campusIds: allowMultiCampus
-      ? campusIdsFromClassrooms.map((id) => new mongoose.Types.ObjectId(id))
-      : [campus._id],
     cycleId: cycle._id,
-    status: 'CONFIRMED',
+    status: 'ENROLLED',
     notes: data.notes || undefined,
     createdBy: createdByUserId,
     updatedBy: createdByUserId,
@@ -468,14 +464,6 @@ async function createConfirmedEnrollmentInSession({ session, data, createdByUser
       : row.chargesGeneratedAt;
     await row.save({ session });
 
-    await upsertStudentCycleForEnrollment({
-      studentId: row.studentId,
-      cycleId: cycle._id,
-      campusId: classroomsById.get(String(row.classroomId))?.campusId,
-      enrollmentId: enrollment._id,
-      session,
-    });
-
     await Vacancy.updateOne(
       { studentId: row.studentId, cycleId: cycle._id },
       {
@@ -487,7 +475,6 @@ async function createConfirmedEnrollmentInSession({ session, data, createdByUser
   }
 
   enrollment.enrollmentStudents = enrollmentStudentDocs.map((row) => row._id);
-  enrollment.studentIds = enrollmentStudentDocs.map((row) => row.studentId);
   await enrollment.save({ session });
 
   const snapshotData = buildContractSnapshot({
@@ -504,9 +491,6 @@ async function createConfirmedEnrollmentInSession({ session, data, createdByUser
     enrollment,
     cycle,
     campus,
-    campusIds: allowMultiCampus
-      ? campusIdsFromClassrooms.map((id) => id.toString())
-      : [campus._id.toString()],
     chargesCount: chargesToCreate.length,
   };
 }
@@ -527,7 +511,7 @@ export async function createEnrollmentService(data, createdByUserId) {
     await registerAuditLog({
       entityType: 'ENROLLMENT',
       entityId: enrollment._id.toString(),
-      action: 'ENROLLMENT_CONFIRMED',
+      action: 'ENROLLMENT_ENROLLED',
       performedBy: createdByUserId,
       campusId: campus._id.toString(),
       payloadSnapshot: { students: data.enrollmentStudents.length, hasNotes: Boolean(data.notes), chargesCount },
@@ -618,11 +602,8 @@ export async function finalizeEnrollmentService(payload, userId) {
           .session(session);
       }
 
-      const currentStatus = await StudentCycle.findOne({ studentId: studentDoc._id, cycleId: cycle._id })
-        .select('status')
-        .session(session)
-        .lean();
-      if (currentStatus?.status === 'ENROLLED') {
+      const currentEnrollment = await getEnrollmentContextForStudent(studentDoc._id, { cycleId: cycle._id, session });
+      if (currentEnrollment?.enrollment?.status === 'ENROLLED') {
         throw new ApiError(409, `El alumno ${studentDoc.personId?.names || studentDoc._id} ya se matriculó en el ciclo activo`);
       }
 
@@ -727,17 +708,10 @@ export async function finalizeEnrollmentService(payload, userId) {
       allowMultiCampus: true,
     });
 
-    const enrollmentCampusIds = Array.isArray(enrollment?.campusIds) && enrollment.campusIds.length
-      ? enrollment.campusIds.map((id) => String(id))
-      : enrollment?.campusId
-        ? [String(enrollment.campusId)]
-        : [];
-
     return {
       enrollmentId: enrollment._id.toString(),
       cycleId: String(cycle._id),
-      campusId: enrollmentCampusIds[0] || null,
-      campusIds: enrollmentCampusIds,
+      campusId: enrollment?.campusId ? String(enrollment.campusId) : null,
       studentIds: resolvedStudents.map((row) => row.student._id.toString()),
       chargesCount,
     };
@@ -760,8 +734,8 @@ export async function finalizeEnrollmentService(payload, userId) {
     ok: true,
     enrollmentId: result.enrollmentId,
     studentIds: result.studentIds,
-    campusIds: result.campusIds,
-    status: 'CONFIRMED',
+    campusId: result.campusId,
+    status: 'ENROLLED',
     chargesCreated: result.chargesCount,
   };
 }
@@ -831,12 +805,64 @@ export async function getCampusCapacityService({ campusId, cycleId }) {
   });
 }
 
+export async function updateEnrollmentStatusService({ enrollmentId, status, reason, userId }) {
+  const enrollment = await Enrollment.findById(enrollmentId).lean();
+  if (!enrollment) throw new ApiError(404, 'Matrícula no encontrada');
+
+  if (status === 'TRANSFERRED') {
+    const studentRows = await EnrollmentStudent.find({ enrollmentId }).select('studentId').lean();
+    const studentIds = studentRows.map((row) => row.studentId);
+    const enforceNoDebtOnTransfer = process.env.ALLOW_TRANSFER_WITH_DEBT !== 'true';
+    if (enforceNoDebtOnTransfer && studentIds.length) {
+      const debtRows = await Charge.find({
+        studentId: { $in: studentIds },
+        outstandingAmount: { $gt: mongoose.Types.Decimal128.fromString('0') },
+        status: { $ne: 'CANCELLED' },
+      }).select('_id').lean();
+
+      if (debtRows.length) {
+        throw new ApiError(409, 'No se puede trasladar la matrícula con deuda pendiente');
+      }
+    }
+  }
+
+  const note = String(reason || '').trim();
+  const currentNotes = String(enrollment.notes || '').trim();
+  const nextNotes = note ? `${currentNotes ? `${currentNotes}\n` : ''}[${new Date().toISOString()}] ${note}` : currentNotes || undefined;
+
+  const update = {
+    status,
+    notes: nextNotes,
+    updatedBy: userId || enrollment.updatedBy || undefined,
+    transferredAt: status === 'TRANSFERRED' ? new Date() : null,
+  };
+  if (status === 'ENROLLED' && !enrollment.confirmedAt) update.confirmedAt = new Date();
+
+  const updated = await Enrollment.findByIdAndUpdate(
+    enrollmentId,
+    { $set: update },
+    { new: true, lean: true }
+  );
+
+  if (status === 'TRANSFERRED') {
+    await Vacancy.deleteMany({ cycleId: enrollment.cycleId, studentId: { $in: (await EnrollmentStudent.find({ enrollmentId }).select('studentId').lean()).map((row) => row.studentId) } });
+  }
+
+  return {
+    enrollmentId: String(updated._id),
+    status: updated.status,
+    confirmedAt: updated.confirmedAt || null,
+    transferredAt: updated.transferredAt || null,
+    notes: updated.notes || null,
+  };
+}
+
 export async function confirmEnrollmentService({ enrollmentId, payload, userId }) {
   const result = await runInTransaction(async (session) => {
     const enrollment = await Enrollment.findById(enrollmentId).session(session);
     if (!enrollment) throw new ApiError(404, 'Matrícula no encontrada');
-    if (enrollment.status === 'CONFIRMED') throw new ApiError(409, 'La matrícula ya fue confirmada');
-    if (enrollment.status !== 'DRAFT') throw new ApiError(409, 'El estado actual de matrícula no permite confirmación');
+    if (enrollment.status === 'ENROLLED') throw new ApiError(409, 'La matrícula ya está matriculada');
+    if (enrollment.status !== 'ABSENT') throw new ApiError(409, 'El estado actual de matrícula no permite este cambio');
 
     const cycleId = payload.cycleId || enrollment.cycleId;
     const campusId = payload.campusId || enrollment.campusId;
@@ -948,14 +974,6 @@ export async function confirmEnrollmentService({ enrollmentId, payload, userId }
     });
 
     for (const row of allEnrollmentStudents) {
-      await upsertStudentCycleForEnrollment({
-        studentId: row.studentId,
-        cycleId,
-        campusId,
-        enrollmentId: enrollment._id,
-        session,
-      });
-
       await Vacancy.updateOne(
         { studentId: row.studentId, cycleId },
         {
@@ -1035,11 +1053,10 @@ export async function confirmEnrollmentService({ enrollmentId, payload, userId }
       { _id: enrollment._id },
       {
         $set: {
-          status: 'CONFIRMED',
+          status: 'ENROLLED',
           confirmedAt: new Date(),
           cycleId,
           campusId,
-          studentIds,
           enrollmentStudents: allEnrollmentStudents.map((row) => row._id),
           notes: payload.notes || enrollment.notes,
           updatedBy: userId,
@@ -1051,7 +1068,7 @@ export async function confirmEnrollmentService({ enrollmentId, payload, userId }
     return {
       enrollmentId: enrollment._id.toString(),
       campusId: String(campusId),
-      status: 'CONFIRMED',
+      status: 'ENROLLED',
       snapshotSaved: true,
       chargesCreated: chargesToCreate.length,
     };
@@ -1060,7 +1077,7 @@ export async function confirmEnrollmentService({ enrollmentId, payload, userId }
   await registerAuditLog({
     entityType: 'ENROLLMENT',
     entityId: result.enrollmentId,
-    action: 'ENROLLMENT_CONFIRMED',
+    action: 'ENROLLMENT_ENROLLED',
     performedBy: userId,
     campusId: result.campusId,
     payloadSnapshot: { students: payload.students?.length || 0, hasNotes: Boolean(payload.notes) },
@@ -1101,7 +1118,7 @@ export async function listEnrollmentsService({ q, campus, cycleId, status, class
       if (!scopeCampusCodes.has(normalizedCampus)) throw new ApiError(403, 'No autorizado para este campus');
     } else {
       const scopedIds = [...scopeCampusIds].map((id) => new mongoose.Types.ObjectId(id));
-      where.$or = [{ campusId: { $in: scopedIds } }, { campusIds: { $in: scopedIds } }];
+      where.campusId = { $in: scopedIds };
       if (!scopeCampusIds.size) return { items: [], nextCursor: null };
     }
   }
@@ -1111,12 +1128,7 @@ export async function listEnrollmentsService({ q, campus, cycleId, status, class
     const campusDoc = await Campus.findOne({ $or: [{ _id: toObjectIdOrNull(campus) || null }, { code: campus }] }).select('_id').lean();
     if (!campusDoc) return { items: [], nextCursor: null };
     const campusIdFilter = campusDoc._id;
-    if (where.$or) {
-      where.$and = [{ $or: where.$or }, { $or: [{ campusId: campusIdFilter }, { campusIds: campusIdFilter }] }];
-      delete where.$or;
-    } else {
-      where.$or = [{ campusId: campusIdFilter }, { campusIds: campusIdFilter }];
-    }
+    where.campusId = campusIdFilter;
   }
   if (cursor) where._id = { $gt: cursor };
 
@@ -1138,7 +1150,7 @@ export async function listEnrollmentsService({ q, campus, cycleId, status, class
   const rows = await Enrollment.find(where)
     .sort({ _id: 1 })
     .limit(normalizedLimit + 1)
-    .select('_id studentIds enrollmentStudents cycleId campusId campusIds status createdAt')
+    .select('_id enrollmentStudents cycleId campusId status createdAt confirmedAt transferredAt')
     .lean();
 
   const hasMore = rows.length > normalizedLimit;
@@ -1156,32 +1168,21 @@ export async function listEnrollmentsService({ q, campus, cycleId, status, class
     enrollmentStudentsByEnrollment.get(key).push(row);
   }
 
-  const allStudentIds = [...new Set([
-    ...selected.flatMap((row) => (row.studentIds || []).map((id) => String(id))),
-    ...enrollmentStudents.map((row) => String(row.studentId)),
-  ])].map((id) => new mongoose.Types.ObjectId(id));
+  const allStudentIds = [...new Set(enrollmentStudents.map((row) => String(row.studentId)))]
+    .map((id) => new mongoose.Types.ObjectId(id));
 
-  const [students, cycles, classrooms, studentCycles, snapshots] = await Promise.all([
+  const [students, cycles, snapshots, enrollmentContexts] = await Promise.all([
     Student.find({ _id: { $in: allStudentIds } }).populate('personId').select('_id internalCode personId').lean(),
     Cycle.find({ _id: { $in: [...new Set(selected.map((row) => String(row.cycleId)))] } }).select('_id name').lean(),
-    Vacancy.find({ studentId: { $in: allStudentIds }, ...(classroomId ? { classroomId } : {}) })
-      .populate('classroomId', '_id displayName')
-      .select('studentId cycleId classroomId')
-      .lean(),
-    StudentCycle.find({ studentId: { $in: allStudentIds }, ...(cycleId ? { cycleId } : {}), ...(status ? { status } : {}) })
-      .select('studentId cycleId status campusId')
-      .lean(),
     ContractSnapshot.find({ $or: [{ enrollmentId: { $in: enrollmentIds } }, { matriculaId: { $in: enrollmentIds } }] })
       .select('enrollmentId matriculaId students discounts notes confirmedAt')
       .lean(),
+    getEnrollmentContextMapByStudentIds(allStudentIds, { cycleId: cycleId || null }),
   ]);
 
   const campusIds = [...new Set([
-    ...selected.flatMap((row) => [
-      ...(Array.isArray(row.campusIds) ? row.campusIds.map((id) => String(id)) : []),
-      ...(row.campusId ? [String(row.campusId)] : []),
-    ]),
-    ...studentCycles.map((row) => String(row.campusId || '')).filter(Boolean),
+    ...selected.map((row) => String(row.campusId || '')).filter(Boolean),
+    ...Array.from(enrollmentContexts.values()).map((row) => String(row.campus?._id || row.enrollment?.campusId || '')).filter(Boolean),
   ])].map((id) => new mongoose.Types.ObjectId(id));
 
   const campuses = campusIds.length
@@ -1192,18 +1193,13 @@ export async function listEnrollmentsService({ q, campus, cycleId, status, class
   const cycleMap = new Map(cycles.map((c) => [String(c._id), c]));
   const snapshotMap = new Map(snapshots.map((s) => [String(s.enrollmentId || s.matriculaId), s]));
   const campusMap = new Map(campuses.map((c) => [String(c._id), c]));
-  const cycleStatusMap = new Map(studentCycles.map((c) => [`${String(c.studentId)}:${String(c.cycleId)}`, c.status]));
-  const cycleCampusMap = new Map(studentCycles.map((c) => [`${String(c.studentId)}:${String(c.cycleId)}`, c.campusId ? String(c.campusId) : null]));
-  const classroomMap = new Map(classrooms.map((c) => [`${String(c.studentId)}:${String(c.cycleId)}`, c.classroomId]));
 
   const items = [];
   for (const row of selected) {
     const cycle = cycleMap.get(String(row.cycleId));
     const snapshot = snapshotMap.get(String(row._id));
     const enrollmentRows = enrollmentStudentsByEnrollment.get(String(row._id)) || [];
-    const studentIds = enrollmentRows.length
-      ? enrollmentRows.map((entry) => entry.studentId)
-      : (row.studentIds || []);
+    const studentIds = enrollmentRows.map((entry) => entry.studentId);
 
     for (const studentIdItem of studentIds) {
       if (qStudentIds && !qStudentIds.has(String(studentIdItem))) continue;
@@ -1211,15 +1207,13 @@ export async function listEnrollmentsService({ q, campus, cycleId, status, class
       const student = studentsMap.get(String(studentIdItem));
       if (!student) continue;
 
-      const statusValue = cycleStatusMap.get(`${String(studentIdItem)}:${String(row.cycleId)}`) || 'ABSENT';
+      const enrollmentContext = enrollmentContexts.get(String(studentIdItem));
+      const statusValue = row.status || enrollmentContext?.enrollment?.status || 'ABSENT';
       if (status && statusValue !== status) continue;
 
-      const classroom = classroomMap.get(`${String(studentIdItem)}:${String(row.cycleId)}`);
-      if (classroomId && String(classroom?._id || classroom) !== String(classroomId)) continue;
-      const campusIdValue =
-        cycleCampusMap.get(`${String(studentIdItem)}:${String(row.cycleId)}`)
-        || (Array.isArray(row.campusIds) && row.campusIds.length ? String(row.campusIds[0]) : null)
-        || (row.campusId ? String(row.campusId) : null);
+      const classroom = enrollmentContext?.classroom || null;
+      if (classroomId && String(classroom?._id || '') !== String(classroomId)) continue;
+      const campusIdValue = String(enrollmentContext?.campus?._id || row.campusId || '');
       const campus = campusIdValue ? campusMap.get(String(campusIdValue)) : null;
 
       const enrollmentStudent = enrollmentRows.find((entry) => String(entry.studentId) === String(studentIdItem));
@@ -1243,7 +1237,7 @@ export async function listEnrollmentsService({ q, campus, cycleId, status, class
         cycle: cycle ? { id: cycle._id.toString(), name: cycle.name } : null,
         classroom: classroom ? { id: classroom._id.toString(), displayName: classroom.displayName } : null,
         status: statusValue,
-        confirmedAt: snapshot?.confirmedAt || null,
+        confirmedAt: row.confirmedAt || snapshot?.confirmedAt || null,
         snapshot: {
           monthlyFee: firstApplicablePensionAmount(pensionMonthlyAmounts),
           pensionMonthlyAmounts,

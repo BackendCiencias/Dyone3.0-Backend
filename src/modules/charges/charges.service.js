@@ -3,11 +3,11 @@ import { Student } from '../../models/student.model.js';
 import { Campus } from '../../models/campus.model.js';
 import { BillingConcept } from '../../models/billingConcept.model.js';
 import { Charge } from '../../models/charge.model.js';
-import { StudentCycle } from '../../models/studentCycle.model.js';
 import { Vacancy } from '../../models/vacancy.model.js';
 import { Classroom } from '../../models/classroom.model.js';
 import { ApiError } from '../../utils/errors.js';
 import { registerAuditLog } from '../../shared/audit.service.js';
+import { getEnrollmentContextForStudent } from '../../shared/enrollmentCurrent.js';
 
 async function resolveStudent({ studentId, studentCod }, session) {
   if (studentId) {
@@ -89,21 +89,10 @@ async function resolveConcept({ billingConceptId, conceptName }, session) {
 async function resolveChargeContext(student, { cycleId, campusId }, session) {
   let resolvedCycleId = cycleId ? String(cycleId) : '';
   let resolvedCampusId = campusId ? String(campusId) : '';
-  let studentCycle = null;
-
-  if (resolvedCycleId && mongoose.Types.ObjectId.isValid(resolvedCycleId)) {
-    studentCycle = await StudentCycle.findOne({ studentId: student._id, cycleId: resolvedCycleId }).session(session);
-  }
-
-  if (!studentCycle) {
-    studentCycle = await StudentCycle.findOne({ studentId: student._id })
-      .sort({ createdAt: -1, _id: -1 })
-      .session(session);
-  }
-
-  if (studentCycle) {
-    resolvedCycleId = resolvedCycleId || String(studentCycle.cycleId);
-    resolvedCampusId = resolvedCampusId || String(studentCycle.campusId);
+  const currentEnrollment = await getEnrollmentContextForStudent(student._id, { cycleId: resolvedCycleId || null, session });
+  if (currentEnrollment?.enrollment) {
+    resolvedCycleId = resolvedCycleId || String(currentEnrollment.enrollment.cycleId);
+    resolvedCampusId = resolvedCampusId || String(currentEnrollment.campus?._id || currentEnrollment.enrollment.campusId || '');
   }
 
   if (!resolvedCampusId || !resolvedCycleId) {

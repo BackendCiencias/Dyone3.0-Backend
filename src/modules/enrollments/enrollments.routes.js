@@ -5,7 +5,7 @@ import { validate } from '../../middlewares/validate.js';
 import { validateRequest } from '../../middlewares/validateRequest.js';
 import { attachCampusScope, authorizeByCampusScope } from '../../shared/authorization.middleware.js';
 import { findEnrollmentCampusById } from './repositories/enrollments.repository.js';
-import { enrollmentConfirmSchema, enrollmentFinalizeSchema, enrollmentIdParamsSchema, enrollmentListQuerySchema } from './enrollments.schemas.js';
+import { enrollmentConfirmSchema, enrollmentFinalizeSchema, enrollmentIdParamsSchema, enrollmentListQuerySchema, enrollmentStatusUpdateSchema } from './enrollments.schemas.js';
 import {
   getEnrollmentById,
   getClassroomCapacity,
@@ -13,6 +13,7 @@ import {
   confirmEnrollment,
   finalizeEnrollment,
   listEnrollments,
+  updateEnrollmentStatus,
 } from './enrollments.controller.js';
 
 const router = Router();
@@ -22,6 +23,12 @@ const ENROLLMENT_READ_ROLES = [...ENROLLMENT_WRITE_ROLES, 'SECRETARY_VIEWER', 'A
 router.use(authMiddleware);
 
 router.post('/finalize', requireRoles(ENROLLMENT_WRITE_ROLES), validate(enrollmentFinalizeSchema), finalizeEnrollment);
+router.patch('/:id/status',
+  requireRoles(ENROLLMENT_WRITE_ROLES),
+  authorizeByCampusScope(async (req) => findEnrollmentCampusById(req.params.id)),
+  validateRequest({ params: enrollmentIdParamsSchema, body: enrollmentStatusUpdateSchema }),
+  updateEnrollmentStatus
+);
 router.post('/:id/confirm',
   requireRoles(ENROLLMENT_WRITE_ROLES),
   authorizeByCampusScope(async (req) => findEnrollmentCampusById(req.params.id)),

@@ -1,4 +1,4 @@
-import fs from 'fs';
+ï»¿import fs from 'fs';
 import path from 'path';
 import mongoose from 'mongoose';
 import { z } from 'zod';
@@ -9,12 +9,13 @@ import { Tutor } from '../src/models/tutor.model.js';
 import { Enrollment } from '../src/models/enrollment.model.js';
 import { EnrollmentStudent, NO_APLICA_PENSION } from '../src/models/enrollmentStudent.model.js';
 import { Vacancy } from '../src/models/vacancy.model.js';
+import { Classroom } from '../src/models/classroom.model.js';
 import { BillingSchedule } from '../src/models/billingSchedule.model.js';
 import { Charge } from '../src/models/charge.model.js';
 import { Cycle } from '../src/models/cycle.model.js';
-import { resolveBillingConceptsByCode, upsertStudentCycleForEnrollment } from '../src/modules/enrollments/services/enrollmentConfirmation.helpers.js';
+import { resolveBillingConceptsByCode } from '../src/modules/enrollments/services/enrollmentConfirmation.helpers.js';
 
-const REL = { PADRE: 'Padre', MADRE: 'Madre', ABUELO: 'Abuelo', ABUELA: 'Abuela', HERMANO: 'Hermano', HERMANA: 'Hermana', TIO: 'Tío', TIA: 'Tía', APODERADO: 'Apoderado', OTRO: 'Otro' };
+const REL = { PADRE: 'Padre', MADRE: 'Madre', ABUELO: 'Abuelo', ABUELA: 'Abuela', HERMANO: 'Hermano', HERMANA: 'Hermana', TIO: 'TÃ­o', TIA: 'TÃ­a', APODERADO: 'Apoderado', OTRO: 'Otro' };
 const ENROLL_NOTES = 'Matricula creada por importacion masiva de tutores';
 const EXEMPTION_REASON = 'Exonerado por secretaria, pendiente de revision';
 const OTHER_SCHOOL_NAME = 'Colegio Desconocido';
@@ -185,14 +186,13 @@ async function createEnrollmentsFromCandidates({ candidates, report, enrollmentS
       session.startTransaction();
       const immediateDueDate = new Date();
       const first = entries[0];
-      const enrollment = await Enrollment.create([{ cycleId: activeCycle._id, campusId: first.campusId, campusIds: [first.campusId], status: 'CONFIRMED', confirmedAt: new Date(), notes: ENROLL_NOTES, ...(entries.some((row) => row.previousSchoolType === 'OTHER') ? { originSchool: OTHER_SCHOOL_NAME } : {}) }], { session }).then((docs) => docs[0]);
+      const enrollment = await Enrollment.create([{ cycleId: activeCycle._id, campusId: first.campusId, status: 'ENROLLED', confirmedAt: new Date(), notes: ENROLL_NOTES }], { session }).then((docs) => docs[0]);
       const enrollmentStudents = [];
       const chargesToCreate = [];
       for (const entry of entries) {
         const enrollmentStudent = new EnrollmentStudent({ enrollmentId: enrollment._id, studentId: entry.student._id, classroomId: entry.classroomId, previousSchoolType: entry.previousSchoolType, ...(entry.previousSchoolType === 'OTHER' ? { previousSchoolName: entry.previousSchoolName } : {}), admissionFee: entry.admissionFee, enrollmentFee: entry.enrollmentFee, pensionMonthlyAmounts: entry.pensionMonthlyAmounts, agreedAt: new Date(), notes: entry.notes || undefined, chargesGeneratedAt: new Date() });
         await enrollmentStudent.save({ session });
         enrollmentStudents.push(enrollmentStudent);
-        await upsertStudentCycleForEnrollment({ studentId: entry.student._id, cycleId: activeCycle._id, campusId: entry.campusId, enrollmentId: enrollment._id, session });
         if (entry.admissionFee.applies && entry.admissionFee.isExempt !== true && Number(entry.admissionFee.amount || 0) > 0) chargesToCreate.push({ studentId: entry.student._id, cycleId: activeCycle._id, campusId: entry.campusId, conceptId: byCode.get('ADMISSION_FEE'), concept: 'ADMISSION', description: 'Derecho de ingreso', totalAmount: decimalAmount(entry.admissionFee.amount), outstandingAmount: decimalAmount(entry.admissionFee.amount), dueDate: immediateDueDate, status: 'OPEN', ...(entry.admissionFee.reason ? { notes: entry.admissionFee.reason } : {}) });
         if (entry.enrollmentFee.isExempt !== true && Number(entry.enrollmentFee.amount || 0) > 0) chargesToCreate.push({ studentId: entry.student._id, cycleId: activeCycle._id, campusId: entry.campusId, conceptId: byCode.get('ENROLLMENT_FEE'), concept: 'ENROLLMENT', description: 'Matricula', totalAmount: decimalAmount(entry.enrollmentFee.amount), outstandingAmount: decimalAmount(entry.enrollmentFee.amount), dueDate: immediateDueDate, status: 'OPEN', ...(entry.enrollmentFee.reason ? { notes: entry.enrollmentFee.reason } : {}) });
         entry.pensionMonthlyAmounts.forEach((amount, monthIndex) => { const n = Number(amount || 0); if (n <= 0) return; const scheduleRow = tuitionSchedulesByMonth.get(monthIndex) || null; chargesToCreate.push({ studentId: entry.student._id, cycleId: activeCycle._id, campusId: entry.campusId, conceptId: byCode.get('TUITION'), concept: 'TUITION', monthIndex, description: buildTuitionDescription(monthIndex, scheduleRow), totalAmount: decimalAmount(n), outstandingAmount: decimalAmount(n), dueDate: scheduleRow?.dueDate || null, status: 'OPEN' }); });
@@ -200,7 +200,6 @@ async function createEnrollmentsFromCandidates({ candidates, report, enrollmentS
       }
       if (chargesToCreate.length) await Charge.insertMany(chargesToCreate, { session });
       enrollment.enrollmentStudents = enrollmentStudents.map((row) => row._id);
-      enrollment.studentIds = enrollmentStudents.map((row) => row.studentId);
       await enrollment.save({ session });
       await session.commitTransaction();
       report.enrollmentsCreated += 1;
@@ -272,3 +271,5 @@ async function run() {
 }
 
 run();
+
+

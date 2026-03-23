@@ -10,67 +10,50 @@ import { Counter } from '../src/models/counter.model.js';
 import { Cycle } from '../src/models/cycle.model.js';
 import { Campus } from '../src/models/campus.model.js';
 import { Classroom } from '../src/models/classroom.model.js';
-import { StudentCycle } from '../src/models/studentCycle.model.js';
 import { Vacancy } from '../src/models/vacancy.model.js';
+import { Enrollment } from '../src/models/enrollment.model.js';
+import { EnrollmentStudent, NO_APLICA_PENSION } from '../src/models/enrollmentStudent.model.js';
 
 const genderSchema = z.enum(['M', 'F']).or(z.enum(['m', 'f'])).transform((value) => value.toUpperCase());
 const levelSchema = z.enum(['INITIAL', 'PRIMARY', 'SECONDARY']);
-const IMPORT_NOTES = 'Creado por importación inicial';
+const IMPORT_NOTES = 'Creado por importacion inicial';
 const DEFAULT_FILE = './data/students_2025.csv';
 const ALLOWED_CAMPUSES = ['CIENCIAS', 'CIENCIAS_APLICADAS', 'CIMAS'];
+const OTHER_SCHOOL_NAME = 'Colegio Desconocido';
 
 const rowSchema = z.object({
-  internalCode: z.string().trim().min(1, 'Código interno es obligatorio'),
+  internalCode: z.string().trim().min(1, 'Codigo interno es obligatorio'),
   lastNames: z.string().trim().min(1, 'Apellidos es obligatorio'),
   names: z.string().trim().min(1, 'Nombres es obligatorio'),
   dni: z.string().trim().optional().or(z.literal('')),
   gender: genderSchema,
   campusCode: z.enum(['CIENCIAS', 'CIENCIAS_APLICADAS', 'CIMAS']),
   grade: z.string().trim().min(1, 'Grado es obligatorio'),
-  section: z.string().trim().min(1, 'Sección es obligatorio'),
+  section: z.string().trim().min(1, 'Seccion es obligatorio'),
   level: levelSchema,
   notes: z.string().trim().optional().or(z.literal('')),
 });
 
 function parseArgs(argv) {
   const args = {};
-
   for (let i = 2; i < argv.length; i += 1) {
     const current = argv[i];
     if (!current.startsWith('--')) continue;
-
     const key = current.slice(2);
     const value = argv[i + 1];
-
-    if (!value || value.startsWith('--')) {
-      args[key] = true;
-      continue;
+    if (!value || value.startsWith('--')) args[key] = true;
+    else {
+      args[key] = value;
+      i += 1;
     }
-
-    args[key] = value;
-    i += 1;
   }
-
   return args;
 }
 
 function parseBooleanFlag(value) {
   if (typeof value === 'boolean') return value;
   if (typeof value !== 'string') return false;
-
-  const normalized = value.trim().toLowerCase();
-  return ['1', 'true', 'yes', 'y', 'on'].includes(normalized);
-}
-
-function debugLog(enabled, message, payload) {
-  if (!enabled) return;
-
-  if (payload === undefined) {
-    console.log(`[importStudents:debug] ${message}`);
-    return;
-  }
-
-  console.log(`[importStudents:debug] ${message}`, payload);
+  return ['1', 'true', 'yes', 'y', 'on'].includes(value.trim().toLowerCase());
 }
 
 function formatDurationMs(ms) {
@@ -96,13 +79,11 @@ function createProgressTracker({ scriptName, total, quiet }) {
     render({ processed, ok, invalid, errors, force = false }) {
       if (quiet || total <= 0) return;
       if (!force && processed !== total && (step <= 0 || processed % step !== 0)) return;
-
       const elapsedMs = Date.now() - startedAt;
       const percent = Math.floor((processed / total) * 100);
       const avgPerRowMs = processed > 0 ? elapsedMs / processed : 0;
       const etaMs = processed > 0 ? Math.max(0, (total - processed) * avgPerRowMs) : 0;
       const line = `\r${percent}% (${processed}/${total}) | ok:${ok} invalid:${invalid} errors:${errors} | elapsed:${formatDurationMs(elapsedMs)} ETA:${formatDurationMs(etaMs)}`;
-
       const padding = Math.max(0, lastLineLength - line.length);
       process.stdout.write(line + ' '.repeat(padding));
       lastLineLength = line.length;
@@ -114,13 +95,15 @@ function createProgressTracker({ scriptName, total, quiet }) {
   };
 }
 
-function resolveStudentCycleAbsentStatus() {
-  const statusPath = StudentCycle.schema.path('status');
-  const enumValues = Array.isArray(statusPath?.enumValues) ? statusPath.enumValues : [];
-
-  if (enumValues.includes('ABSENT')) return 'ABSENT';
-  if (enumValues.length > 0) return enumValues[0];
-  return 'ABSENT';
+function maybeFixMojibake(value) {
+  const text = String(value || '');
+  if (!text) return { value: text, fixed: false };
+  const hasMojibake = /Ã|Â|�/.test(text);
+  if (!hasMojibake) return { value: text, fixed: false };
+  const converted = Buffer.from(text, 'latin1').toString('utf8');
+  const badness = (input) => (String(input).match(/Ã|Â|�/g) || []).length;
+  if (badness(converted) < badness(text)) return { value: converted, fixed: true };
+  return { value: text, fixed: false };
 }
 
 function normalizeHeader(value) {
@@ -132,71 +115,36 @@ function normalizeHeader(value) {
     .trim();
 }
 
-function maybeFixMojibake(value) {
-  const text = String(value || '');
-  if (!text) return { value: text, fixed: false };
-
-  const hasMojibake = /Ã|Â|�/.test(text);
-  if (!hasMojibake) return { value: text, fixed: false };
-
-  const converted = Buffer.from(text, 'latin1').toString('utf8');
-  const badness = (input) => (String(input).match(/Ã|Â|�/g) || []).length;
-
-  if (badness(converted) < badness(text)) {
-    return { value: converted, fixed: true };
-  }
-
-  return { value: text, fixed: false };
-}
-
 function splitLine(line, delimiter) {
   return line.split(delimiter).map((v) => maybeFixMojibake(v).value.trim());
 }
 
 function parseCSV(content) {
-  const lines = content
-    .split(/\r?\n/)
-    .map((line) => line.trim())
-    .filter((line) => line.length > 0);
-
+  const lines = content.split(/\r?\n/).map((line) => line.trim()).filter((line) => line.length > 0);
   if (!lines.length) return [];
-
   const headerLine = lines[0];
-
   const count = (str, ch) => (str.match(new RegExp(`\\${ch}`, 'g')) || []).length;
   const tabCount = count(headerLine, '\t');
   const commaCount = count(headerLine, ',');
   const semiCount = count(headerLine, ';');
-
   let delimiter = ',';
   const max = Math.max(tabCount, commaCount, semiCount);
   if (max === tabCount) delimiter = '\t';
   else if (max === semiCount) delimiter = ';';
-
   const headers = splitLine(headerLine, delimiter).map(normalizeHeader);
-
   return lines.slice(1).map((line, index) => {
     const values = splitLine(line, delimiter);
     const raw = {};
-
-    headers.forEach((header, i) => {
-      raw[header] = values[i] || '';
-    });
-
-    return {
-      rowNumber: index + 2,
-      raw,
-    };
+    headers.forEach((header, i) => { raw[header] = values[i] || ''; });
+    return { rowNumber: index + 2, raw };
   });
 }
 
 function normalizeDni(value) {
   const normalized = String(value || '').trim();
   if (!normalized) return undefined;
-
   const lowered = normalized.toLowerCase();
   if (['null', 'undefined', 'n/a', 'na', '-'].includes(lowered)) return undefined;
-
   return normalized;
 }
 
@@ -228,17 +176,6 @@ function normalizeCampusCode(input) {
   return normalizeSpaces(input).toLocaleUpperCase('es-PE');
 }
 
-function resolveCampusOverride(input) {
-  if (!input) return null;
-
-  const normalized = normalizeCampusCode(input);
-  if (!ALLOWED_CAMPUSES.includes(normalized)) {
-    throw new Error(`Campus inválido para --campus: ${input}. Permitidos: ${ALLOWED_CAMPUSES.join(', ')}`);
-  }
-
-  return normalized;
-}
-
 function normalizeGrade(input) {
   return normalizeSpaces(input).replace(/[°º]/g, '');
 }
@@ -260,22 +197,17 @@ function extractStudentCodeSequence(input) {
 }
 
 async function syncStudentInternalCodeCounter(report) {
-  const students = await Student.find({})
-    .select('internalCode')
-    .lean();
-
+  const students = await Student.find({}).select('internalCode').lean();
   let maxSeq = 0;
   for (const student of students) {
     const seq = extractStudentCodeSequence(student.internalCode);
     if (seq && seq > maxSeq) maxSeq = seq;
   }
-
   await Counter.findOneAndUpdate(
     { key: 'student_internal_code' },
     { $set: { seq: maxSeq } },
     { upsert: true, new: true }
   );
-
   report.counterSyncedTo = maxSeq;
 }
 
@@ -284,10 +216,7 @@ function mapRow(rawRow, report, rowNumber) {
   const fixedNotes = maybeFixMojibake(rawNotes);
   if (/Ã|Â|�/.test(rawNotes) && !fixedNotes.fixed) {
     report.warnings += 1;
-    report.warningRows.push({
-      rowNumber,
-      reason: 'No se pudo corregir posible mojibake en notas; se guarda valor original',
-    });
+    report.warningRows.push({ rowNumber, reason: 'No se pudo corregir posible mojibake en notas; se guarda valor original' });
   }
 
   return {
@@ -309,16 +238,9 @@ async function findOrCreatePerson(data, report) {
   const normalizedLastNames = normalizeLastNames(data.lastNames);
 
   let person = null;
-  if (data.dni) {
-    person = await Person.findOne({ dni: data.dni });
-  }
-
+  if (data.dni) person = await Person.findOne({ dni: data.dni });
   if (!person) {
-    const candidates = await Person.find({
-      names: normalizedNames,
-      lastNames: normalizedLastNames,
-    }).limit(2);
-
+    const candidates = await Person.find({ names: normalizedNames, lastNames: normalizedLastNames }).limit(2);
     if (candidates.length === 1) person = candidates[0];
   }
 
@@ -346,7 +268,6 @@ async function findOrCreatePerson(data, report) {
   if (person.lastNames !== normalizedLastNames) setUpdates.lastNames = normalizedLastNames;
   if (person.gender !== data.gender) setUpdates.gender = data.gender;
   if (data.dni && person.dni !== data.dni) setUpdates.dni = data.dni;
-
   if (Object.keys(setUpdates).length) {
     await Person.updateOne({ _id: person._id }, { $set: setUpdates });
     report.peopleUpdated += 1;
@@ -359,7 +280,6 @@ async function findOrCreatePerson(data, report) {
 async function upsertStudent(data, person, report) {
   const existing = await Student.findOne({ internalCode: data.internalCode });
   const previousCampus = data.campusCode;
-
   if (!existing) {
     const created = await Student.create({
       personId: person._id,
@@ -397,102 +317,103 @@ async function resolveCampus(campusCode, report) {
   return campus;
 }
 
-function buildClassroomDisplayName({ grade, section, level }) {
-  return `${grade}° ${section} - ${level}`;
-}
-
-async function resolveOrCreateClassroom({ campusId, cycleId, grade, section, level }, report) {
-  let classroom = await Classroom.findOne({ campusId, cycleId, grade, section, level });
-  if (classroom) return classroom;
-
-  try {
-    classroom = await Classroom.create({
-      campusId,
-      cycleId,
-      grade,
-      section,
-      level,
-      capacity: 30,
-      displayName: buildClassroomDisplayName({ grade, section, level }),
-      isActive: true,
-      notes: IMPORT_NOTES,
-    });
-    report.classroomsCreated += 1;
-    return classroom;
-  } catch (error) {
-    if (error?.code === 11000) {
-      return Classroom.findOne({ campusId, cycleId, grade, section, level });
-    }
-    throw error;
-  }
-}
-
-async function upsertStudentCycle({ studentId, cycleId, campusId, notes, debug }, report) {
-  const absentStatus = resolveStudentCycleAbsentStatus();
-  const updateDoc = {
-    $setOnInsert: {
-      studentId,
-      cycleId,
-      campusId,
-    },
-    $set: {
-      status: absentStatus,
-      notes: notes || 'Importación inicial',
-    },
-  };
-
-  debugLog(debug, 'StudentCycle.updateOne filter', { studentId, cycleId, campusId });
-  debugLog(debug, 'StudentCycle.updateOne updateDoc', updateDoc);
-
-  try {
-    const updateResult = await StudentCycle.updateOne(
-      { studentId, cycleId, campusId },
-      updateDoc,
-      { upsert: true }
-    );
-
-    if (updateResult.upsertedCount > 0) report.studentCyclesCreated += 1;
-  } catch (error) {
-    debugLog(debug, 'Error en StudentCycle.updateOne', {
-      message: error?.message,
-      stack: error?.stack,
-      code: error?.code,
-      name: error?.name,
-    });
-    throw error;
-  }
+async function resolveExistingClassroom({ campusId, cycleId, grade, section, level }) {
+  return Classroom.findOne({ campusId, cycleId, grade, section, level });
 }
 
 async function upsertVacancy({ studentId, cycleId, classroomId, notes }, report) {
   const existing = await Vacancy.findOne({ studentId, cycleId });
-
   if (!existing) {
-    await Vacancy.create({
-      studentId,
-      cycleId,
-      classroomId,
-      notes: notes || IMPORT_NOTES,
-    });
+    await Vacancy.create({ studentId, cycleId, classroomId, notes: notes || IMPORT_NOTES });
     report.vacanciesCreated += 1;
     return;
   }
-
   const setUpdates = {};
   if (String(existing.classroomId) !== String(classroomId)) setUpdates.classroomId = classroomId;
   if ((notes || IMPORT_NOTES) !== existing.notes) setUpdates.notes = notes || IMPORT_NOTES;
-
   if (Object.keys(setUpdates).length > 0) {
     await Vacancy.updateOne({ _id: existing._id }, { $set: setUpdates });
     report.vacanciesUpdated += 1;
   }
 }
 
+function derivePreviousSchoolType(previousCampus) {
+  const normalized = normalizeCampusCode(previousCampus);
+  return ALLOWED_CAMPUSES.includes(normalized) ? normalized : 'OTHER';
+}
+
+async function upsertDraftEnrollmentForStudent({ student, classroom, cycleId, campusId, notes }, report) {
+  const existingEnrollmentStudent = await EnrollmentStudent.findOne({ studentId: student._id })
+    .populate({ path: 'enrollmentId', select: '_id cycleId status campusId enrollmentStudents notes' });
+
+  const previousSchoolType = derivePreviousSchoolType(student.previousCampus);
+  const enrollmentStudentPayload = {
+    classroomId: classroom._id,
+    previousSchoolType,
+    ...(previousSchoolType === 'OTHER' ? { previousSchoolName: OTHER_SCHOOL_NAME } : {}),
+    admissionFee: { applies: false, amount: 0, isExempt: false, reason: '' },
+    enrollmentFee: { amount: 0, isExempt: false, reason: '' },
+    pensionMonthlyAmounts: Array(10).fill(NO_APLICA_PENSION),
+    notes: notes || undefined,
+  };
+
+  if (existingEnrollmentStudent?.enrollmentId && String(existingEnrollmentStudent.enrollmentId.cycleId) === String(cycleId)) {
+    const enrollment = existingEnrollmentStudent.enrollmentId;
+    await Enrollment.updateOne(
+      { _id: enrollment._id },
+      {
+        $set: {
+          status: 'ABSENT',
+          campusId,
+          ...(notes ? { notes } : {}),
+        },
+        $addToSet: {
+          enrollmentStudents: existingEnrollmentStudent._id,
+        },
+      }
+    );
+
+    await EnrollmentStudent.updateOne(
+      { _id: existingEnrollmentStudent._id },
+      { $set: enrollmentStudentPayload }
+    );
+
+    report.enrollmentsUpdated += 1;
+    report.enrollmentStudentsUpdated += 1;
+    return enrollment._id;
+  }
+
+  const enrollment = await Enrollment.create({
+    cycleId,
+    campusId,
+    status: 'ABSENT',
+    ...(notes ? { notes } : {}),
+  });
+
+  const enrollmentStudent = await EnrollmentStudent.create({
+    enrollmentId: enrollment._id,
+    studentId: student._id,
+    ...enrollmentStudentPayload,
+  });
+
+  await Enrollment.updateOne(
+    { _id: enrollment._id },
+    {
+      $set: {
+        enrollmentStudents: [enrollmentStudent._id],
+      },
+    }
+  );
+
+  report.enrollmentsCreated += 1;
+  report.enrollmentStudentsCreated += 1;
+  return enrollment._id;
+}
+
 async function run() {
   const args = parseArgs(process.argv);
-  const debug = parseBooleanFlag(args.debug);
   const quiet = parseBooleanFlag(args.quiet);
   const selectedFile = String(args.file || DEFAULT_FILE);
-  const campusOverride = resolveCampusOverride(args.campus);
   const filePath = path.resolve(process.cwd(), selectedFile);
   if (!fs.existsSync(filePath)) {
     console.error(`Archivo no encontrado: ${filePath}`);
@@ -500,27 +421,6 @@ async function run() {
   }
 
   await connectDB();
-
-  if (debug) {
-    const statusPath = StudentCycle.schema.path('status');
-    const cyclePath = StudentCycle.schema.path('cycleId');
-    const campusPath = StudentCycle.schema.path('campusId');
-
-    debugLog(true, 'StudentCycle schema relevant paths', {
-      status: {
-        instance: statusPath?.instance,
-        enumValues: statusPath?.enumValues,
-      },
-      cycleId: {
-        instance: cyclePath?.instance,
-        options: cyclePath?.options,
-      },
-      campusId: {
-        instance: campusPath?.instance,
-        options: campusPath?.options,
-      },
-    });
-  }
 
   const report = {
     totalRows: 0,
@@ -531,7 +431,10 @@ async function run() {
     studentsCreated: 0,
     studentsUpdated: 0,
     campusesResolved: 0,
-    classroomsCreated: 0,
+    enrollmentsCreated: 0,
+    enrollmentsUpdated: 0,
+    enrollmentStudentsCreated: 0,
+    enrollmentStudentsUpdated: 0,
     studentCyclesCreated: 0,
     vacanciesCreated: 0,
     vacanciesUpdated: 0,
@@ -545,17 +448,14 @@ async function run() {
 
   try {
     const activeCycle = await getActiveCycle();
-    if (!activeCycle) {
-      throw new Error('No existe un ciclo activo (Cycle.isActive=true). No se puede continuar con la importación.');
-    }
+    if (!activeCycle) throw new Error('No existe un ciclo activo (Cycle.isActive=true). No se puede continuar con la importacion.');
 
     if (!quiet) {
       console.log(`Archivo origen: ${selectedFile}`);
-      console.log(`Campus aplicado: ${campusOverride || 'según CSV'}`);
+      console.log('Campus aplicado: segun CSV');
     }
 
-    const content = fs.readFileSync(filePath, 'utf8');
-    const rows = parseCSV(content);
+    const rows = parseCSV(fs.readFileSync(filePath, 'utf8'));
     report.totalRows = rows.length;
     const progress = createProgressTracker({ scriptName: 'importStudents', total: rows.length, quiet });
     let processed = 0;
@@ -565,19 +465,13 @@ async function run() {
 
     for (const row of rows) {
       const mapped = mapRow(row.raw, report, row.rowNumber);
-      if (campusOverride) mapped.campusCode = campusOverride;
-      debugLog(debug, 'Procesando fila', { rowNumber: row.rowNumber, internalCode: mapped.internalCode });
       const parsed = rowSchema.safeParse(mapped);
 
       if (!parsed.success) {
         report.rowsInvalid += 1;
         invalid += 1;
         processed += 1;
-        errorRows.push({
-          rowNumber: row.rowNumber,
-          internalCode: mapped.internalCode || null,
-          reason: parsed.error.issues.map((issue) => issue.message).join('; '),
-        });
+        errorRows.push({ rowNumber: row.rowNumber, internalCode: mapped.internalCode || null, reason: parsed.error.issues.map((issue) => issue.message).join('; ') });
         progress.render({ processed, ok, invalid, errors });
         continue;
       }
@@ -585,52 +479,37 @@ async function run() {
       const data = parsed.data;
 
       try {
-        const person = await findOrCreatePerson(data, report);
+        if (!ALLOWED_CAMPUSES.includes(data.campusCode)) throw new Error(`Campus invalido en CSV: ${data.campusCode}`);
         const campus = await resolveCampus(data.campusCode, report);
         if (!campus) throw new Error(`Campus no encontrado para code=${data.campusCode}`);
 
-        const student = await upsertStudent(data, person, report);
-        const classroom = await resolveOrCreateClassroom({
+        const classroom = await resolveExistingClassroom({
           campusId: campus._id,
           cycleId: activeCycle._id,
           grade: data.grade,
           section: data.section,
           level: data.level,
-        }, report);
-
-        await upsertStudentCycle({
-          studentId: student._id,
-          cycleId: activeCycle._id,
-          campusId: campus._id,
-          notes: data.notes,
-          debug,
-        }, report);
-
-        await upsertVacancy({
-          studentId: student._id,
-          cycleId: activeCycle._id,
-          classroomId: classroom._id,
-          notes: data.notes,
-        }, report);
-
-        successRows.push({
-          rowNumber: row.rowNumber,
-          internalCode: data.internalCode,
-          personId: person._id,
-          studentId: student._id,
-          campusId: campus._id,
-          classroomId: classroom._id,
-          cycleId: activeCycle._id,
         });
+        if (!classroom) throw new Error(`Classroom no encontrado para campus=${data.campusCode} level=${data.level} grade=${data.grade} section=${data.section}`);
+
+        const person = await findOrCreatePerson(data, report);
+        const student = await upsertStudent(data, person, report);
+        const enrollmentId = await upsertDraftEnrollmentForStudent({
+          student,
+          classroom,
+          cycleId: activeCycle._id,
+          campusId: campus._id,
+          notes: data.notes,
+        }, report);
+
+        await upsertVacancy({ studentId: student._id, cycleId: activeCycle._id, classroomId: classroom._id, notes: data.notes }, report);
+
+        successRows.push({ rowNumber: row.rowNumber, internalCode: data.internalCode, personId: person._id, studentId: student._id, campusId: campus._id, classroomId: classroom._id, cycleId: activeCycle._id, enrollmentId });
         ok += 1;
       } catch (error) {
         report.errors += 1;
         errors += 1;
-        errorRows.push({
-          rowNumber: row.rowNumber,
-          internalCode: data.internalCode || null,
-          reason: error.message,
-        });
+        errorRows.push({ rowNumber: row.rowNumber, internalCode: data.internalCode || null, reason: error.message });
       }
 
       processed += 1;
@@ -642,7 +521,6 @@ async function run() {
 
     const logsDir = path.resolve(process.cwd(), 'logs');
     fs.mkdirSync(logsDir, { recursive: true });
-
     fs.writeFileSync(path.join(logsDir, 'import-students-success.json'), JSON.stringify(successRows, null, 2), 'utf8');
     fs.writeFileSync(path.join(logsDir, 'import-students-errors.json'), JSON.stringify(errorRows, null, 2), 'utf8');
     fs.writeFileSync(path.join(logsDir, 'import-students-warnings.json'), JSON.stringify(report.warningRows, null, 2), 'utf8');
@@ -650,25 +528,22 @@ async function run() {
 
     console.log('===== Import Students Summary =====');
     console.log(`Total filas: ${report.totalRows}`);
-    console.log(`Filas inválidas: ${report.rowsInvalid}`);
+    console.log(`Filas invalidas: ${report.rowsInvalid}`);
     console.log(`People creadas: ${report.peopleCreated}`);
     console.log(`People actualizadas: ${report.peopleUpdated}`);
     console.log(`Students creados: ${report.studentsCreated}`);
     console.log(`Students actualizados: ${report.studentsUpdated}`);
     console.log(`Campus resueltos: ${report.campusesResolved}`);
-    console.log(`Classrooms creados: ${report.classroomsCreated}`);
-    console.log(`StudentCycles creados: ${report.studentCyclesCreated}`);
+    console.log(`Matriculas ausentes creadas: ${report.enrollmentsCreated}`);
+    console.log(`Matriculas ausentes actualizadas: ${report.enrollmentsUpdated}`);
+    console.log(`EnrollmentStudents creados: ${report.enrollmentStudentsCreated}`);
+    console.log(`EnrollmentStudents actualizados: ${report.enrollmentStudentsUpdated}`);
     console.log(`Vacancies creadas: ${report.vacanciesCreated}`);
     console.log(`Vacancies actualizadas: ${report.vacanciesUpdated}`);
     console.log(`Counter student_internal_code sincronizado a: ${report.counterSyncedTo}`);
     console.log(`Warnings: ${report.warnings}`);
     console.log(`Errores de proceso: ${report.errors}`);
     console.log(`Logs: ${logsDir}`);
-    console.log('Archivos tocados:');
-    console.log(`- ${path.join(logsDir, 'import-students-success.json')}`);
-    console.log(`- ${path.join(logsDir, 'import-students-errors.json')}`);
-    console.log(`- ${path.join(logsDir, 'import-students-warnings.json')}`);
-
     process.exit(0);
   } catch (error) {
     console.error('Error ejecutando importStudents:', error);

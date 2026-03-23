@@ -2,8 +2,8 @@ import { Enrollment } from '../../../models/enrollment.model.js';
 import { Campus } from '../../../models/campus.model.js';
 
 export async function findEnrollmentCampusById(enrollmentId) {
-  const row = await Enrollment.findById(enrollmentId).select('campusId campusIds').lean();
-  const campusId = row?.campusId || (Array.isArray(row?.campusIds) && row.campusIds.length ? row.campusIds[0] : null);
+  const row = await Enrollment.findById(enrollmentId).select('campusId').lean();
+  const campusId = row?.campusId || null;
   if (!campusId) return null;
 
   const campus = await Campus.findById(campusId).select('_id code').lean();

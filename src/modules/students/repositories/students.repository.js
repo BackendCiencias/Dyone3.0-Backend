@@ -1,11 +1,11 @@
 import mongoose from 'mongoose';
-import { StudentCycle } from '../../../models/studentCycle.model.js';
 import { Vacancy } from '../../../models/vacancy.model.js';
 import { Campus } from '../../../models/campus.model.js';
 import { Student } from '../../../models/student.model.js';
 import { Person } from '../../../models/person.model.js';
 import { Tutor } from '../../../models/tutor.model.js';
 import { normalizePersonUpdatePayload } from '../../../utils/personNameFormatter.js';
+import { getEnrollmentContextForStudent } from '../../../shared/enrollmentCurrent.js';
 
 async function hydrateCampus(campusId) {
   if (!campusId) return null;
@@ -14,14 +14,11 @@ async function hydrateCampus(campusId) {
 }
 
 export async function findStudentCampusById(studentId, cycleId = null) {
+  const currentEnrollment = await getEnrollmentContextForStudent(studentId, { cycleId });
+  if (currentEnrollment?.campus?._id) return hydrateCampus(currentEnrollment.campus._id);
+  if (currentEnrollment?.enrollment?.campusId) return hydrateCampus(currentEnrollment.enrollment.campusId);
+
   const cycleFilter = cycleId ? { cycleId } : {};
-  const latestCycle = await StudentCycle.findOne({ studentId, ...cycleFilter })
-    .sort({ updatedAt: -1 })
-    .select('campusId')
-    .lean();
-
-  if (latestCycle?.campusId) return hydrateCampus(latestCycle.campusId);
-
   const latestVacancy = await Vacancy.findOne({ studentId, ...cycleFilter })
     .populate({ path: 'classroomId', select: 'campusId' })
     .lean();

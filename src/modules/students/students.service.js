@@ -5,18 +5,20 @@ import { Counter } from '../../models/counter.model.js';
 import { Classroom } from '../../models/classroom.model.js';
 import { Campus } from '../../models/campus.model.js';
 import { Cycle } from '../../models/cycle.model.js';
-import { StudentCycle } from '../../models/studentCycle.model.js';
 import { Vacancy } from '../../models/vacancy.model.js';
 import { Tutor } from '../../models/tutor.model.js';
 import { Payment } from '../../models/payment.model.js';
 import { Charge } from '../../models/charge.model.js';
 import { PaymentAllocation } from '../../models/paymentAllocation.model.js';
+import { Enrollment } from '../../models/enrollment.model.js';
+import { EnrollmentStudent, NO_APLICA_PENSION } from '../../models/enrollmentStudent.model.js';
 import { ApiError } from '../../utils/errors.js';
 import { getClassroomCapacityService } from '../enrollments/enrollments.service.js';
 import { runInTransaction } from '../../shared/dbSession.js';
 import { registerAuditLog } from '../../shared/audit.service.js';
 import { buildAccentInsensitiveRegex, normalizeSearchTerm } from '../../utils/search.js';
 import { normalizePersonNameFields, normalizePersonUpdatePayload } from '../../utils/personNameFormatter.js';
+import { getEnrollmentContextForStudent, getEnrollmentContextMapByStudentIds, updateEnrollmentStatusForStudent } from '../../shared/enrollmentCurrent.js';
 import { searchUnassignedStudentsService as searchUnassignedStudentsModuleService, addCampusToStudents } from './services/unassignedStudents.search.service.js';
 import { toUnassignedStudentListItem } from './presenters/unassignedStudentListItem.presenter.js';
 import {
@@ -63,7 +65,7 @@ async function resolveCurrentCycle(session) {
     .session(session);
 
   if (!fallback) {
-    throw new ApiError(400, 'No hay ciclo escolar activo para crear StudentCycle');
+    throw new ApiError(400, 'No hay ciclo escolar activo para crear matrícula');
   }
 
   return fallback;
@@ -153,22 +155,8 @@ async function buildStudentResponse(items) {
     .select('_id')
     .lean();
 
-  const vacancyFilter = { studentId: { $in: studentIds } };
-  const cycleStatusFilter = { studentId: { $in: studentIds } };
-  if (activeCycle?._id) {
-    vacancyFilter.cycleId = activeCycle._id;
-    cycleStatusFilter.cycleId = activeCycle._id;
-  }
-
-  const [vacancies, studentCycles, chargeTotals] = await Promise.all([
-    Vacancy.find(vacancyFilter)
-      .sort({ updatedAt: -1, _id: -1 })
-      .populate({ path: 'classroomId', populate: { path: 'campusId' } })
-      .lean(),
-    StudentCycle.find(cycleStatusFilter)
-      .sort({ updatedAt: -1, _id: -1 })
-      .select('studentId status campusId')
-      .lean(),
+  const [contexts, chargeTotals] = await Promise.all([
+    getEnrollmentContextMapByStudentIds(studentIds, { cycleId: activeCycle?._id || null }),
     Charge.aggregate([
       {
         $match: {
@@ -185,28 +173,16 @@ async function buildStudentResponse(items) {
     ]),
   ]);
 
-  const vacancyByStudent = new Map();
-  for (const vacancy of vacancies) {
-    const key = String(vacancy.studentId);
-    if (!vacancyByStudent.has(key)) vacancyByStudent.set(key, vacancy);
-  }
-
-  const cycleStatusByStudent = new Map();
-  for (const row of studentCycles) {
-    const key = String(row.studentId);
-    if (!cycleStatusByStudent.has(key)) cycleStatusByStudent.set(key, row);
-  }
-
   const debtByStudent = new Map(
     chargeTotals.map((row) => [String(row._id), roundMoney(Number(row.totalDebt || 0))])
   );
 
   return items.map((student) => {
     const person = student.personId;
-    const vacancy = vacancyByStudent.get(String(student._id));
-    const classroom = vacancy?.classroomId;
-    const campus = classroom?.campusId;
-    const cycleStatus = cycleStatusByStudent.get(String(student._id));
+    const context = contexts.get(String(student._id));
+    const classroom = context?.classroom || null;
+    const campus = context?.campus || null;
+    const enrollment = context?.enrollment || null;
 
     return {
       id: student._id.toString(),
@@ -220,7 +196,7 @@ async function buildStudentResponse(items) {
       lastKnownSection: classroom?.section || null,
       classroomName: classroom?.displayName || null,
       activeStatus: student.activeStatus,
-      enrollmentStatus: cycleStatus?.status || null,
+      enrollmentStatus: enrollment?.status || null,
       totalDebt: debtByStudent.get(String(student._id)) || 0,
     };
   });
@@ -245,7 +221,7 @@ export async function createStudentService({ person, classroomId, entryDate, not
 
     const internalCode = await nextStudentCode(session);
 
-    // Student puede existir sin familia; matrícula/StudentCycle define su estado activo.
+    // El alumno existe como identidad; la matrícula del ciclo guarda su estado actual.
     const student = await Student.create([
       {
         personId: personDoc._id,
@@ -260,19 +236,6 @@ export async function createStudentService({ person, classroomId, entryDate, not
     if (classroom) {
       const cycle = await resolveCurrentCycle(session);
 
-      await StudentCycle.updateOne(
-        { studentId: studentDoc._id, cycleId: cycle._id, campusId: classroom.campusId },
-        {
-          $setOnInsert: {
-            studentId: studentDoc._id,
-            cycleId: cycle._id,
-            campusId: classroom.campusId,
-            status: 'ABSENT',
-          },
-        },
-        { upsert: true, session }
-      );
-
       await Vacancy.updateOne(
         { studentId: studentDoc._id, cycleId: cycle._id },
         {
@@ -286,6 +249,28 @@ export async function createStudentService({ person, classroomId, entryDate, not
           },
         },
         { upsert: true, session }
+      );
+
+      const enrollment = await Enrollment.create([{
+        cycleId: cycle._id,
+        campusId: classroom.campusId,
+        status: 'ABSENT',
+        notes,
+      }], { session }).then((rows) => rows[0]);
+
+      const enrollmentStudent = await EnrollmentStudent.create([{
+        enrollmentId: enrollment._id,
+        studentId: studentDoc._id,
+        classroomId: classroom._id,
+        previousSchoolType: 'OTHER',
+        previousSchoolName: 'EXTERNO',
+        pensionMonthlyAmounts: Array(10).fill(NO_APLICA_PENSION),
+      }], { session }).then((rows) => rows[0]);
+
+      await Enrollment.updateOne(
+        { _id: enrollment._id },
+        { $set: { enrollmentStudents: [enrollmentStudent._id] } },
+        { session }
       );
     }
 
@@ -540,46 +525,14 @@ async function resolvePrintCardsContext(studentIds = []) {
     }]));
   }
 
-  const [studentCycles, vacancies] = await Promise.all([
-    StudentCycle.find({ studentId: { $in: uniqueStudentIds }, cycleId: activeCycle._id })
-      .select('studentId campusId')
-      .lean(),
-    Vacancy.find({ studentId: { $in: uniqueStudentIds }, cycleId: activeCycle._id })
-      .select('studentId classroomId')
-      .lean(),
-  ]);
-
-  const classroomIds = [...new Set(vacancies.map((row) => String(row.classroomId || '')).filter(Boolean))]
-    .map((id) => new mongoose.Types.ObjectId(id));
-
-  const classrooms = classroomIds.length
-    ? await Classroom.find({ _id: { $in: classroomIds } }).select('_id campusId level grade section displayName').lean()
-    : [];
-
-  const campusIds = [...new Set([
-    ...studentCycles.map((row) => String(row.campusId || '')),
-    ...classrooms.map((row) => String(row.campusId || '')),
-  ].filter(Boolean))].map((id) => new mongoose.Types.ObjectId(id));
-
-  const campuses = campusIds.length
-    ? await Campus.find({ _id: { $in: campusIds } }).select('_id code').lean()
-    : [];
-
-  const campusById = new Map(campuses.map((campus) => [String(campus._id), campus.code || null]));
-  const classroomById = new Map(classrooms.map((classroom) => [String(classroom._id), classroom]));
-  const studentCycleByStudentId = new Map(studentCycles.map((row) => [String(row.studentId), row]));
-  const vacancyByStudentId = new Map(vacancies.map((row) => [String(row.studentId), row]));
+  const enrollmentContexts = await getEnrollmentContextMapByStudentIds(uniqueStudentIds, { cycleId: activeCycle._id });
 
   const context = new Map();
   uniqueStudentIds.forEach((studentId) => {
     const key = String(studentId);
-    const vacancy = vacancyByStudentId.get(key);
-    const classroom = vacancy?.classroomId ? classroomById.get(String(vacancy.classroomId)) : null;
-    const cycle = studentCycleByStudentId.get(key);
-
-    const campusCode = classroom?.campusId
-      ? campusById.get(String(classroom.campusId)) || null
-      : (cycle?.campusId ? campusById.get(String(cycle.campusId)) || null : null);
+    const current = enrollmentContexts.get(key);
+    const classroom = current?.classroom || null;
+    const campusCode = current?.campus?.code || null;
 
     context.set(key, {
       campusCode,
@@ -706,13 +659,7 @@ export async function getStudentSummaryService(studentId) {
     .lean();
 
 
-  const latestCycle = await StudentCycle.findOne({ studentId: student._id })
-    .sort({ updatedAt: -1 })
-    .lean();
-
-  const latestVacancy = await Vacancy.findOne({ studentId: student._id })
-    .populate({ path: 'classroomId', populate: { path: 'campusId' } })
-    .lean();
+  const currentEnrollment = await getEnrollmentContextForStudent(student._id);
 
   const charges = await Charge.find({ studentId: student._id, status: { $in: ['OPEN', 'PARTIAL'] } }).lean();
   const now = new Date();
@@ -747,7 +694,7 @@ export async function getStudentSummaryService(studentId) {
     names: person?.names || null,
     lastNames: person?.lastNames || null,
     birthDate: person?.birthDate || null,
-    campusCode: latestVacancy?.classroomId?.campusId?.code || null,
+    campusCode: currentEnrollment?.campus?.code || null,
     previousCampus: student?.previousCampus || null,
     activeStatus: student.activeStatus,
   }
@@ -787,31 +734,33 @@ export async function getStudentSummaryService(studentId) {
   // console.log('[Student][dbg] content=', student);
   // console.log('[tutorLink][dbg] content=', tutorLink);
 
-  const sendEnrollmentStatus = {
-    cycle: {
-      id: latestCycle?.cycleId?._id?.toString() || null,
-      status: latestCycle?.status || null,
-    },
-    classroom: {
-      id: latestVacancy?.classroomId?._id?.toString() || null,
-      displayName: latestVacancy?.classroomId?.displayName || null,
-      grade: latestVacancy?.classroomId?.grade || null,
-      section: latestVacancy?.classroomId?.section || null,
-      level: latestVacancy?.classroomId?.level || null,
-    },
-    campus: {
-      code: latestVacancy?.classroomId?.campusId?.code || null,
-      name: latestVacancy?.classroomId?.campusId?.name || null,
-    },
-    // currentClassroom: latestVacancy || null,
-    // lastestCycle: latestCycle || null,
-  }
+  const sendCurrentEnrollment = currentEnrollment ? {
+    id: String(currentEnrollment.enrollment._id),
+    status: currentEnrollment.enrollment.status || null,
+    cycleId: currentEnrollment.cycle?._id?.toString() || String(currentEnrollment.enrollment.cycleId || ''),
+    cycleName: currentEnrollment.cycle?.name || null,
+    classroomId: currentEnrollment.classroom?._id?.toString() || null,
+    classroom: currentEnrollment.classroom ? {
+      id: String(currentEnrollment.classroom._id),
+      displayName: currentEnrollment.classroom.displayName || null,
+      grade: currentEnrollment.classroom.grade || null,
+      section: currentEnrollment.classroom.section || null,
+      level: currentEnrollment.classroom.level || null,
+    } : null,
+    campus: currentEnrollment.campus ? {
+      id: String(currentEnrollment.campus._id),
+      code: currentEnrollment.campus.code || null,
+      name: currentEnrollment.campus.name || null,
+    } : null,
+    confirmedAt: currentEnrollment.enrollment.confirmedAt || null,
+    transferredAt: currentEnrollment.enrollment.transferredAt || null,
+    notes: currentEnrollment.enrollment.notes || null,
+  } : null;
 
   return {
     student: sendStudent,
     tutorLink,
-    familyLink: tutorLink,
-    enrollmentStatus: sendEnrollmentStatus,
+    currentEnrollment: sendCurrentEnrollment,
     debtsSummary: {
       pendingTotal,
       overdueTotal,
@@ -836,25 +785,14 @@ export async function listStudentsByCampusService({ campus, q = '', limit = 20, 
     .select('_id')
     .lean();
 
-  const studentCycleFilter = { campusId: { $in: campuses.map((c) => c._id) } };
-  if (activeCycle?._id) {
-    studentCycleFilter.cycleId = activeCycle._id;
-  }
-
-  const cycles = await StudentCycle.find(studentCycleFilter)
-    .sort({ updatedAt: -1 })
-    .select('studentId campusId')
-    .lean();
-
-  const studentIdSet = new Set();
-  const studentIds = [];
-  for (const row of cycles) {
-    const key = String(row.studentId);
-    if (!studentIdSet.has(key)) {
-      studentIdSet.add(key);
-      studentIds.push(row.studentId);
-    }
-  }
+  const enrollments = await Enrollment.find({
+    ...(activeCycle?._id ? { cycleId: activeCycle._id } : {}),
+    campusId: { $in: campuses.map((c) => c._id) },
+  }).select('_id').lean();
+  const enrollmentStudents = enrollments.length
+    ? await EnrollmentStudent.find({ enrollmentId: { $in: enrollments.map((row) => row._id) } }).select('studentId').lean()
+    : [];
+  const studentIds = [...new Set(enrollmentStudents.map((row) => row.studentId))];
   if (!studentIds.length) {
     return { campus: normalized, items: [], nextCursor: null };
   }
@@ -922,16 +860,6 @@ function composeNotes(currentNotes, reason) {
   return currentNotes ? `${currentNotes}\n${stamp}` : stamp;
 }
 
-async function resolveCampusForCycleStatus(studentId, cycleId) {
-  const studentCycle = await StudentCycle.findOne({ studentId, cycleId }).lean();
-  if (studentCycle?.campusId) return studentCycle.campusId;
-
-  const vacancy = await Vacancy.findOne({ studentId, cycleId }).populate('classroomId').lean();
-  if (vacancy?.classroomId?.campusId) return vacancy.classroomId.campusId;
-
-  return null;
-}
-
 export async function getStudentDetailService(studentId, cycleId) {
   const student = await Student.findById(studentId)
     .populate('personId')
@@ -947,15 +875,9 @@ export async function getStudentDetailService(studentId, cycleId) {
     .populate('tutorPersonId')
     .lean();
 
-  const studentCycle = cycle
-    ? await StudentCycle.findOne({ studentId: student._id, cycleId: cycle._id }).lean()
-    : null;
-
-  const activeVacancy = cycle
-    ? await Vacancy.findOne({ studentId: student._id, cycleId: cycle._id })
-      .populate({ path: 'classroomId', populate: { path: 'campusId' } })
-      .lean()
-    : null;
+  const currentEnrollment = cycle
+    ? await getEnrollmentContextForStudent(student._id, { cycleId: cycle._id })
+    : await getEnrollmentContextForStudent(student._id);
 
   return {
     student,
@@ -967,32 +889,32 @@ export async function getStudentDetailService(studentId, cycleId) {
       year: cycle.year,
       type: cycle.type,
     } : null,
-    cycleStatus: studentCycle ? {
-      _id: studentCycle._id,
-      cycleId: studentCycle.cycleId,
-      campusId: studentCycle.campusId,
-      status: studentCycle.status,
-      notes: studentCycle.notes || null,
-      enrolledAt: studentCycle.enrolledAt || null,
-      transferredAt: studentCycle.transferredAt || null,
-    } : null,
-    activeVacancy: activeVacancy ? {
-      _id: activeVacancy._id,
-      cycleId: activeVacancy.cycleId,
-      classroomId: activeVacancy.classroomId,
-      notes: activeVacancy.notes || null,
+    currentEnrollment: currentEnrollment ? {
+      id: String(currentEnrollment.enrollment._id),
+      status: currentEnrollment.enrollment.status,
+      cycleId: String(currentEnrollment.enrollment.cycleId),
+      cycleName: currentEnrollment.cycle?.name || null,
+      campus: currentEnrollment.campus ? {
+        id: String(currentEnrollment.campus._id),
+        code: currentEnrollment.campus.code || null,
+        name: currentEnrollment.campus.name || null,
+      } : null,
+      classroomId: currentEnrollment.classroom?._id ? String(currentEnrollment.classroom._id) : null,
+      classroom: currentEnrollment.classroom || null,
+      confirmedAt: currentEnrollment.enrollment.confirmedAt || null,
+      transferredAt: currentEnrollment.enrollment.transferredAt || null,
+      notes: currentEnrollment.enrollment.notes || null,
     } : null,
   };
 }
 
-export async function updateStudentCycleStatusService(studentId, { cycleId, status, reason }, userId = null) {
+export async function updateStudentEnrollmentStatusService(studentId, { cycleId, status, reason }, userId = null) {
   const student = await Student.findById(studentId).lean();
   if (!student) throw new ApiError(404, 'Estudiante no encontrado');
 
   const cycle = await Cycle.findById(cycleId).lean();
   if (!cycle) throw new ApiError(404, 'Ciclo no encontrado');
 
-  const now = new Date();
   const enforceNoDebtOnTransfer = process.env.ALLOW_TRANSFER_WITH_DEBT !== 'true';
   if (status === 'TRANSFERRED' && enforceNoDebtOnTransfer) {
     const debtRows = await Charge.find({
@@ -1006,36 +928,20 @@ export async function updateStudentCycleStatusService(studentId, { cycleId, stat
     }
   }
 
-  const campusId = await resolveCampusForCycleStatus(studentId, cycleId);
+  const currentEnrollment = await getEnrollmentContextForStudent(studentId, { cycleId });
+  const campusId = currentEnrollment?.campus?._id || currentEnrollment?.enrollment?.campusId || null;
   if (!campusId) throw new ApiError(400, 'No se pudo determinar campus para el estado del ciclo');
 
   if (status === 'TRANSFERRED' || status === 'ABSENT') {
     await Vacancy.deleteOne({ studentId, cycleId });
   }
 
-
-  const existingCycle = await StudentCycle.findOne({ studentId, cycleId, campusId }).lean();
-
-  await StudentCycle.updateOne(
-    { studentId, cycleId, campusId },
-    {
-      $setOnInsert: { studentId, cycleId, campusId },
-      $set: {
-        status,
-        notes: composeNotes(existingCycle?.notes, reason),
-        enrolledAt: status === 'ENROLLED' ? now : existingCycle?.enrolledAt || null,
-        transferredAt: status === 'TRANSFERRED' ? now : null,
-      },
-    },
-    { upsert: true }
-  );
-
-  const updated = await StudentCycle.findOne({ studentId, cycleId, campusId }).lean();
+  const updated = await updateEnrollmentStatusForStudent({ studentId, cycleId, status, reason, userId });
 
   if (status === 'TRANSFERRED' && userId) {
     await registerAuditLog({
       entityType: 'TRANSFER',
-      entityId: updated?._id || studentId,
+      entityId: updated?._id || currentEnrollment?.enrollment?._id || studentId,
       action: 'STUDENT_TRANSFERRED',
       performedBy: userId,
       campusId,
@@ -1096,16 +1002,19 @@ export async function changeStudentClassroomService(studentId, { cycleId, classr
       }
     );
 
-    const existingCycle = await StudentCycle.findOne({ studentId, cycleId }).session(session).lean();
-
-    await StudentCycle.updateOne(
-      { studentId, cycleId, campusId: classroom.campusId },
-      {
-        $setOnInsert: { studentId, cycleId, campusId: classroom.campusId },
-        $set: { status: existingCycle?.status || 'ABSENT' },
-      },
-      { upsert: true, session }
-    );
+    const currentEnrollment = await getEnrollmentContextForStudent(studentId, { cycleId, session });
+    if (currentEnrollment?.enrollment?._id) {
+      await EnrollmentStudent.updateOne(
+        { _id: currentEnrollment.enrollmentStudent._id },
+        { $set: { classroomId } },
+        { session }
+      );
+      await Enrollment.updateOne(
+        { _id: currentEnrollment.enrollment._id },
+        { $set: { campusId: classroom.campusId } },
+        { session }
+      );
+    }
 
     const hydratedVacancy = await Vacancy.findById(vacancy._id)
       .populate({ path: 'classroomId', populate: { path: 'campusId' } })

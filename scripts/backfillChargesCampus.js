@@ -1,22 +1,18 @@
 import dotenv from 'dotenv';
 import mongoose from 'mongoose';
 import { Charge } from '../src/models/charge.model.js';
-import { StudentCycle } from '../src/models/studentCycle.model.js';
 import { Vacancy } from '../src/models/vacancy.model.js';
 import { Classroom } from '../src/models/classroom.model.js';
+import { getEnrollmentContextForStudent } from '../src/shared/enrollmentCurrent.js';
 
 dotenv.config();
 
 const uri = process.env.MONGODB_URI;
 
 async function resolveCampusId(charge) {
-  const studentCycle = await StudentCycle.findOne({
-    studentId: charge.studentId,
-    cycleId: charge.cycleId,
-    campusId: { $exists: true, $ne: null },
-  }).sort({ updatedAt: -1 }).select('campusId').lean();
-
-  if (studentCycle?.campusId) return studentCycle.campusId;
+  const currentEnrollment = await getEnrollmentContextForStudent(charge.studentId, { cycleId: charge.cycleId });
+  if (currentEnrollment?.campus?._id) return currentEnrollment.campus._id;
+  if (currentEnrollment?.enrollment?.campusId) return currentEnrollment.enrollment.campusId;
 
   const vacancy = await Vacancy.findOne({
     studentId: charge.studentId,

@@ -1,6 +1,5 @@
 import mongoose from 'mongoose';
 import { BillingConcept } from '../../../models/billingConcept.model.js';
-import { StudentCycle } from '../../../models/studentCycle.model.js';
 
 const OWN_CAMPUSES = new Set(['CIENCIAS', 'CIENCIAS_APLICADAS', 'CIMAS']);
 
@@ -148,19 +147,3 @@ export function buildContractSnapshot({ enrollment, enrollmentStudents, students
   };
 }
 
-export async function upsertStudentCycleForEnrollment({ studentId, cycleId, campusId, enrollmentId, session }) {
-  await StudentCycle.findOneAndUpdate(
-    { studentId, cycleId },
-    {
-      $set: {
-        campusId,
-        status: 'ENROLLED',
-        enrolledAt: new Date(),
-        enrollmentId,
-        updatedAt: new Date(),
-      },
-      $setOnInsert: { studentId, cycleId },
-    },
-    { upsert: true, new: true, session }
-  );
-}

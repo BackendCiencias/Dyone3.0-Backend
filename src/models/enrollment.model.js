@@ -4,34 +4,19 @@ const enrollmentSchema = new mongoose.Schema(
   {
     cycleId: { type: mongoose.Schema.Types.ObjectId, ref: 'Cycle', required: true, index: true },
     campusId: { type: mongoose.Schema.Types.ObjectId, ref: 'Campus', required: true, index: true },
-    campusIds: [{ type: mongoose.Schema.Types.ObjectId, ref: 'Campus', index: true }],
-    status: { type: String, enum: ['DRAFT', 'CONFIRMED', 'CANCELLED'], default: 'DRAFT', index: true },
+    status: { type: String, enum: ['ABSENT', 'ENROLLED', 'TRANSFERRED'], default: 'ABSENT', index: true },
     confirmedAt: { type: Date, default: null },
+    transferredAt: { type: Date, default: null },
     createdBy: { type: mongoose.Schema.Types.ObjectId, ref: 'User' },
     updatedBy: { type: mongoose.Schema.Types.ObjectId, ref: 'User' },
     notes: { type: String },
 
     enrollmentStudents: [{ type: mongoose.Schema.Types.ObjectId, ref: 'EnrollmentStudent', index: true }],
-
-    // Legacy fields (compatibility with existing documents/endpoints)
-    studentIds: [{ type: mongoose.Schema.Types.ObjectId, ref: 'Student', index: true }],
-    enrolledAt: { type: Date, default: Date.now },
-    createdByUserId: { type: mongoose.Schema.Types.ObjectId, ref: 'User' },
-    originSchool: { type: String },
   },
   { timestamps: true }
 );
 
 enrollmentSchema.index({ campusId: 1, cycleId: 1, status: 1, createdAt: 1 });
 enrollmentSchema.index({ enrollmentStudents: 1 });
-
-enrollmentSchema.pre('save', function syncLegacyFields(next) {
-  if (!this.createdBy && this.createdByUserId) this.createdBy = this.createdByUserId;
-  if (!this.createdByUserId && this.createdBy) this.createdByUserId = this.createdBy;
-  if (!this.confirmedAt && this.status === 'CONFIRMED') this.confirmedAt = this.enrolledAt || new Date();
-  if ((!Array.isArray(this.campusIds) || !this.campusIds.length) && this.campusId) this.campusIds = [this.campusId];
-  if ((!this.campusId || !String(this.campusId)) && Array.isArray(this.campusIds) && this.campusIds.length) this.campusId = this.campusIds[0];
-  next();
-});
 
 export const Enrollment = mongoose.model('Enrollment', enrollmentSchema, 'enrollment');

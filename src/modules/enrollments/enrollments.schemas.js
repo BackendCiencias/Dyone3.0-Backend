@@ -27,6 +27,11 @@ export const enrollmentIdParamsSchema = z.object({
   id: objectIdSchema,
 });
 
+export const enrollmentStatusUpdateSchema = z.object({
+  status: z.enum(['ABSENT', 'ENROLLED', 'TRANSFERRED']),
+  reason: z.string().trim().min(1).optional(),
+});
+
 export const enrollmentConfirmSchema = z.object({
   cycleId: objectIdSchema.optional(),
   campusId: objectIdSchema.optional(),

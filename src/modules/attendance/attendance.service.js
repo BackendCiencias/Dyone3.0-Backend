@@ -4,12 +4,14 @@ import { AttendanceRecord } from '../../models/attendanceRecord.model.js';
 import { AttendanceMonthlySummary } from '../../models/attendanceMonthlySummary.model.js';
 import { Campus } from '../../models/campus.model.js';
 import { Student } from '../../models/student.model.js';
-import { StudentCycle } from '../../models/studentCycle.model.js';
+import { Enrollment } from '../../models/enrollment.model.js';
+import { EnrollmentStudent } from '../../models/enrollmentStudent.model.js';
 import { Vacancy } from '../../models/vacancy.model.js';
 import { Classroom } from '../../models/classroom.model.js';
 import { Person } from '../../models/person.model.js';
 import { Cycle } from '../../models/cycle.model.js';
 import { ApiError } from '../../utils/errors.js';
+import { getEnrollmentContextForStudent } from '../../shared/enrollmentCurrent.js';
 
 function normalizeDateOnly(value) {
   const [year, month, day] = String(value).split('-').map(Number);
@@ -178,21 +180,19 @@ async function resolveStudentByCode(studentCode) {
   return student;
 }
 
-async function resolveStudentCycleForSession({ studentId, cycleId, campusId }) {
-  const studentCycle = await StudentCycle.findOne({ studentId, cycleId })
-    .sort({ updatedAt: -1 })
-    .lean();
+async function resolveEnrollmentForSession({ studentId, cycleId, campusId }) {
+  const studentCycle = await getEnrollmentContextForStudent(studentId, { cycleId });
 
-  if (!studentCycle) {
-    throw new ApiError(409, 'Alumno sin StudentCycle válido para este ciclo', 'ATTENDANCE_STUDENT_CYCLE_NOT_FOUND');
+  if (!studentCycle?.enrollment) {
+    throw new ApiError(409, 'Alumno sin matrícula válida para este ciclo', 'ATTENDANCE_ENROLLMENT_NOT_FOUND');
   }
 
-  if (String(studentCycle.campusId) !== String(campusId)) {
+  if (String(studentCycle.campus?._id || studentCycle.enrollment.campusId) !== String(campusId)) {
     throw new ApiError(409, 'Alumno fuera del campus de la sesión', 'ATTENDANCE_STUDENT_CAMPUS_MISMATCH');
   }
 
-  if (studentCycle.status === 'TRANSFERRED') {
-    throw new ApiError(409, 'Alumno transferido, no apto para asistencia', 'ATTENDANCE_STUDENT_TRANSFERRED');
+  if (studentCycle.enrollment.status !== 'ENROLLED') {
+    throw new ApiError(409, 'Alumno no apto para asistencia', 'ATTENDANCE_ENROLLMENT_NOT_ACTIVE');
   }
 
   return studentCycle;
@@ -383,11 +383,14 @@ async function buildLatestRecordsPayload({ session, limit = 10, q = '' }) {
 }
 
 async function resolveExpectedStudentsForSession(session) {
-  const cycles = await StudentCycle.find({
+  const enrollments = await Enrollment.find({
     cycleId: session.cycleId,
     campusId: session.campusId,
-    status: { $ne: 'TRANSFERRED' },
-  }).select('_id studentId').lean();
+    status: 'ENROLLED',
+  }).select('_id').lean();
+  const cycles = enrollments.length
+    ? await EnrollmentStudent.find({ enrollmentId: { $in: enrollments.map((row) => row._id) } }).select('enrollmentId studentId').lean()
+    : [];
 
   const studentIds = cycles.map((row) => row.studentId);
   if (!studentIds.length) return [];
@@ -398,7 +401,9 @@ async function resolveExpectedStudentsForSession(session) {
   }).select('_id').lean();
 
   const allowedIds = new Set(students.map((row) => String(row._id)));
-  return cycles.filter((row) => allowedIds.has(String(row.studentId)));
+  return cycles
+    .filter((row) => allowedIds.has(String(row.studentId)))
+    .map((row) => ({ _id: row.enrollmentId, studentId: row.studentId }));
 }
 
 async function buildJustificationContext(record, session) {
@@ -540,7 +545,7 @@ export async function scanAttendanceByStudentCodeService({ sessionId, studentCod
   await ensureCampusInScope({ campusId: session.campusId, campusScope: user.campusScope || [] });
 
   const student = await resolveStudentByCode(studentCode);
-  const studentCycle = await resolveStudentCycleForSession({
+  const studentCycle = await resolveEnrollmentForSession({
     studentId: student._id,
     cycleId: session.cycleId,
     campusId: session.campusId,
@@ -569,7 +574,7 @@ export async function scanAttendanceByStudentCodeService({ sessionId, studentCod
     { sessionId: session._id, studentId: student._id },
     {
       $set: {
-        studentCycleId: studentCycle._id,
+        enrollmentId: studentCycle.enrollment._id,
         personId: student.personId || null,
         status: nextStatus,
         arrivalTime: effectiveArrivalTime,
@@ -659,7 +664,7 @@ export async function closeAttendanceSessionService({ sessionId, notes }, user) 
     const created = await AttendanceRecord.create({
       sessionId: session._id,
       studentId: cycleRow.studentId,
-      studentCycleId: cycleRow._id,
+      enrollmentId: cycleRow._id,
       status: 'ABSENT',
       arrivalTime: null,
       markMethod: 'BULK',
@@ -1078,9 +1083,9 @@ export async function getStudentMonthlySummaryService({ studentId, year, month }
     throw new ApiError(404, 'Alumno no encontrado', 'ATTENDANCE_STUDENT_NOT_FOUND');
   }
 
-  const studentCycle = await StudentCycle.findOne({ studentId }).sort({ updatedAt: -1 }).lean();
-  if (studentCycle?.campusId) {
-    await ensureCampusInScope({ campusId: studentCycle.campusId, campusScope: user.campusScope || [] });
+  const studentCycle = await getEnrollmentContextForStudent(studentId);
+  if (studentCycle?.campus?._id || studentCycle?.enrollment?.campusId) {
+    await ensureCampusInScope({ campusId: studentCycle.campus?._id || studentCycle.enrollment.campusId, campusScope: user.campusScope || [] });
   }
 
   const rows = await AttendanceMonthlySummary.find({ studentId, year, month }).lean();

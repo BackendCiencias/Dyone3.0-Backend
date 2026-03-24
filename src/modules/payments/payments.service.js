@@ -13,6 +13,7 @@ import { registerAuditLog } from '../../shared/audit.service.js';
 import { createPaymentRequestLog, findPaymentRequestByKey } from './repositories/payments.repository.js';
 import { buildAccentInsensitiveRegex, buildSearchScore, byScoreThenId, normalizeSearchTerm } from '../../utils/search.js';
 import { getEnrollmentContextForStudent, getEnrollmentContextMapByStudentIds } from '../../shared/enrollmentCurrent.js';
+import { resolveOperationalDay } from '../../shared/operationalDay.js';
 
 function toMoney(value) {
   if (value === null || value === undefined) return 0;
@@ -22,6 +23,53 @@ function toMoney(value) {
 
 function roundMoney(value) {
   return Math.round((value + Number.EPSILON) * 100) / 100;
+}
+
+function getMethodLabel(method) {
+  const normalized = String(method || '').toUpperCase();
+  if (normalized === 'CASH') return 'Efectivo';
+  if (normalized === 'YAPE') return 'Yape';
+  if (normalized === 'TRANSFER') return 'Transferencia';
+  return method || 'Sin metodo';
+}
+
+function buildGradeLabel(classroom = {}) {
+  const grade = String(classroom?.grade || '').trim();
+  const section = String(classroom?.section || '').trim();
+  if (!grade && !section) return null;
+  return [grade, section].filter(Boolean).join(' ');
+}
+
+function buildCategoryMetaFromCharge(charge = {}) {
+  const conceptId = charge.conceptId || {};
+  const conceptCode = String(conceptId.code || '').trim().toUpperCase();
+  const conceptName = String(conceptId.name || '').trim();
+
+  if (conceptCode === 'TUITION' || conceptCode === 'TUITION_FEE') {
+    return { code: 'TUITION', label: conceptName || 'Pension', order: 1 };
+  }
+  if (conceptCode === 'ENROLLMENT_FEE' || conceptCode === 'ENROLLMENT') {
+    return { code: 'ENROLLMENT_FEE', label: conceptName || 'Matricula', order: 2 };
+  }
+  if (conceptCode === 'ADMISSION_FEE' || conceptCode === 'ADMISSION') {
+    return { code: 'ADMISSION_FEE', label: conceptName || 'Derecho de ingreso', order: 3 };
+  }
+  if (conceptCode) return { code: conceptCode, label: conceptName || conceptCode, order: 10 };
+
+  const fallbackLabel = String(charge.description || '').trim();
+  if (fallbackLabel) return { code: `DESC:${fallbackLabel.toUpperCase()}`, label: fallbackLabel, order: 20 };
+
+  return { code: 'OTHER', label: 'Otros', order: 99 };
+}
+
+function buildChargeLabel(charge = {}) {
+  const meta = buildCategoryMetaFromCharge(charge);
+  if (meta.code === 'TUITION' && Number.isInteger(charge.monthIndex)) {
+    const labels = ['Marzo', 'Abril', 'Mayo', 'Junio', 'Julio', 'Agosto', 'Septiembre', 'Octubre', 'Noviembre', 'Diciembre'];
+    const monthLabel = labels[charge.monthIndex] || null;
+    if (monthLabel) return `${meta.label} - ${monthLabel}`;
+  }
+  return meta.label || charge.description || 'Cargo';
 }
 
 function toDecimal(value) {
@@ -124,6 +172,38 @@ async function getLatestCampusCodeMap(studentIds) {
     result.set(String(studentId), context?.campus?.code || null);
   }
   return result;
+}
+
+async function getPaymentsByOperationalDate({ date, campus, campusScope = [], page = 1, limit = 25 }) {
+  const normalizedPage = Math.max(1, Number(page) || 1);
+  const normalizedLimit = Math.max(1, Math.min(100, Number(limit) || 25));
+  const { campusIds } = await resolveScopedCampusFilter({ campus, campusScope });
+  const day = resolveOperationalDay(date);
+
+  const match = {
+    paidAt: {
+      $gte: day.startUtc,
+      $lt: day.endUtc,
+    },
+  };
+  if (campusIds.length) match.campusId = { $in: campusIds };
+
+  const payments = await Payment.find(match)
+    .sort({ paidAt: -1, _id: -1 })
+    .skip((normalizedPage - 1) * normalizedLimit)
+    .limit(normalizedLimit + 1)
+    .populate({ path: 'studentId', populate: { path: 'personId' } })
+    .populate('campusId', 'code name')
+    .lean();
+
+  return {
+    day,
+    campusIds,
+    page: normalizedPage,
+    limit: normalizedLimit,
+    hasNext: payments.length > normalizedLimit,
+    items: payments.length > normalizedLimit ? payments.slice(0, normalizedLimit) : payments,
+  };
 }
 
 async function summarizeChargesForStudentIds({ studentIds, cycleId, campusIds = [], conceptId }) {
@@ -590,5 +670,145 @@ export async function getDebtorsSearchService({ q, cycleId, campus, campusScope 
   return {
     conceptColumns,
     items: rows,
+  };
+}
+
+export async function getDailyPaymentSummaryService({ date, campus, campusScope = [] }) {
+  const { day, items: payments } = await getPaymentsByOperationalDate({
+    date,
+    campus,
+    campusScope,
+    page: 1,
+    limit: 500,
+  });
+
+  const totalsByMethodMap = {
+    CASH: { method: 'CASH', label: getMethodLabel('CASH'), totalAmount: 0, paymentsCount: 0, share: 0 },
+    YAPE: { method: 'YAPE', label: getMethodLabel('YAPE'), totalAmount: 0, paymentsCount: 0, share: 0 },
+    TRANSFER: { method: 'TRANSFER', label: getMethodLabel('TRANSFER'), totalAmount: 0, paymentsCount: 0, share: 0 },
+  };
+
+  for (const payment of payments) {
+    const methodKey = String(payment.method || '').toUpperCase();
+    if (!totalsByMethodMap[methodKey]) {
+      totalsByMethodMap[methodKey] = {
+        method: methodKey || 'UNKNOWN',
+        label: getMethodLabel(payment.method),
+        totalAmount: 0,
+        paymentsCount: 0,
+        share: 0,
+      };
+    }
+
+    totalsByMethodMap[methodKey].totalAmount = roundMoney(
+      totalsByMethodMap[methodKey].totalAmount + toMoney(payment.totalAmount)
+    );
+    totalsByMethodMap[methodKey].paymentsCount += 1;
+  }
+
+  const totalIncome = roundMoney(payments.reduce((acc, payment) => acc + toMoney(payment.totalAmount), 0));
+  const paymentsCount = payments.length;
+  const totalsByMethod = Object.values(totalsByMethodMap).map((row) => ({
+    ...row,
+    totalAmount: roundMoney(row.totalAmount),
+    share: totalIncome > 0 ? roundMoney((row.totalAmount / totalIncome) * 100) : 0,
+  }));
+
+  return {
+    date: day.date,
+    totalIncome,
+    paymentsCount,
+    averageTicket: paymentsCount ? roundMoney(totalIncome / paymentsCount) : 0,
+    totalsByMethod,
+  };
+}
+
+export async function getDailyPaymentTransactionsService({ date, campus, page = 1, limit = 25, campusScope = [] }) {
+  const result = await getPaymentsByOperationalDate({ date, campus, campusScope, page, limit });
+  const paymentIds = result.items.map((payment) => payment._id);
+
+  const allocations = paymentIds.length
+    ? await PaymentAllocation.find({ paymentId: { $in: paymentIds } })
+      .populate({
+        path: 'chargeId',
+        populate: [
+          { path: 'studentId', populate: { path: 'personId' } },
+          { path: 'campusId', select: 'code name' },
+          { path: 'conceptId', select: 'code name' },
+        ],
+      })
+      .lean()
+    : [];
+
+  const allocationsByPaymentId = new Map();
+  const studentIds = new Set();
+  for (const allocation of allocations) {
+    const paymentId = String(allocation.paymentId || '');
+    if (!allocationsByPaymentId.has(paymentId)) allocationsByPaymentId.set(paymentId, []);
+    allocationsByPaymentId.get(paymentId).push(allocation);
+
+    const studentId = allocation.chargeId?.studentId?._id || allocation.chargeId?.studentId;
+    if (studentId) studentIds.add(String(studentId));
+  }
+
+  const contexts = await getEnrollmentContextMapByStudentIds(Array.from(studentIds));
+
+  const items = result.items.map((payment) => {
+    const paymentId = String(payment._id);
+    const paymentAllocations = allocationsByPaymentId.get(paymentId) || [];
+    const categoryCodes = new Set();
+
+    const allocationsView = paymentAllocations.map((allocation) => {
+      const charge = allocation.chargeId || {};
+      const studentId = String(charge.studentId?._id || charge.studentId || '');
+      const context = studentId ? contexts.get(studentId) : null;
+      const categoryMeta = buildCategoryMetaFromCharge(charge);
+      categoryCodes.add(categoryMeta.code);
+
+      const chargeAmount = roundMoney(toMoney(charge.totalAmount));
+      const outstandingAmount = roundMoney(toMoney(charge.outstandingAmount));
+      const allocationAmount = roundMoney(toMoney(allocation.amount));
+
+      return {
+        chargeId: String(charge._id || ''),
+        concept: buildChargeLabel(charge),
+        amount: allocationAmount,
+        isPartial: outstandingAmount > 0 && allocationAmount < chargeAmount,
+        campusCode: charge.campusId?.code || context?.campus?.code || payment.campusId?.code || null,
+      };
+    });
+
+    const student = payment.studentId || {};
+    const context = student?._id ? contexts.get(String(student._id)) : null;
+
+    return {
+      paymentId,
+      studentId: student?._id ? String(student._id) : null,
+      studentName: student?.personId ? `${student.personId.lastNames || ''}, ${student.personId.names || ''}`.replace(/^,\s*|\s*,\s*$/g, '').trim() || 'Alumno' : 'Alumno',
+      gradeLabel: buildGradeLabel(context?.classroom),
+      campusCode: payment.campusId?.code || context?.campus?.code || null,
+      amount: roundMoney(toMoney(payment.totalAmount)),
+      paidAt: payment.paidAt,
+      method: payment.method,
+      methodLabel: getMethodLabel(payment.method),
+      internalCode: payment.internalCode || null,
+      receiptNumber: payment.receiptNumber || null,
+      voucherNumber: payment.voucherNumber || null,
+      note: payment.notes || null,
+      categoryLabel: categoryCodes.size === 1
+        ? (paymentAllocations[0] ? buildCategoryMetaFromCharge(paymentAllocations[0].chargeId || {}).label : 'Pago')
+        : (categoryCodes.size > 1 ? 'Mixto' : 'Pago'),
+      allocations: allocationsView,
+    };
+  });
+
+  return {
+    date: result.day.date,
+    items,
+    pageInfo: {
+      page: result.page,
+      limit: result.limit,
+      hasNext: result.hasNext,
+    },
   };
 }

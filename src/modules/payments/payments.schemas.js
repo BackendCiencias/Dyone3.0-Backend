@@ -67,3 +67,17 @@ export const debtorsSearchQuerySchema = z.object({
   q: z.string().trim().min(2),
   limit: z.coerce.number().int().min(1).max(60).optional(),
 });
+
+export const paymentsDailySummaryQuerySchema = z.object({
+  campus: z.string().optional(),
+  campusId: z.string().optional(),
+  date: z.string().regex(/^\d{4}-\d{2}-\d{2}$/).optional(),
+});
+
+export const paymentsDailyTransactionsQuerySchema = z.object({
+  campus: z.string().optional(),
+  campusId: z.string().optional(),
+  date: z.string().regex(/^\d{4}-\d{2}-\d{2}$/).optional(),
+  page: z.coerce.number().int().min(1).optional(),
+  limit: z.coerce.number().int().min(1).max(100).optional(),
+});

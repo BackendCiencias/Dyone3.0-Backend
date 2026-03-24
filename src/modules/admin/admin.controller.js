@@ -13,6 +13,7 @@ import {
   listModelsCatalog,
   getAttendancePolicy,
   upsertAttendancePolicy,
+  buildCajaArequipaExport,
 } from './admin.service.js';
 import { asyncHandler } from '../../utils/asyncHandler.js';
 
@@ -94,4 +95,16 @@ export const getAttendancePolicyConfig = asyncHandler(async (req, res) => {
 export const putAttendancePolicyConfig = asyncHandler(async (req, res) => {
   const data = await upsertAttendancePolicy(req.validated, req.user);
   res.json(data);
+});
+
+export const getCajaArequipaExport = asyncHandler(async (req, res) => {
+  const result = await buildCajaArequipaExport({
+    query: req.validatedQuery || {},
+    user: req.user,
+  });
+
+  res.setHeader('Content-Type', 'text/csv; charset=utf-8');
+  res.setHeader('Content-Disposition', `attachment; filename="${result.fileName}"`);
+  res.setHeader('X-Export-Count', String(result.rowCount));
+  res.send(result.content);
 });

@@ -10,6 +10,7 @@ import { Payment } from '../../models/payment.model.js';
 import { PaymentAllocation } from '../../models/paymentAllocation.model.js';
 import { ApiError } from '../../utils/errors.js';
 import { getEnrollmentContextMapByStudentIds } from '../../shared/enrollmentCurrent.js';
+import { resolveOperationalDay } from '../../shared/operationalDay.js';
 
 function toMoney(value) {
   if (value === null || value === undefined) return 0;
@@ -270,15 +271,12 @@ async function getRecentPaymentActivity({ campusIds, limit = 4 }) {
 }
 
 async function getCashTodaySummary({ campusIds = [] }) {
-  const todayStart = new Date();
-  todayStart.setHours(0, 0, 0, 0);
-  const tomorrowStart = new Date(todayStart);
-  tomorrowStart.setDate(tomorrowStart.getDate() + 1);
+  const operationalDay = resolveOperationalDay();
 
   const paymentMatch = {
     paidAt: {
-      $gte: todayStart,
-      $lt: tomorrowStart,
+      $gte: operationalDay.startUtc,
+      $lt: operationalDay.endUtc,
     },
   };
   if (campusIds.length) paymentMatch.campusId = { $in: campusIds };
@@ -291,11 +289,16 @@ async function getCashTodaySummary({ campusIds = [] }) {
 
   if (!payments.length) {
     return {
-      date: todayStart.toISOString(),
+      date: operationalDay.date,
       totalIncome: 0,
       paymentsCount: 0,
       averageTicket: 0,
       categoriesCount: 0,
+      totalsByMethod: [
+        { method: 'CASH', label: getMethodLabel('CASH'), totalAmount: 0, paymentsCount: 0, share: 0 },
+        { method: 'YAPE', label: getMethodLabel('YAPE'), totalAmount: 0, paymentsCount: 0, share: 0 },
+        { method: 'TRANSFER', label: getMethodLabel('TRANSFER'), totalAmount: 0, paymentsCount: 0, share: 0 },
+      ],
       byCategory: [],
       recentPayments: [],
     };
@@ -471,7 +474,6 @@ async function getCashTodaySummary({ campusIds = [] }) {
   const totalIncome = roundMoney(payments.reduce((acc, row) => acc + roundMoney(toMoney(row.totalAmount)), 0));
   const paymentsCount = payments.length;
   const totalsByMethodList = Object.values(totalsByMethod)
-    .filter((row) => row.paymentsCount > 0)
     .map((row) => ({
       method: row.method,
       label: row.label,
@@ -487,7 +489,7 @@ async function getCashTodaySummary({ campusIds = [] }) {
   }
 
   return {
-    date: todayStart.toISOString(),
+    date: operationalDay.date,
     totalIncome,
     paymentsCount,
     averageTicket: paymentsCount ? roundMoney(totalIncome / paymentsCount) : 0,
@@ -666,9 +668,8 @@ export async function getSecretaryOverviewService({ campus, campusScope = [] }) 
   if (campusIds.length) enrollmentsLast7DaysMatch.campusId = { $in: campusIds };
   const recentEnrollments = await Enrollment.countDocuments(enrollmentsLast7DaysMatch);
 
-  const todayStart = new Date();
-  todayStart.setHours(0, 0, 0, 0);
-  const paymentsTodayMatch = { paidAt: { $gte: todayStart } };
+  const operationalDay = resolveOperationalDay();
+  const paymentsTodayMatch = { paidAt: { $gte: operationalDay.startUtc, $lt: operationalDay.endUtc } };
   if (campusIds.length) paymentsTodayMatch.campusId = { $in: campusIds };
   const paymentsToday = await Payment.countDocuments(paymentsTodayMatch);
 

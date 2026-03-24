@@ -1,5 +1,12 @@
 import { asyncHandler } from '../../utils/asyncHandler.js';
-import { createPaymentService, getDebtorsSearchService, getDebtorsService, updatePaymentReceiptService } from './payments.service.js';
+import {
+  createPaymentService,
+  getDebtorsSearchService,
+  getDebtorsService,
+  getDailyPaymentSummaryService,
+  getDailyPaymentTransactionsService,
+  updatePaymentReceiptService,
+} from './payments.service.js';
 
 export const createPayment = asyncHandler(async (req, res) => {
   const result = await createPaymentService({
@@ -33,6 +40,28 @@ export const searchDebtors = asyncHandler(async (req, res) => {
     campus: campus || campusId,
     campusScope: req.campusScope,
     limit,
+  });
+  res.json(result);
+});
+
+export const getDailyPaymentSummary = asyncHandler(async (req, res) => {
+  const { campus, campusId, date } = req.validatedQuery || req.query;
+  const result = await getDailyPaymentSummaryService({
+    campus: campus || campusId,
+    date,
+    campusScope: req.campusScope,
+  });
+  res.json(result);
+});
+
+export const getDailyPaymentTransactions = asyncHandler(async (req, res) => {
+  const { campus, campusId, date, page, limit } = req.validatedQuery || req.query;
+  const result = await getDailyPaymentTransactionsService({
+    campus: campus || campusId,
+    date,
+    page,
+    limit,
+    campusScope: req.campusScope,
   });
   res.json(result);
 });

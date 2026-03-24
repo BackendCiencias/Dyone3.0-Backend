@@ -66,3 +66,8 @@ export const attendancePolicyQuerySchema = z.object({
   cycleId: z.string().min(1),
   level: z.enum(['INITIAL', 'PRIMARY', 'SECONDARY']),
 });
+
+export const cajaArequipaExportQuerySchema = z.object({
+  campus: z.enum(['CIENCIAS', 'CIENCIAS_APLICADAS', 'CIMAS']).optional(),
+  cycleId: z.string().min(1).optional(),
+});

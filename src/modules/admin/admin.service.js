@@ -8,8 +8,11 @@ import { Classroom } from '../../models/classroom.model.js';
 import { BillingConcept } from '../../models/billingConcept.model.js';
 import { BillingSchedule } from '../../models/billingSchedule.model.js';
 import { AttendancePolicy } from '../../models/attendancePolicy.model.js';
+import { Student } from '../../models/student.model.js';
+import { Person } from '../../models/person.model.js';
 import { allEndpointMetadata, validateEndpointMetadataShape, warnMetadataWithoutRoute } from '../../admin/endpointMetadataRegistry.js';
 import { ApiError } from '../../utils/errors.js';
+import { getEnrollmentContextMapByStudentIds } from '../../shared/enrollmentCurrent.js';
 
 // Servicios del módulo de administración
 
@@ -168,6 +171,292 @@ export async function upsertAttendancePolicy({ campusId, cycleId, level, name, d
   });
 
   return { item: mapAttendancePolicy(created.toObject()) };
+}
+
+function slugifyFilePart(value) {
+  return String(value || '')
+    .trim()
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, '-')
+    .replace(/^-+|-+$/g, '') || 'todos';
+}
+
+function formatDateForFileName(date = new Date()) {
+  const year = date.getFullYear();
+  const month = String(date.getMonth() + 1).padStart(2, '0');
+  const day = String(date.getDate()).padStart(2, '0');
+  return `${year}-${month}-${day}`;
+}
+
+function levelToSpanish(level) {
+  const safeLevel = String(level || '').toUpperCase();
+  if (safeLevel === 'INITIAL') return 'INICIAL';
+  if (safeLevel === 'PRIMARY') return 'PRIMARIA';
+  if (safeLevel === 'SECONDARY') return 'SECUNDARIA';
+  return '';
+}
+
+function csvEscape(value) {
+  const safeValue = value === null || value === undefined ? '' : String(value);
+  if (/[",\n\r]/.test(safeValue)) {
+    return `"${safeValue.replace(/"/g, '""')}"`;
+  }
+  return safeValue;
+}
+
+function ensureCampusScopeAccess({ requestedCampus, user }) {
+  if (!requestedCampus) return;
+  const campusScope = Array.isArray(user?.campusScope) ? user.campusScope : [];
+  if (!campusScope.length || campusScope.includes('ALL')) return;
+  if (!campusScope.includes(requestedCampus)) {
+    throw new ApiError(403, 'No autorizado para exportar alumnos de este campus');
+  }
+}
+
+function getAllowedCampusCodes(user) {
+  const campusScope = Array.isArray(user?.campusScope) ? user.campusScope : [];
+  if (!campusScope.length || campusScope.includes('ALL')) return null;
+  return new Set(campusScope.map((code) => String(code || '').trim().toUpperCase()).filter(Boolean));
+}
+
+const COMPOUND_SURNAME_PARTICLES = new Set([
+  'DE',
+  'DEL',
+  'DELA',
+  'DE LA',
+  'DE LAS',
+  'DE LOS',
+  'LA',
+  'LAS',
+  'LOS',
+  'SAN',
+  'SANTA',
+  'VAN',
+  'VON',
+  'MC',
+  'MAC',
+]);
+
+function splitNames(rawNames) {
+  const tokens = String(rawNames || '')
+    .trim()
+    .split(/\s+/)
+    .filter(Boolean)
+    .map((token) => token.toUpperCase());
+
+  if (!tokens.length) {
+    return { firstName: '', secondName: '' };
+  }
+
+  return {
+    firstName: tokens[0] || '',
+    secondName: tokens.slice(1).join(' '),
+  };
+}
+
+function isSurnameParticle(token) {
+  return COMPOUND_SURNAME_PARTICLES.has(String(token || '').trim().toUpperCase());
+}
+
+function splitLastNames(rawLastNames) {
+  const tokens = String(rawLastNames || '')
+    .trim()
+    .split(/\s+/)
+    .filter(Boolean)
+    .map((token) => token.toUpperCase());
+
+  if (!tokens.length) {
+    return { paternalLastName: '', maternalLastName: '' };
+  }
+
+  if (tokens.length === 1) {
+    return { paternalLastName: tokens[0], maternalLastName: '' };
+  }
+
+  if (tokens.length === 2) {
+    return { paternalLastName: tokens[0], maternalLastName: tokens[1] };
+  }
+
+  if (isSurnameParticle(tokens[0])) {
+    return {
+      paternalLastName: tokens.slice(0, -1).join(' ').trim(),
+      maternalLastName: tokens[tokens.length - 1] || '',
+    };
+  }
+
+  const paternalTokens = [];
+  const maternalTokens = [];
+
+  let index = 0;
+  paternalTokens.push(tokens[index]);
+  index += 1;
+
+  while (index < tokens.length - 1 && isSurnameParticle(tokens[index])) {
+    paternalTokens.push(tokens[index]);
+    index += 1;
+    if (index < tokens.length - 1) {
+      paternalTokens.push(tokens[index]);
+      index += 1;
+    }
+  }
+
+  maternalTokens.push(...tokens.slice(index));
+
+  return {
+    paternalLastName: paternalTokens.join(' ').trim(),
+    maternalLastName: maternalTokens.join(' ').trim(),
+  };
+}
+
+function extractPensionAmount(enrollmentStudent) {
+  const amounts = Array.isArray(enrollmentStudent?.pensionMonthlyAmounts)
+    ? enrollmentStudent.pensionMonthlyAmounts
+    : [];
+
+  const firstValid = amounts.find((value) => Number.isFinite(Number(value)) && Number(value) >= 0);
+  if (firstValid === undefined) return '';
+  return String(Number(firstValid));
+}
+
+async function resolveExportCycle(cycleId) {
+  if (cycleId) {
+    const explicitCycle = await Cycle.findById(cycleId).lean();
+    if (!explicitCycle) throw new ApiError(404, 'Ciclo no encontrado');
+    return explicitCycle;
+  }
+
+  const currentDate = new Date();
+  const activeCycle = await Cycle.findOne({
+    type: 'SCHOOL_YEAR',
+    isActive: true,
+    startDate: { $lte: currentDate },
+    endDate: { $gte: currentDate },
+  })
+    .sort({ startDate: -1, _id: -1 })
+    .lean();
+
+  if (activeCycle) return activeCycle;
+
+  const fallbackCycle = await Cycle.findOne({ type: 'SCHOOL_YEAR', isActive: true })
+    .sort({ year: -1, startDate: -1, _id: -1 })
+    .lean();
+
+  if (!fallbackCycle) throw new ApiError(404, 'No hay ciclo escolar activo para exportar');
+  return fallbackCycle;
+}
+
+export async function buildCajaArequipaExport({ query, user }) {
+  const requestedCampus = query?.campus ? String(query.campus).trim().toUpperCase() : null;
+  ensureCampusScopeAccess({ requestedCampus, user });
+  const allowedCampusCodes = getAllowedCampusCodes(user);
+
+  const cycle = await resolveExportCycle(query?.cycleId || null);
+
+  const campusDoc = requestedCampus
+    ? await Campus.findOne({ code: requestedCampus }).select('_id code name').lean()
+    : null;
+
+  if (requestedCampus && !campusDoc) {
+    throw new ApiError(404, 'Campus no encontrado');
+  }
+
+  const students = await Student.find({ activeStatus: 'ACTIVE' })
+    .select('_id personId bankCode')
+    .lean();
+
+  const studentIds = students.map((student) => String(student._id));
+  const contextMap = await getEnrollmentContextMapByStudentIds(studentIds, { cycleId: cycle._id });
+
+  const exportableStudents = [];
+  for (const student of students) {
+    const context = contextMap.get(String(student._id));
+    if (!context?.classroom || !context?.campus) continue;
+    if (allowedCampusCodes && !allowedCampusCodes.has(String(context.campus.code || '').toUpperCase())) continue;
+    if (campusDoc && String(context.campus._id) !== String(campusDoc._id)) continue;
+    exportableStudents.push({ student, context });
+  }
+
+  const personIds = exportableStudents.map(({ student }) => student.personId).filter(Boolean);
+  const people = personIds.length
+    ? await Person.find({ _id: { $in: personIds } }).select('_id names lastNames').lean()
+    : [];
+  const personById = new Map(people.map((person) => [String(person._id), person]));
+
+  const rows = exportableStudents
+    .map(({ student, context }) => {
+      const person = personById.get(String(student.personId)) || {};
+      const classroom = context.classroom || null;
+      const enrollmentStudent = context.enrollmentStudent || null;
+      const { firstName, secondName } = splitNames(person.names);
+      const { paternalLastName, maternalLastName } = splitLastNames(person.lastNames);
+
+      return {
+        bankCode: String(student.bankCode || '').trim(),
+        institutionCode: '',
+        firstName,
+        secondName,
+        paternalLastName,
+        maternalLastName,
+        classification1: levelToSpanish(classroom?.level),
+        classification2: String(classroom?.grade || '').trim(),
+        classification3: String(classroom?.section || '').trim().toUpperCase(),
+        enrollmentFee: '',
+        pension: extractPensionAmount(enrollmentStudent),
+        period: '',
+        levelOrder: classroom?.level === 'INITIAL' ? 1 : classroom?.level === 'PRIMARY' ? 2 : classroom?.level === 'SECONDARY' ? 3 : 99,
+        gradeOrder: Number(classroom?.grade) || 999,
+        sectionOrder: String(classroom?.section || '').trim().toUpperCase(),
+        sortName: `${paternalLastName} ${maternalLastName} ${firstName} ${secondName}`.trim(),
+      };
+    })
+    .sort((a, b) => {
+      if (a.levelOrder !== b.levelOrder) return a.levelOrder - b.levelOrder;
+      if (a.gradeOrder !== b.gradeOrder) return a.gradeOrder - b.gradeOrder;
+      if (a.sectionOrder !== b.sectionOrder) return a.sectionOrder.localeCompare(b.sectionOrder, 'es');
+      return a.sortName.localeCompare(b.sortName, 'es');
+    });
+
+  const header = [
+    'CODIGO CAJA',
+    'CÓDIGO INSTITUCIÓN',
+    '1ER NOMBRE',
+    '2DO NOMBRE',
+    'APELLIDO PATERNO',
+    'APELLIDO MATERNO',
+    'CLASIFICACION1',
+    'CLASIFICACION2',
+    'CLASIFICACION3',
+    'MATRICULA',
+    'PENSION',
+    'PERIODO',
+  ];
+  const body = rows.map((row) => [
+    row.bankCode,
+    row.institutionCode,
+    row.firstName,
+    row.secondName,
+    row.paternalLastName,
+    row.maternalLastName,
+    row.classification1,
+    row.classification2,
+    row.classification3,
+    row.enrollmentFee,
+    row.pension,
+    row.period,
+  ].map(csvEscape).join(','));
+  const content = `\uFEFF${[header.join(','), ...body].join('\r\n')}`;
+
+  return {
+    fileName: `caja-arequipa-${slugifyFilePart(requestedCampus || 'todos')}-${formatDateForFileName()}.csv`,
+    rowCount: rows.length,
+    content,
+    cycle: {
+      id: String(cycle._id),
+      name: cycle.name,
+      year: cycle.year,
+    },
+    campus: campusDoc ? { id: String(campusDoc._id), code: campusDoc.code, name: campusDoc.name } : null,
+  };
 }
 
 function normalizePath(basePath, routePath) {

@@ -18,6 +18,7 @@ import {
   getModelsCatalog,
   getAttendancePolicyConfig,
   putAttendancePolicyConfig,
+  getCajaArequipaExport,
 } from './admin.controller.js';
 import {
   campusCreateSchema,
@@ -28,6 +29,7 @@ import {
   billingScheduleQuerySchema,
   attendancePolicyUpsertSchema,
   attendancePolicyQuerySchema,
+  cajaArequipaExportQuerySchema,
 } from './admin.schemas.js';
 
 const router = Router();
@@ -55,6 +57,7 @@ router.post('/billing-schedule', validate(billingScheduleUpsertSchema), postBill
 router.get('/billing-schedule', validateRequest({ query: billingScheduleQuerySchema }), getBillingScheduleByCycle);
 router.get('/attendance-policy', validateRequest({ query: attendancePolicyQuerySchema }), getAttendancePolicyConfig);
 router.put('/attendance-policy', validateRequest({ body: attendancePolicyUpsertSchema }), putAttendancePolicyConfig);
+router.get('/exports/caja-arequipa', validateRequest({ query: cajaArequipaExportQuerySchema }), getCajaArequipaExport);
 
 router.get('/endpoints', requireRoles(['ADMIN']), getEndpointsCatalog);
 router.get('/models', requireRoles(['ADMIN']), getModelsCatalog);

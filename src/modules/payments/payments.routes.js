@@ -4,8 +4,23 @@ import { requireRoles } from '../../middlewares/roles.js';
 import { validate } from '../../middlewares/validate.js';
 import { validateRequest } from '../../middlewares/validateRequest.js';
 import { attachCampusScope, authorizeByCampusScope } from '../../shared/authorization.middleware.js';
-import { debtorsQuerySchema, debtorsSearchQuerySchema, paymentCreateSchema, paymentIdParamsSchema, paymentReceiptCorrectionSchema } from './payments.schemas.js';
-import { createPayment, getDebtors, searchDebtors, updatePaymentReceipt } from './payments.controller.js';
+import {
+  debtorsQuerySchema,
+  debtorsSearchQuerySchema,
+  paymentCreateSchema,
+  paymentIdParamsSchema,
+  paymentReceiptCorrectionSchema,
+  paymentsDailySummaryQuerySchema,
+  paymentsDailyTransactionsQuerySchema,
+} from './payments.schemas.js';
+import {
+  createPayment,
+  getDailyPaymentSummary,
+  getDailyPaymentTransactions,
+  getDebtors,
+  searchDebtors,
+  updatePaymentReceipt,
+} from './payments.controller.js';
 import { findPaymentCampusById } from './payments.repository.js';
 
 const router = Router();
@@ -22,6 +37,8 @@ router.patch(
   validateRequest({ params: paymentIdParamsSchema, body: paymentReceiptCorrectionSchema }),
   updatePaymentReceipt,
 );
+router.get('/daily-summary', requireRoles(PAYMENT_READ_ROLES), attachCampusScope(), validateRequest({ query: paymentsDailySummaryQuerySchema }), getDailyPaymentSummary);
+router.get('/daily-transactions', requireRoles(PAYMENT_READ_ROLES), attachCampusScope(), validateRequest({ query: paymentsDailyTransactionsQuerySchema }), getDailyPaymentTransactions);
 router.get('/debtors/search', requireRoles(PAYMENT_READ_ROLES), attachCampusScope(), validateRequest({ query: debtorsSearchQuerySchema }), searchDebtors);
 router.get('/debtors', requireRoles(PAYMENT_READ_ROLES), attachCampusScope(), validateRequest({ query: debtorsQuerySchema }), getDebtors);
 

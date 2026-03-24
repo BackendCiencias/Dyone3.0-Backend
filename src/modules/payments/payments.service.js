@@ -34,6 +34,8 @@ function getMethodLabel(method) {
 }
 
 function buildGradeLabel(classroom = {}) {
+  const displayName = String(classroom?.displayName || '').trim();
+  if (displayName) return displayName;
   const grade = String(classroom?.grade || '').trim();
   const section = String(classroom?.section || '').trim();
   if (!grade && !section) return null;

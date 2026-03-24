@@ -57,10 +57,15 @@ function firstApplicablePensionAmount(values = []) {
 }
 
 function normalizeDni(dni) {
-  const normalized = String(dni || '').trim();
-  if (!normalized) return undefined;
-  const lowered = normalized.toLowerCase();
+  const raw = String(dni || '').trim();
+  if (!raw) return undefined;
+  const lowered = raw.toLowerCase();
   if (['null', 'undefined', 'n/a', 'na', '-'].includes(lowered)) return undefined;
+  const normalized = raw.replace(/\D/g, '');
+  if (!normalized) return undefined;
+  if (!/^\d{8}$/.test(normalized)) {
+    throw new ApiError(400, 'DNI inválido. Debe tener exactamente 8 dígitos');
+  }
   return normalized;
 }
 
@@ -561,8 +566,22 @@ export async function finalizeEnrollmentService(payload, userId) {
       throw new ApiError(400, 'Debe haber al menos un tutor firmante');
     }
 
+    const seenTutorDnis = new Set();
+    for (const tutor of tutors) {
+      const dni = normalizeDni(tutor?.dni);
+      if (!dni) continue;
+      if (seenTutorDnis.has(dni)) {
+        throw new ApiError(409, `No se permiten tutores duplicados con DNI ${dni} en la misma matrícula`);
+      }
+      if (seenStudentDnis.has(dni)) {
+        throw new ApiError(409, `El DNI ${dni} no puede repetirse entre alumnos y tutores de la misma matrícula`);
+      }
+      seenTutorDnis.add(dni);
+    }
+
     const resolvedStudents = [];
     const studentIdByRef = new Map();
+    const resolvedStudentPersonIds = new Set();
 
     for (const draftStudent of students) {
       const referenceKey = draftStudent.localId || draftStudent.existingStudentId;
@@ -574,6 +593,29 @@ export async function finalizeEnrollmentService(payload, userId) {
           .populate('personId')
           .session(session);
         if (!studentDoc) throw new ApiError(404, 'Alumno existente no encontrado');
+
+        const providedDni = normalizeDni(draftStudent.dni);
+        const currentDni = normalizeDni(studentDoc.personId?.dni);
+        if (!currentDni) {
+          if (!providedDni) {
+            throw new ApiError(400, 'El alumno existente debe completar su DNI antes de matricular');
+          }
+
+          const conflictingPerson = await Person.findOne({ dni: providedDni }).session(session);
+          if (conflictingPerson && String(conflictingPerson._id) !== String(studentDoc.personId?._id)) {
+            throw new ApiError(409, `El DNI ${providedDni} ya pertenece a otra persona registrada`);
+          }
+
+          await Person.updateOne(
+            { _id: studentDoc.personId._id },
+            { $set: { dni: providedDni } },
+            { session }
+          );
+
+          studentDoc = await Student.findById(draftStudent.existingStudentId)
+            .populate('personId')
+            .session(session);
+        }
       } else {
         const person = await resolveOrCreatePersonDraft({
           names: draftStudent.names,
@@ -581,6 +623,11 @@ export async function finalizeEnrollmentService(payload, userId) {
           dni: draftStudent.dni,
           gender: draftStudent.gender,
         }, session);
+
+        const personUsedAsTutor = await Tutor.exists({ tutorPersonId: person._id }).session(session);
+        if (personUsedAsTutor) {
+          throw new ApiError(409, 'El DNI de un tutor no puede registrarse como alumno');
+        }
 
         const existingStudent = await Student.findOne({ personId: person._id }).session(session);
         if (existingStudent) {
@@ -645,6 +692,11 @@ export async function finalizeEnrollmentService(payload, userId) {
       });
 
       studentIdByRef.set(referenceKey, studentDoc._id);
+      if (studentDoc?.personId?._id) {
+        resolvedStudentPersonIds.add(String(studentDoc.personId._id));
+      } else if (studentDoc?.personId) {
+        resolvedStudentPersonIds.add(String(studentDoc.personId));
+      }
     }
 
     for (const tutorDraft of tutors) {
@@ -661,6 +713,15 @@ export async function finalizeEnrollmentService(payload, userId) {
           phone: tutorDraft.phone,
           gender: 'M',
         }, session);
+      }
+
+      if (resolvedStudentPersonIds.has(String(person._id))) {
+        throw new ApiError(409, 'Una misma persona no puede participar como alumno y tutor en la misma matrícula');
+      }
+
+      const studentUsingSamePerson = await Student.exists({ personId: person._id }).session(session);
+      if (studentUsingSamePerson) {
+        throw new ApiError(409, 'El DNI de un alumno no puede registrarse como tutor');
       }
 
       const linkedStudentIds = Array.isArray(tutorDraft.linkedStudentIds) ? tutorDraft.linkedStudentIds : [];

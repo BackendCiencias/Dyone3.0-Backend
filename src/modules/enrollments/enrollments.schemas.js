@@ -57,6 +57,7 @@ export const enrollmentConfirmSchema = z.object({
 });
 
 const stringOrNumber = z.union([z.string(), z.number()]);
+const optionalDniSchema = z.string().trim().regex(/^\d{8}$/, 'DNI inválido. Debe tener exactamente 8 dígitos').optional();
 
 const finalStudentSchema = z.object({
   localId: z.string().optional(),
@@ -64,7 +65,7 @@ const finalStudentSchema = z.object({
   existingStudentId: objectIdSchema.optional(),
   names: z.string().optional(),
   lastNames: z.string().optional(),
-  dni: z.string().optional(),
+  dni: optionalDniSchema,
   gender: z.enum(['M', 'F']).optional(),
   previousSchoolType: z.enum(['CIMAS', 'CIENCIAS', 'CIENCIAS_APLICADAS', 'OTHER']).optional(),
   previousSchoolName: z.string().optional(),
@@ -97,7 +98,7 @@ const finalTutorSchema = z.object({
   existingTutorId: objectIdSchema.optional(),
   names: z.string().trim().min(1),
   lastNames: z.string().trim().min(1),
-  dni: z.string().optional(),
+  dni: optionalDniSchema,
   phone: z.string().optional(),
   relationship: z.string().optional(),
   isLegalResponsible: z.boolean().optional(),
@@ -122,6 +123,8 @@ export const enrollmentFinalizeSchema = z.object({
   }).optional(),
 }).superRefine((data, ctx) => {
   const studentRefs = new Set();
+  const studentDnis = new Set();
+  const tutorDnis = new Set();
 
   data.students.forEach((student, index) => {
     const ref = student.localId || student.existingStudentId;
@@ -136,6 +139,14 @@ export const enrollmentFinalizeSchema = z.object({
     }
 
     studentRefs.add(ref);
+
+    const dni = String(student.dni || '').replace(/\D/g, '').trim();
+    if (dni) {
+      if (studentDnis.has(dni)) {
+        ctx.addIssue({ code: z.ZodIssueCode.custom, message: 'No se permiten DNIs repetidos entre alumnos', path: ['students', index, 'dni'] });
+      }
+      studentDnis.add(dni);
+    }
   });
 
   if (!data.tutors.some((tutor) => tutor.includeInContract !== false)) {
@@ -143,6 +154,17 @@ export const enrollmentFinalizeSchema = z.object({
   }
 
   data.tutors.forEach((tutor, index) => {
+    const dni = String(tutor.dni || '').replace(/\D/g, '').trim();
+    if (dni) {
+      if (tutorDnis.has(dni)) {
+        ctx.addIssue({ code: z.ZodIssueCode.custom, message: 'No se permiten DNIs repetidos entre tutores', path: ['tutors', index, 'dni'] });
+      }
+      if (studentDnis.has(dni)) {
+        ctx.addIssue({ code: z.ZodIssueCode.custom, message: 'Un mismo DNI no puede existir en alumnos y tutores del draft', path: ['tutors', index, 'dni'] });
+      }
+      tutorDnis.add(dni);
+    }
+
     const linkedIds = Array.isArray(tutor.linkedStudentIds) ? tutor.linkedStudentIds : [];
     linkedIds.forEach((linkedId, linkedIndex) => {
       if (!studentRefs.has(linkedId)) {

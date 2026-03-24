@@ -12,6 +12,14 @@ function toObjectId(value) {
   return mongoose.Types.ObjectId.isValid(value) ? new mongoose.Types.ObjectId(value) : null;
 }
 
+function getEnrollmentStatusPriority(status) {
+  const normalized = String(status || '').trim().toUpperCase();
+  if (normalized === 'ENROLLED') return 4;
+  if (normalized === 'TRANSFERRED') return 3;
+  if (normalized === 'ABSENT') return 2;
+  return 1;
+}
+
 export async function getEnrollmentContextMapByStudentIds(studentIds = [], { cycleId = null, session = null } = {}) {
   const uniqueStudentIds = [...new Set(studentIds.map((id) => String(id)).filter(Boolean))];
   if (!uniqueStudentIds.length) return new Map();
@@ -46,7 +54,15 @@ export async function getEnrollmentContextMapByStudentIds(studentIds = [], { cyc
     if (!enrollment) continue;
 
     const key = String(row.studentId);
-    if (!selectedByStudentId.has(key)) {
+    const current = selectedByStudentId.get(key);
+    if (!current) {
+      selectedByStudentId.set(key, { enrollment, enrollmentStudent: row });
+      continue;
+    }
+
+    const currentPriority = getEnrollmentStatusPriority(current.enrollment?.status);
+    const nextPriority = getEnrollmentStatusPriority(enrollment?.status);
+    if (nextPriority > currentPriority) {
       selectedByStudentId.set(key, { enrollment, enrollmentStudent: row });
     }
   }

@@ -646,6 +646,10 @@ export async function getStudentSummaryService(studentId) {
 
   const student = await Student.findById(studentId).populate('personId').lean();
   if (!student) throw new ApiError(404, 'Estudiante no encontrado');
+  const activeCycle = await Cycle.findOne({ isActive: true })
+    .sort({ year: -1, startDate: -1, _id: -1 })
+    .select('_id')
+    .lean();
 
   const person = student.personId;
 
@@ -658,8 +662,7 @@ export async function getStudentSummaryService(studentId) {
     .populate('tutorPersonId')
     .lean();
 
-
-  const currentEnrollment = await getEnrollmentContextForStudent(student._id);
+  const currentEnrollment = await getEnrollmentContextForStudent(student._id, { cycleId: activeCycle?._id || null });
 
   const charges = await Charge.find({ studentId: student._id, status: { $in: ['OPEN', 'PARTIAL'] } }).lean();
   const now = new Date();
@@ -701,30 +704,38 @@ export async function getStudentSummaryService(studentId) {
   const tutorLink = {
     address: null,
     primaryTutor: primaryTutor ? {
+      personId: primaryTutor.tutorPersonId?._id?.toString() || null,
       lastNames: primaryTutor.tutorPersonId?.lastNames || null,
       names: primaryTutor.tutorPersonId?.names || null,
+      dni: primaryTutor.tutorPersonId?.dni || null,
       phone: primaryTutor.tutorPersonId?.phone || null,
       relationship: primaryTutor.relationship || null,
       livesWithStudent: primaryTutor.livesWithStudent ?? null
     } : null,
     primaryTutor_send: primaryTutor? {
+          personId: primaryTutor.tutorPersonId?._id?.toString() || null,
           lastNames: primaryTutor.tutorPersonId?.lastNames || null,
           names: primaryTutor.tutorPersonId?.names || null,
+          dni: primaryTutor.tutorPersonId?.dni || null,
           phone: primaryTutor.tutorPersonId?.phone || null,
           relationship: primaryTutor.relationship || null,
           livesWithStudent: primaryTutor.livesWithStudent ?? null
         }
       : null,
     otherTutors: (otherTutors || []).map(tutor => ({
+      personId: tutor.tutorPersonId?._id?.toString() || null,
       lastNames: tutor.tutorPersonId?.lastNames || null,
       names: tutor.tutorPersonId?.names || null,
+      dni: tutor.tutorPersonId?.dni || null,
       phone: tutor.tutorPersonId?.phone || null,
       relationship: tutor.relationship || null,
       livesWithStudent: tutor.livesWithStudent ?? null
     })),
     otherTutors_send: (otherTutors || []).map(tutor => ({
+      personId: tutor.tutorPersonId?._id?.toString() || null,
       lastNames: tutor.tutorPersonId?.lastNames || null,
       names: tutor.tutorPersonId?.names || null,
+      dni: tutor.tutorPersonId?.dni || null,
       phone: tutor.tutorPersonId?.phone || null,
       relationship: tutor.relationship || null,
       livesWithStudent: tutor.livesWithStudent ?? null

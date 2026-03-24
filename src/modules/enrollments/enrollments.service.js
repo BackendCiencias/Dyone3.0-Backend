@@ -958,15 +958,110 @@ export async function finalizeEnrollmentService(payload, userId) {
 }
 
 export async function getEnrollmentService(id) {
-
   const enrollment = await Enrollment.findById(id)
     .populate('cycleId')
     .populate('campusId')
-    .populate({ path: 'enrollmentStudents', populate: [{ path: 'studentId', populate: { path: 'personId' } }, { path: 'classroomId' }] });
+    .populate({ path: 'enrollmentStudents', populate: [{ path: 'studentId', populate: { path: 'personId' } }, { path: 'classroomId' }] })
+    .lean();
 
   if (!enrollment) throw new ApiError(404, 'Matrícula no encontrada');
 
-  return enrollment;
+  const studentRows = Array.isArray(enrollment.enrollmentStudents) ? enrollment.enrollmentStudents : [];
+  const studentIds = studentRows
+    .map((row) => row?.studentId?._id || row?.studentId)
+    .filter(Boolean);
+
+  const [snapshot, tutorRows] = await Promise.all([
+    ContractSnapshot.findOne({ $or: [{ enrollmentId: enrollment._id }, { matriculaId: enrollment._id }] }).lean(),
+    studentIds.length
+      ? Tutor.find({ studentId: { $in: studentIds } })
+        .populate('studentId', '_id')
+        .populate('tutorPersonId', 'names lastNames dni phone address')
+        .lean()
+      : [],
+  ]);
+
+  const snapshotStudentById = new Map(
+    (Array.isArray(snapshot?.students) ? snapshot.students : [])
+      .map((row) => [String(row.studentId), row])
+  );
+
+  const students = studentRows.map((row) => {
+    const student = row?.studentId || {};
+    const person = student?.personId || {};
+    const classroom = row?.classroomId || {};
+    const snapshotStudent = snapshotStudentById.get(String(student?._id || '')) || null;
+
+    return {
+      enrollmentStudentId: row?._id ? String(row._id) : null,
+      studentId: student?._id ? String(student._id) : null,
+      names: person?.names || snapshotStudent?.names || null,
+      lastNames: person?.lastNames || snapshotStudent?.lastNames || null,
+      fullName: [person?.lastNames || snapshotStudent?.lastNames, person?.names || snapshotStudent?.names].filter(Boolean).join(', '),
+      dni: person?.dni || null,
+      internalCode: student?.internalCode || snapshotStudent?.internalCode || null,
+      classroom: row?.classroomId ? {
+        id: String(classroom._id),
+        displayName: classroom.displayName || snapshotStudent?.classroom?.label || null,
+      } : (snapshotStudent?.classroom?.label ? {
+        id: snapshotStudent?.classroom?.classroomId ? String(snapshotStudent.classroom.classroomId) : null,
+        displayName: snapshotStudent.classroom.label,
+      } : null),
+      previousSchoolType: row?.previousSchoolType || null,
+      previousSchoolName: row?.previousSchoolName || null,
+      admissionFee: normalizeFee(row?.admissionFee, { includesApplies: true }),
+      enrollmentFee: normalizeFee(row?.enrollmentFee),
+      pensionMonthlyAmounts: normalizePensionMonthlyAmounts(row || snapshotStudent || {}),
+      notes: row?.notes || null,
+    };
+  });
+
+  const tutorsByPerson = new Map();
+  for (const row of tutorRows) {
+    const person = row?.tutorPersonId;
+    if (!person?._id) continue;
+
+    const key = String(person._id);
+    if (!tutorsByPerson.has(key)) {
+      tutorsByPerson.set(key, {
+        personId: key,
+        names: person.names || null,
+        lastNames: person.lastNames || null,
+        fullName: [person.names, person.lastNames].filter(Boolean).join(' ').trim(),
+        dni: person.dni || null,
+        phone: person.phone || null,
+        address: person.address || null,
+        relationship: row.relationship || 'Apoderado',
+      });
+    }
+  }
+
+  const contactAddress = [...tutorsByPerson.values()].find((row) => row.address)?.address || null;
+
+  return {
+    id: String(enrollment._id),
+    status: enrollment.status,
+    createdAt: enrollment.createdAt || null,
+    confirmedAt: enrollment.confirmedAt || snapshot?.confirmedAt || null,
+    transferredAt: enrollment.transferredAt || null,
+    notes: enrollment.notes || null,
+    cycle: enrollment.cycleId ? {
+      id: String(enrollment.cycleId._id),
+      name: enrollment.cycleId.name || null,
+    } : null,
+    campus: enrollment.campusId ? {
+      id: String(enrollment.campusId._id),
+      code: enrollment.campusId.code || null,
+      name: enrollment.campusId.name || enrollment.campusId.code || null,
+    } : null,
+    students,
+    tutors: [...tutorsByPerson.values()],
+    contract: {
+      notes: snapshot?.notes || null,
+      address: contactAddress,
+      confirmedAt: snapshot?.confirmedAt || enrollment.confirmedAt || null,
+    },
+  };
 }
 
 export async function getClassroomCapacityService({ classroomId, cycleId }) {

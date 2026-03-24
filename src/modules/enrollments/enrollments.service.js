@@ -500,6 +500,185 @@ async function createConfirmedEnrollmentInSession({ session, data, createdByUser
   };
 }
 
+async function finalizeStudentEnrollmentInSession({
+  session,
+  cycle,
+  studentDoc,
+  draftStudent,
+  currentEnrollment,
+  createdByUserId,
+  generalNotes = '',
+  billingSetup,
+}) {
+  if (!draftStudent.classroomId) {
+    throw new ApiError(400, 'Todos los alumnos deben tener salón');
+  }
+
+  const classroom = await Classroom.findById(draftStudent.classroomId)
+    .select('_id displayName cycleId campusId capacity')
+    .session(session)
+    .lean();
+  if (!classroom) throw new ApiError(404, `Aula no encontrada: ${draftStudent.classroomId}`);
+  if (String(classroom.cycleId) !== String(cycle._id)) {
+    throw new ApiError(400, `El aula ${draftStudent.classroomId} no pertenece al ciclo activo`);
+  }
+
+  await ensureClassroomCapacityForRows({
+    session,
+    cycleId: cycle._id,
+    enrollmentStudents: [{ studentId: studentDoc._id, classroomId: classroom._id }],
+    classroomsById: new Map([[String(classroom._id), classroom]]),
+  });
+
+  const pensionAmount = toNumber(draftStudent?.amounts?.pensionAmount, 0);
+  const pensionMonthlyAmounts = Array.isArray(draftStudent?.amounts?.pensionMonthlyAmounts)
+    ? draftStudent.amounts.pensionMonthlyAmounts.map((value) => Number(value ?? 0))
+    : Array(10).fill(pensionAmount);
+  const admissionFeeAmount = toNumber(draftStudent?.amounts?.admissionFeeAmount, 0);
+  const enrollmentFeeAmount = toNumber(draftStudent?.amounts?.enrollmentFeeAmount, 0);
+  const previousSchoolType = String(draftStudent?.previousSchoolType || 'OTHER').trim().toUpperCase();
+  const previousSchoolName = String(draftStudent?.previousSchoolName || '').trim();
+
+  let enrollment = null;
+  let enrollmentStudent = null;
+  const existingStatus = String(currentEnrollment?.enrollment?.status || '').trim().toUpperCase();
+
+  if (existingStatus === 'ENROLLED') {
+    throw new ApiError(409, `El alumno ${studentDoc.personId?.names || studentDoc._id} ya se matriculó en el ciclo activo`);
+  }
+  if (existingStatus === 'TRANSFERRED') {
+    throw new ApiError(409, `El alumno ${studentDoc.personId?.names || studentDoc._id} tiene matrícula trasladada en el ciclo activo`);
+  }
+
+  if (currentEnrollment?.enrollment?._id) {
+    enrollment = await Enrollment.findById(currentEnrollment.enrollment._id).session(session);
+    if (!enrollment) throw new ApiError(404, 'Matrícula base no encontrada para el alumno');
+
+    enrollment.status = 'ENROLLED';
+    enrollment.campusId = classroom.campusId;
+    enrollment.notes = generalNotes || enrollment.notes || undefined;
+    enrollment.updatedBy = createdByUserId;
+    enrollment.confirmedAt = enrollment.confirmedAt || new Date();
+    await enrollment.save({ session });
+
+    enrollmentStudent = currentEnrollment?.enrollmentStudent?._id
+      ? await EnrollmentStudent.findById(currentEnrollment.enrollmentStudent._id).session(session)
+      : await EnrollmentStudent.findOne({ enrollmentId: enrollment._id, studentId: studentDoc._id }).session(session);
+  } else {
+    enrollment = await Enrollment.create([{
+      cycleId: cycle._id,
+      campusId: classroom.campusId,
+      status: 'ENROLLED',
+      notes: generalNotes || undefined,
+      createdBy: createdByUserId,
+      updatedBy: createdByUserId,
+      confirmedAt: new Date(),
+    }], { session }).then((docs) => docs[0]);
+  }
+
+  const admissionFee = previousSchoolType !== 'OTHER'
+    ? { applies: false, amount: 0, isExempt: true, reason: 'Traslado interno' }
+    : {
+      applies: admissionFeeAmount > 0,
+      amount: admissionFeeAmount,
+      isExempt: admissionFeeAmount <= 0,
+      reason: '',
+    };
+  const normalizedEnrollmentFee = {
+    amount: enrollmentFeeAmount,
+    isExempt: enrollmentFeeAmount <= 0,
+    reason: '',
+  };
+
+  const enrollmentStudentPayload = {
+    enrollmentId: enrollment._id,
+    studentId: studentDoc._id,
+    classroomId: classroom._id,
+    admissionFee,
+    enrollmentFee: normalizedEnrollmentFee,
+    pensionMonthlyAmounts,
+    previousSchoolType,
+    previousSchoolName: previousSchoolType === 'OTHER' ? previousSchoolName : undefined,
+    notes: draftStudent.notes || undefined,
+    agreedBy: createdByUserId,
+    agreedAt: new Date(),
+  };
+
+  if (enrollmentStudent) {
+    Object.assign(enrollmentStudent, enrollmentStudentPayload);
+    await enrollmentStudent.save({ session });
+  } else {
+    enrollmentStudent = await EnrollmentStudent.create([enrollmentStudentPayload], { session }).then((docs) => docs[0]);
+  }
+
+  await Enrollment.updateOne(
+    { _id: enrollment._id },
+    { $addToSet: { enrollmentStudents: enrollmentStudent._id } },
+    { session }
+  );
+
+  const chargesToCreate = [];
+  const admissionCharge = buildAdmissionFeeCharge({
+    enrollmentStudent,
+    student: studentDoc,
+    conceptId: billingSetup.byCode.get('ADMISSION_FEE'),
+    cycleId: cycle._id,
+    campusId: classroom.campusId,
+    dueDate: billingSetup.admissionDueDate,
+  });
+  if (admissionCharge) chargesToCreate.push(admissionCharge);
+
+  const enrollmentCharge = buildEnrollmentFeeCharge({
+    enrollmentStudent,
+    conceptId: billingSetup.byCode.get('ENROLLMENT_FEE'),
+    cycleId: cycle._id,
+    campusId: classroom.campusId,
+    dueDate: billingSetup.enrollmentDueDate,
+  });
+  if (enrollmentCharge) chargesToCreate.push(enrollmentCharge);
+
+  chargesToCreate.push(...buildTuitionCharges({
+    enrollmentStudent,
+    conceptId: billingSetup.byCode.get('TUITION'),
+    cycleId: cycle._id,
+    campusId: classroom.campusId,
+    dueDatesByMonth: billingSetup.tuitionDueDatesByMonth,
+  }));
+
+  await ensureNoDuplicateCharges({ session, charges: chargesToCreate, cycleId: cycle._id });
+  if (chargesToCreate.length) {
+    await Charge.insertMany(chargesToCreate, { session });
+    enrollmentStudent.chargesGeneratedAt = new Date();
+    await enrollmentStudent.save({ session });
+  }
+
+  await Vacancy.updateOne(
+    { studentId: studentDoc._id, cycleId: cycle._id },
+    {
+      $setOnInsert: { studentId: studentDoc._id, cycleId: cycle._id },
+      $set: { classroomId: classroom._id },
+    },
+    { upsert: true, session }
+  );
+
+  const snapshotData = buildContractSnapshot({
+    enrollment,
+    enrollmentStudents: [enrollmentStudent],
+    studentsById: new Map([[String(studentDoc._id), studentDoc]]),
+    classroomsById: new Map([[String(classroom._id), classroom]]),
+    userId: createdByUserId,
+    notes: generalNotes,
+  });
+  await new ContractSnapshot(snapshotData).save({ session });
+
+  return {
+    enrollment,
+    enrollmentStudent,
+    campusId: classroom.campusId ? String(classroom.campusId) : null,
+    chargesCount: chargesToCreate.length,
+  };
+}
+
 export async function createEnrollmentService(data, createdByUserId) {
   const session = await mongoose.startSession();
 
@@ -649,46 +828,10 @@ export async function finalizeEnrollmentService(payload, userId) {
           .session(session);
       }
 
-      const currentEnrollment = await getEnrollmentContextForStudent(studentDoc._id, { cycleId: cycle._id, session });
-      if (currentEnrollment?.enrollment?.status === 'ENROLLED') {
-        throw new ApiError(409, `El alumno ${studentDoc.personId?.names || studentDoc._id} ya se matriculó en el ciclo activo`);
-      }
-
-      if (!draftStudent.classroomId) {
-        throw new ApiError(400, 'Todos los alumnos deben tener salón');
-      }
-
-      const pensionAmount = toNumber(draftStudent?.amounts?.pensionAmount, 0);
-      const pensionMonthlyAmounts = Array.isArray(draftStudent?.amounts?.pensionMonthlyAmounts)
-        ? draftStudent.amounts.pensionMonthlyAmounts.map((value) => Number(value ?? 0))
-        : Array(10).fill(pensionAmount);
-      const admissionFeeAmount = toNumber(draftStudent?.amounts?.admissionFeeAmount, 0);
-      const enrollmentFeeAmount = toNumber(draftStudent?.amounts?.enrollmentFeeAmount, 0);
-      const previousSchoolType = String(draftStudent?.previousSchoolType || 'OTHER').trim().toUpperCase();
-      const previousSchoolName = String(draftStudent?.previousSchoolName || '').trim();
-
       resolvedStudents.push({
         referenceKey,
         student: studentDoc,
-        enrollmentStudent: {
-          studentId: studentDoc._id.toString(),
-          classroomId: draftStudent.classroomId,
-          admissionFee: {
-            applies: previousSchoolType === 'OTHER',
-            isExempt: false,
-            amount: previousSchoolType === 'OTHER' ? admissionFeeAmount : 0,
-            reason: '',
-          },
-          enrollmentFee: {
-            isExempt: false,
-            amount: enrollmentFeeAmount,
-            reason: '',
-          },
-          pensionMonthlyAmounts,
-          previousSchoolType,
-          previousSchoolName: previousSchoolType === 'OTHER' ? previousSchoolName : undefined,
-          notes: draftStudent.notes || undefined,
-        },
+        draft: draftStudent,
       });
 
       studentIdByRef.set(referenceKey, studentDoc._id);
@@ -756,23 +899,35 @@ export async function finalizeEnrollmentService(payload, userId) {
       }
     }
 
-    const enrollmentData = {
-      cycleId: String(cycle._id),
-      enrollmentStudents: resolvedStudents.map((row) => row.enrollmentStudent),
-      notes: payload?.observations?.general || '',
-    };
+    const billingSetup = await loadBillingSetup({ session, cycleId: cycle._id });
+    const finalizedRows = [];
+    let chargesCount = 0;
+    const enrollmentIds = [];
+    const campusIds = new Set();
 
-    const { enrollment, chargesCount } = await createConfirmedEnrollmentInSession({
-      session,
-      data: enrollmentData,
-      createdByUserId: userId,
-      allowMultiCampus: true,
-    });
+    for (const row of resolvedStudents) {
+      const currentEnrollment = await getEnrollmentContextForStudent(row.student._id, { cycleId: cycle._id, session });
+      const finalized = await finalizeStudentEnrollmentInSession({
+        session,
+        cycle,
+        studentDoc: row.student,
+        draftStudent: row.draft,
+        currentEnrollment,
+        createdByUserId: userId,
+        generalNotes: payload?.observations?.general || '',
+        billingSetup,
+      });
+      finalizedRows.push(finalized);
+      enrollmentIds.push(finalized.enrollment._id.toString());
+      if (finalized.campusId) campusIds.add(finalized.campusId);
+      chargesCount += finalized.chargesCount;
+    }
 
     return {
-      enrollmentId: enrollment._id.toString(),
+      enrollmentId: enrollmentIds[0] || null,
+      enrollmentIds,
       cycleId: String(cycle._id),
-      campusId: enrollment?.campusId ? String(enrollment.campusId) : null,
+      campusId: [...campusIds][0] || null,
       studentIds: resolvedStudents.map((row) => row.student._id.toString()),
       chargesCount,
     };
@@ -794,6 +949,7 @@ export async function finalizeEnrollmentService(payload, userId) {
   return {
     ok: true,
     enrollmentId: result.enrollmentId,
+    enrollmentIds: result.enrollmentIds,
     studentIds: result.studentIds,
     campusId: result.campusId,
     status: 'ENROLLED',

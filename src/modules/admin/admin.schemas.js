@@ -17,7 +17,7 @@ export const cycleCreateSchema = z.object({
   isActive: z.boolean().optional().default(true),
 });
 
-export const classroomCreateSchema = z.object({
+const classroomBaseSchema = z.object({
   campusId: z.string().min(1),
   cycleId: z.string().min(1),
   level: z.enum(['INITIAL', 'PRIMARY', 'SECONDARY']),
@@ -26,7 +26,15 @@ export const classroomCreateSchema = z.object({
   capacity: z.number().int().positive(),
   displayName: z.string().min(1),
   isActive: z.boolean().optional().default(true),
+  notes: z.string().trim().max(1000).optional().default(''),
 });
+
+export const classroomCreateSchema = classroomBaseSchema;
+
+export const classroomUpdateSchema = classroomBaseSchema.partial().refine(
+  (value) => Object.keys(value).length > 0,
+  { message: 'Debe enviar al menos un campo para actualizar' }
+);
 
 export const billingConceptCreateSchema = z.object({
   code: z.string().trim().min(1).max(40).transform((value) => value.toUpperCase()),

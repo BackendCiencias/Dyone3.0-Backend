@@ -46,7 +46,23 @@ export const paymentReceiptCorrectionSchema = z.object({
   receiptNumber: z.string().trim().max(6).optional().or(z.literal('')),
   voucherNumber: z.string().trim().max(64).optional().or(z.literal('')),
   notes: z.string().trim().max(500).optional().or(z.literal('')),
+  reassignStudentId: objectIdSchema.optional(),
+  reassignAllocations: z.array(z.object({
+    chargeId: objectIdSchema,
+    amount: z.number().positive(),
+  })).min(1).optional(),
   correctionReason: z.string().trim().min(5, 'Debes indicar el motivo de la corrección'),
+}).superRefine((data, ctx) => {
+  const hasStudent = Boolean(data.reassignStudentId);
+  const hasAllocations = Array.isArray(data.reassignAllocations) && data.reassignAllocations.length > 0;
+
+  if (hasStudent !== hasAllocations) {
+    ctx.addIssue({
+      code: z.ZodIssueCode.custom,
+      path: ['reassignStudentId'],
+      message: 'Para reasignar el pago debes enviar alumno destino y allocations destino',
+    });
+  }
 });
 
 export const debtorsQuerySchema = z.object({

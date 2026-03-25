@@ -37,9 +37,12 @@ function parseBoolean(value, defaultValue = true) {
 }
 
 export const classroomOptionsQuerySchema = z.object({
-  level: z.any().refine((value) => normalizeLevel(value), {
-    message: 'level es requerido y debe ser válido (INITIAL|PRIMARY|SECONDARY o INICIAL|PRIMARIA|SECUNDARIA)',
-  }).transform((value) => normalizeLevel(value)),
+  level: z.any().optional().transform((value) => {
+    if (value === undefined || value === null || value === '') return null;
+    return normalizeLevel(value);
+  }).refine((value) => value === null || Boolean(value), {
+    message: 'level debe ser válido (INITIAL|PRIMARY|SECONDARY o INICIAL|PRIMARIA|SECUNDARIA)',
+  }),
   grade: z.any().optional().refine((value) => {
     if (value === undefined || value === null || value === '') return true;
     return normalizeGrade(value) !== null;
@@ -58,6 +61,21 @@ export const classroomOptionsQuerySchema = z.object({
     message: 'campus debe ser uno de: CIENCIAS, CIENCIAS_APLICADAS, CIMAS',
   }),
   includeCapacity: z.any().optional().transform((value) => parseBoolean(value, true)),
+});
+
+export const classroomBoardQuerySchema = z.object({
+  campus: z.any().transform((value) => {
+    const normalized = String(value || '').trim().toUpperCase();
+    return normalized || null;
+  }).refine((value) => value !== null && ['CIENCIAS', 'CIENCIAS_APLICADAS', 'CIMAS'].includes(value), {
+    message: 'campus es requerido y debe ser uno de: CIENCIAS, CIENCIAS_APLICADAS, CIMAS',
+  }),
+  level: z.any().transform((value) => normalizeLevel(value)).refine((value) => Boolean(value), {
+    message: 'level es requerido y debe ser válido',
+  }),
+  grade: z.any().refine((value) => normalizeGrade(value) !== null, {
+    message: 'grade es requerido y debe ser numérico',
+  }).transform((value) => normalizeGrade(value)),
 });
 
 export const levelLabels = {

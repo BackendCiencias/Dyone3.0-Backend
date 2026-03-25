@@ -84,6 +84,28 @@ function computeChargeStatus(totalAmount, outstandingAmount) {
   return 'OPEN';
 }
 
+function hasRole(userRoles = [], expectedRole) {
+  return userRoles.some((role) => String(role || '').trim().toUpperCase() === String(expectedRole || '').trim().toUpperCase());
+}
+
+function normalizeAllocationPayload(allocations = []) {
+  return allocations
+    .map((item) => ({
+      chargeId: String(item?.chargeId || '').trim(),
+      amount: roundMoney(toMoney(item?.amount)),
+    }))
+    .filter((item) => item.chargeId && item.amount > 0);
+}
+
+async function populatePaymentForResponse(paymentId, session = null) {
+  const query = Payment.findById(paymentId)
+    .populate('studentId')
+    .populate('campusId');
+
+  if (session) query.session(session);
+  return query;
+}
+
 function normalizeReceiptNumber(value) {
   const raw = String(value || '').trim();
   if (!raw) return null;
@@ -527,6 +549,157 @@ export async function updatePaymentReceiptService({ paymentId, payload, userId }
   return payment;
 }
 
+export async function updatePaymentReceiptServiceV2({ paymentId, payload, userId, userRoles = [] }) {
+  if (!mongoose.Types.ObjectId.isValid(paymentId)) throw new ApiError(400, 'paymentId inválido');
+
+  const isAdmin = hasRole(userRoles, 'ADMIN');
+  const wantsReassignment = Boolean(payload.reassignStudentId || (Array.isArray(payload.reassignAllocations) && payload.reassignAllocations.length));
+  if (wantsReassignment && !isAdmin) {
+    throw new ApiError(403, 'Solo admin puede reasignar el pago a otro alumno');
+  }
+
+  const correctionResult = await runInTransaction(async (session) => {
+    const payment = await Payment.findById(paymentId)
+      .populate('studentId')
+      .populate('campusId')
+      .session(session);
+    if (!payment) throw new ApiError(404, 'Pago no encontrado');
+
+    const currentAllocations = await PaymentAllocation.find({ paymentId: payment._id })
+      .populate('chargeId')
+      .session(session);
+
+    const previous = {
+      studentId: payment.studentId?._id ? String(payment.studentId._id) : String(payment.studentId || ''),
+      method: payment.method,
+      receiptNumber: payment.receiptNumber || null,
+      voucherNumber: payment.voucherNumber || null,
+      notes: payment.notes || null,
+      allocations: currentAllocations.map((row) => ({
+        chargeId: row.chargeId?._id ? String(row.chargeId._id) : String(row.chargeId || ''),
+        studentId: row.chargeId?.studentId ? String(row.chargeId.studentId) : null,
+        amount: roundMoney(toMoney(row.amount)),
+      })),
+    };
+
+    if (wantsReassignment) {
+      const targetStudentId = String(payload.reassignStudentId || '').trim();
+      if (!mongoose.Types.ObjectId.isValid(targetStudentId)) {
+        throw new ApiError(400, 'reassignStudentId inválido');
+      }
+
+      const targetStudent = await Student.findById(targetStudentId).session(session);
+      if (!targetStudent) throw new ApiError(404, 'Alumno destino no encontrado');
+
+      const reassignmentAllocations = normalizeAllocationPayload(payload.reassignAllocations || []);
+      if (!reassignmentAllocations.length) {
+        throw new ApiError(400, 'Se requiere al menos un cargo destino para reasignar el pago');
+      }
+
+      const paymentTotal = roundMoney(toMoney(payment.totalAmount));
+      const reassignedTotal = roundMoney(reassignmentAllocations.reduce((acc, item) => acc + item.amount, 0));
+      if (roundMoney(paymentTotal - reassignedTotal) !== 0) {
+        throw new ApiError(400, 'La suma de los cargos destino debe coincidir exactamente con el total del pago');
+      }
+
+      for (const allocation of currentAllocations) {
+        const charge = allocation.chargeId;
+        if (!charge?._id) continue;
+
+        const currentOutstanding = roundMoney(toMoney(charge.outstandingAmount));
+        const totalAmountCharge = roundMoney(toMoney(charge.totalAmount));
+        const restoredOutstanding = roundMoney(currentOutstanding + roundMoney(toMoney(allocation.amount)));
+        charge.outstandingAmount = toDecimal(restoredOutstanding);
+        charge.status = computeChargeStatus(totalAmountCharge, restoredOutstanding);
+        await charge.save({ session });
+      }
+
+      await PaymentAllocation.deleteMany({ paymentId: payment._id }).session(session);
+
+      const targetCharges = await Charge.find({
+        _id: { $in: reassignmentAllocations.map((item) => item.chargeId) },
+        status: { $ne: 'CANCELLED' },
+      }).session(session);
+      const targetChargeMap = new Map(targetCharges.map((row) => [String(row._id), row]));
+
+      let resolvedCampusId = null;
+      for (const allocation of reassignmentAllocations) {
+        const charge = targetChargeMap.get(allocation.chargeId);
+        if (!charge) throw new ApiError(404, `Cargo destino no encontrado: ${allocation.chargeId}`);
+        if (String(charge.studentId) !== targetStudentId) {
+          throw new ApiError(400, `El cargo ${allocation.chargeId} no pertenece al alumno seleccionado`);
+        }
+
+        const currentOutstanding = roundMoney(toMoney(charge.outstandingAmount));
+        if (allocation.amount > currentOutstanding + 0.001) {
+          throw new ApiError(400, `La asignación excede el saldo pendiente del cargo ${allocation.chargeId}`);
+        }
+
+        const nextOutstanding = Math.max(0, roundMoney(currentOutstanding - allocation.amount));
+        const totalAmountCharge = roundMoney(toMoney(charge.totalAmount));
+        charge.outstandingAmount = toDecimal(nextOutstanding);
+        charge.status = computeChargeStatus(totalAmountCharge, nextOutstanding);
+        await charge.save({ session });
+
+        if (!resolvedCampusId && charge.campusId) resolvedCampusId = charge.campusId;
+
+        await PaymentAllocation.create([
+          {
+            paymentId: payment._id,
+            chargeId: charge._id,
+            amount: toDecimal(allocation.amount),
+          },
+        ], { session });
+      }
+
+      payment.studentId = targetStudent._id;
+      payment.studentIds = [targetStudent._id];
+      if (resolvedCampusId) payment.campusId = resolvedCampusId;
+    }
+
+    payment.method = payload.method;
+    payment.receiptNumber = normalizeReceiptNumber(payload.receiptNumber || '') || null;
+    payment.voucherNumber = normalizeVoucherNumber(payload.voucherNumber || '') || payment.internalCode;
+    payment.notes = String(payload.notes || '').trim() || undefined;
+
+    await payment.save({ session });
+
+    const refreshedPayment = await populatePaymentForResponse(payment._id, session);
+    const nextStudentId = refreshedPayment?.studentId?._id ? String(refreshedPayment.studentId._id) : String(refreshedPayment?.studentId || '');
+
+    return {
+      payment: refreshedPayment,
+      previous,
+      affectedStudentIds: Array.from(new Set([previous.studentId || null, nextStudentId || null].filter(Boolean))),
+    };
+  });
+
+  await registerAuditLog({
+    entityType: 'PAYMENT',
+    entityId: correctionResult.payment._id,
+    action: 'PAYMENT_RECEIPT_CORRECTED',
+    performedBy: userId,
+    campusId: correctionResult.payment.campusId?._id || correctionResult.payment.campusId,
+    payloadSnapshot: {
+      correctionReason: payload.correctionReason,
+      previous: correctionResult.previous,
+      next: {
+        studentId: correctionResult.payment.studentId?._id ? String(correctionResult.payment.studentId._id) : String(correctionResult.payment.studentId || ''),
+        method: correctionResult.payment.method,
+        receiptNumber: correctionResult.payment.receiptNumber || null,
+        voucherNumber: correctionResult.payment.voucherNumber || null,
+        notes: correctionResult.payment.notes || null,
+      },
+      affectedStudentIds: correctionResult.affectedStudentIds,
+    },
+  });
+
+  return {
+    ...correctionResult.payment.toObject(),
+    affectedStudentIds: correctionResult.affectedStudentIds,
+  };
+}
+
 export async function getDebtorsService({ cycleId, conceptId, campus, campusScope = [], onlyOverdue = false, limit = 25, page = 1 }) {
   const normalizedLimit = Math.max(1, Math.min(50, Number(limit) || 25));
   const normalizedPage = Math.max(1, Number(page) || 1);
@@ -814,3 +987,4 @@ export async function getDailyPaymentTransactionsService({ date, campus, page = 
     },
   };
 }
+

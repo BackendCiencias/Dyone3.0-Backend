@@ -12,6 +12,13 @@ import { Charge } from '../../models/charge.model.js';
 import { PaymentAllocation } from '../../models/paymentAllocation.model.js';
 import { Enrollment } from '../../models/enrollment.model.js';
 import { EnrollmentStudent, NO_APLICA_PENSION } from '../../models/enrollmentStudent.model.js';
+import { AttendanceRecord } from '../../models/attendanceRecord.model.js';
+import { AttendanceMonthlySummary } from '../../models/attendanceMonthlySummary.model.js';
+import { ContractSnapshot } from '../../models/contractSnapshot.model.js';
+import { ExamPass } from '../../models/examPass.model.js';
+import { Grade } from '../../models/grade.model.js';
+import { ProgramEnrollment } from '../../models/programEnrollment.model.js';
+import { User } from '../../models/user.model.js';
 import { ApiError } from '../../utils/errors.js';
 import { getClassroomCapacityService } from '../enrollments/enrollments.service.js';
 import { runInTransaction } from '../../shared/dbSession.js';
@@ -35,6 +42,24 @@ function normalizeDni(dni) {
   const lowered = normalized.toLowerCase();
   if (['null', 'undefined', 'n/a', 'na', '-'].includes(lowered)) return undefined;
   return normalized;
+}
+
+function mapTutorLinkSummary(tutor) {
+  if (!tutor) return null;
+
+  return {
+    id: tutor._id?.toString() || null,
+    personId: tutor.tutorPersonId?._id?.toString() || null,
+    lastNames: tutor.tutorPersonId?.lastNames || null,
+    names: tutor.tutorPersonId?.names || null,
+    dni: tutor.tutorPersonId?.dni || null,
+    phone: tutor.tutorPersonId?.phone || null,
+    gender: tutor.tutorPersonId?.gender || null,
+    relationship: tutor.relationship || null,
+    isPrimary: tutor.isPrimary ?? null,
+    livesWithStudent: tutor.livesWithStudent ?? null,
+    notes: tutor.notes || null,
+  };
 }
 
 async function nextStudentCode(session) {
@@ -703,43 +728,10 @@ export async function getStudentSummaryService(studentId) {
   }
   const tutorLink = {
     address: null,
-    primaryTutor: primaryTutor ? {
-      personId: primaryTutor.tutorPersonId?._id?.toString() || null,
-      lastNames: primaryTutor.tutorPersonId?.lastNames || null,
-      names: primaryTutor.tutorPersonId?.names || null,
-      dni: primaryTutor.tutorPersonId?.dni || null,
-      phone: primaryTutor.tutorPersonId?.phone || null,
-      relationship: primaryTutor.relationship || null,
-      livesWithStudent: primaryTutor.livesWithStudent ?? null
-    } : null,
-    primaryTutor_send: primaryTutor? {
-          personId: primaryTutor.tutorPersonId?._id?.toString() || null,
-          lastNames: primaryTutor.tutorPersonId?.lastNames || null,
-          names: primaryTutor.tutorPersonId?.names || null,
-          dni: primaryTutor.tutorPersonId?.dni || null,
-          phone: primaryTutor.tutorPersonId?.phone || null,
-          relationship: primaryTutor.relationship || null,
-          livesWithStudent: primaryTutor.livesWithStudent ?? null
-        }
-      : null,
-    otherTutors: (otherTutors || []).map(tutor => ({
-      personId: tutor.tutorPersonId?._id?.toString() || null,
-      lastNames: tutor.tutorPersonId?.lastNames || null,
-      names: tutor.tutorPersonId?.names || null,
-      dni: tutor.tutorPersonId?.dni || null,
-      phone: tutor.tutorPersonId?.phone || null,
-      relationship: tutor.relationship || null,
-      livesWithStudent: tutor.livesWithStudent ?? null
-    })),
-    otherTutors_send: (otherTutors || []).map(tutor => ({
-      personId: tutor.tutorPersonId?._id?.toString() || null,
-      lastNames: tutor.tutorPersonId?.lastNames || null,
-      names: tutor.tutorPersonId?.names || null,
-      dni: tutor.tutorPersonId?.dni || null,
-      phone: tutor.tutorPersonId?.phone || null,
-      relationship: tutor.relationship || null,
-      livesWithStudent: tutor.livesWithStudent ?? null
-    }))
+    primaryTutor: mapTutorLinkSummary(primaryTutor),
+    primaryTutor_send: mapTutorLinkSummary(primaryTutor),
+    otherTutors: (otherTutors || []).map((tutor) => mapTutorLinkSummary(tutor)),
+    otherTutors_send: (otherTutors || []).map((tutor) => mapTutorLinkSummary(tutor))
   };
   // console.log('[sendStudent][dbg] content=', sendStudent);
   // console.log('[Student][dbg] content=', student);
@@ -973,15 +965,15 @@ export async function changeStudentClassroomService(studentId, { cycleId, classr
     const student = await Student.findById(studentId).session(session).lean();
     if (!student) throw new ApiError(404, 'Estudiante no encontrado');
 
-    const classroom = await Classroom.findById(classroomId).session(session).lean();
-    if (!classroom) throw new ApiError(404, 'Aula no encontrada');
+      const classroom = await Classroom.findById(classroomId).session(session).lean();
+      if (!classroom) throw new ApiError(404, 'Aula no encontrada');
 
-    if (String(classroom.cycleId) !== String(cycleId)) {
-      throw new ApiError(400, 'El aula no pertenece al ciclo indicado');
+      if (String(classroom.cycleId) !== String(cycleId)) {
+        throw new ApiError(400, 'El aula no pertenece al ciclo indicado');
     }
 
-    const activeVacancy = await Vacancy.findOne({ studentId, cycleId }).session(session).lean();
-    const hasClassroomChange = !activeVacancy || String(activeVacancy.classroomId) !== String(classroomId);
+      const activeVacancy = await Vacancy.findOne({ studentId, cycleId }).session(session).lean();
+      const hasClassroomChange = !activeVacancy || String(activeVacancy.classroomId) !== String(classroomId);
 
     if (!hasClassroomChange) {
       const hydratedVacancy = await Vacancy.findById(activeVacancy._id)
@@ -1013,9 +1005,12 @@ export async function changeStudentClassroomService(studentId, { cycleId, classr
       }
     );
 
-    const currentEnrollment = await getEnrollmentContextForStudent(studentId, { cycleId, session });
-    if (currentEnrollment?.enrollment?._id) {
-      await EnrollmentStudent.updateOne(
+      const currentEnrollment = await getEnrollmentContextForStudent(studentId, { cycleId, session });
+      if (currentEnrollment?.campus?._id && String(currentEnrollment.campus._id) !== String(classroom.campusId)) {
+        throw new ApiError(400, 'Solo se puede cambiar al alumno a otro salón del mismo campus');
+      }
+      if (currentEnrollment?.enrollment?._id) {
+        await EnrollmentStudent.updateOne(
         { _id: currentEnrollment.enrollmentStudent._id },
         { $set: { classroomId } },
         { session }
@@ -1199,10 +1194,6 @@ export async function updateStudentIdentityService(studentId, payload, actor = n
     if (payload[key] !== undefined) personUpdates[key] = payload[key];
   }
 
-  if (payload.birthDate !== undefined) {
-    personUpdates.birthDate = payload.birthDate ? new Date(payload.birthDate) : null;
-  }
-
   if (payload.dni !== undefined) {
     const normalizedDni = normalizeDni(payload.dni);
     if (normalizedDni) {
@@ -1218,9 +1209,34 @@ export async function updateStudentIdentityService(studentId, payload, actor = n
     throw new ApiError(400, 'No se enviaron cambios de identidad válidos');
   }
 
-  const updatedPerson = await updatePersonById(student.personId._id, normalizePersonUpdatePayload({ $set: personUpdates }));
-  if (!updatedPerson) {
-    throw new ApiError(404, 'No se pudo actualizar la persona del estudiante');
+  const studentUpdates = {};
+  if (payload.bankCode !== undefined) {
+    studentUpdates.bankCode = String(payload.bankCode || '').trim() || null;
+  }
+
+  if (!Object.keys(personUpdates).length && !Object.keys(studentUpdates).length) {
+    throw new ApiError(400, 'No se enviaron cambios de identidad vÃ¡lidos');
+  }
+
+  if (Object.keys(personUpdates).length) {
+    const updatedPerson = await updatePersonById(student.personId._id, normalizePersonUpdatePayload({ $set: personUpdates }));
+    if (!updatedPerson) {
+      throw new ApiError(404, 'No se pudo actualizar la persona del estudiante');
+    }
+  }
+
+  if (Object.keys(studentUpdates).length) {
+    try {
+      const updatedStudent = await updateStudentById(studentId, { $set: studentUpdates });
+      if (!updatedStudent) {
+        throw new ApiError(404, 'No se pudo actualizar el estudiante');
+      }
+    } catch (error) {
+      if (error?.code === 11000 && error?.keyPattern?.bankCode) {
+        throw new ApiError(409, 'Cod. Caja Arequipa ya estÃ¡ asignado a otro estudiante');
+      }
+      throw error;
+    }
   }
 
   if (actor) {
@@ -1229,7 +1245,7 @@ export async function updateStudentIdentityService(studentId, payload, actor = n
       entityId: student._id,
       action: 'STUDENT_IDENTITY_UPDATED',
       performedBy: actor,
-      payloadSnapshot: { studentId, updates: personUpdates },
+      payloadSnapshot: { studentId, personUpdates, studentUpdates },
     });
   }
 
@@ -1282,4 +1298,198 @@ export async function updateStudentBankCodeService(studentId, bankCode, actor = 
     }
     throw error;
   }
+}
+
+async function buildStudentDeletionSummary(studentId) {
+  if (!mongoose.Types.ObjectId.isValid(studentId)) throw new ApiError(400, 'studentId inválido');
+
+  const student = await Student.findById(studentId).populate('personId').lean();
+  if (!student) throw new ApiError(404, 'Estudiante no encontrado');
+
+  const [
+    tutorRows,
+    vacancyCount,
+    enrollmentStudentRows,
+    paymentRows,
+    chargeRows,
+    attendanceRecordCount,
+    attendanceSummaryCount,
+    contractSnapshotCount,
+    examPassCount,
+    gradeCount,
+    programEnrollmentCount,
+    linkedUser,
+  ] = await Promise.all([
+    Tutor.find({ studentId: student._id }).select('_id tutorPersonId').lean(),
+    Vacancy.countDocuments({ studentId: student._id }),
+    EnrollmentStudent.find({ studentId: student._id }).select('_id enrollmentId').lean(),
+    Payment.find({ $or: [{ studentId: student._id }, { studentIds: student._id }] }).select('_id').lean(),
+    Charge.find({ studentId: student._id }).select('_id').lean(),
+    AttendanceRecord.countDocuments({ studentId: student._id }),
+    AttendanceMonthlySummary.countDocuments({ studentId: student._id }),
+    ContractSnapshot.countDocuments({ 'students.studentId': student._id }),
+    ExamPass.countDocuments({ studentId: student._id }),
+    Grade.countDocuments({ studentId: student._id }),
+    ProgramEnrollment.countDocuments({ studentId: student._id }),
+    User.findOne({ personId: student.personId?._id }).select('_id email roles').lean(),
+  ]);
+
+  const enrollmentIds = [...new Set(enrollmentStudentRows.map((row) => String(row.enrollmentId)).filter(Boolean))];
+  const paymentIds = paymentRows.map((row) => row._id);
+  const chargeIds = chargeRows.map((row) => row._id);
+
+  const [paymentAllocationCount, orphanEnrollmentCount] = await Promise.all([
+    paymentIds.length || chargeIds.length
+      ? PaymentAllocation.countDocuments({
+        $or: [
+          ...(paymentIds.length ? [{ paymentId: { $in: paymentIds } }] : []),
+          ...(chargeIds.length ? [{ chargeId: { $in: chargeIds } }] : []),
+        ],
+      })
+      : 0,
+    enrollmentIds.length
+      ? Enrollment.countDocuments({ _id: { $in: enrollmentIds } })
+      : 0,
+  ]);
+
+  return {
+    student: {
+      id: String(student._id),
+      internalCode: student.internalCode || null,
+      bankCode: student.bankCode || null,
+      names: student.personId?.names || null,
+      lastNames: student.personId?.lastNames || null,
+      dni: student.personId?.dni || null,
+    },
+    impacts: {
+      student: 1,
+      studentPerson: student.personId?._id ? 1 : 0,
+      tutorRelations: tutorRows.length,
+      tutorPersonsPreserved: tutorRows.filter((row) => row.tutorPersonId).length,
+      vacancies: vacancyCount,
+      enrollments: orphanEnrollmentCount,
+      enrollmentStudents: enrollmentStudentRows.length,
+      charges: chargeRows.length,
+      payments: paymentRows.length,
+      paymentAllocations: paymentAllocationCount,
+      attendanceRecords: attendanceRecordCount,
+      attendanceMonthlySummaries: attendanceSummaryCount,
+      contractSnapshots: contractSnapshotCount,
+      examPasses: examPassCount,
+      grades: gradeCount,
+      programEnrollments: programEnrollmentCount,
+      linkedUsers: linkedUser ? 1 : 0,
+    },
+    warnings: [
+      'Se eliminará el alumno y toda su información operativa asociada del sistema.',
+      'Las personas de los tutores no se eliminarán; solo se eliminarán sus vínculos con este alumno.',
+      ...(linkedUser ? ['La persona del alumno tiene un usuario asociado y también será eliminado.'] : []),
+    ],
+  };
+}
+
+export async function getStudentDeletionPreviewService(studentId) {
+  return buildStudentDeletionSummary(studentId);
+}
+
+export async function deleteStudentService(studentId, actor = null) {
+  const preview = await buildStudentDeletionSummary(studentId);
+
+  await runInTransaction(async (session) => {
+    const studentObjectId = new mongoose.Types.ObjectId(studentId);
+    const student = await Student.findById(studentObjectId).session(session);
+    if (!student) throw new ApiError(404, 'Estudiante no encontrado');
+
+    const paymentRows = await Payment.find({
+      $or: [{ studentId: studentObjectId }, { studentIds: studentObjectId }],
+    }).select('_id').session(session);
+    const paymentIds = paymentRows.map((row) => row._id);
+
+    const chargeRows = await Charge.find({ studentId: studentObjectId }).select('_id').session(session);
+    const chargeIds = chargeRows.map((row) => row._id);
+
+    const enrollmentStudentRows = await EnrollmentStudent.find({ studentId: studentObjectId })
+      .select('_id enrollmentId')
+      .session(session);
+    const enrollmentStudentIds = enrollmentStudentRows.map((row) => row._id);
+    const enrollmentIds = [...new Set(enrollmentStudentRows.map((row) => String(row.enrollmentId)).filter(Boolean))]
+      .map((id) => new mongoose.Types.ObjectId(id));
+
+    if (paymentIds.length || chargeIds.length) {
+      await PaymentAllocation.deleteMany({
+        $or: [
+          ...(paymentIds.length ? [{ paymentId: { $in: paymentIds } }] : []),
+          ...(chargeIds.length ? [{ chargeId: { $in: chargeIds } }] : []),
+        ],
+      }).session(session);
+    }
+
+    if (paymentIds.length) {
+      await Payment.deleteMany({ _id: { $in: paymentIds } }).session(session);
+    }
+
+    if (chargeIds.length) {
+      await Charge.deleteMany({ _id: { $in: chargeIds } }).session(session);
+    }
+
+    await Tutor.deleteMany({ studentId: studentObjectId }).session(session);
+    await Vacancy.deleteMany({ studentId: studentObjectId }).session(session);
+    await AttendanceRecord.deleteMany({ studentId: studentObjectId }).session(session);
+    await AttendanceMonthlySummary.deleteMany({ studentId: studentObjectId }).session(session);
+    await ContractSnapshot.deleteMany({ 'students.studentId': studentObjectId }).session(session);
+    await ExamPass.deleteMany({ studentId: studentObjectId }).session(session);
+    await Grade.deleteMany({ studentId: studentObjectId }).session(session);
+    await ProgramEnrollment.deleteMany({ studentId: studentObjectId }).session(session);
+
+    if (enrollmentStudentIds.length) {
+      await Enrollment.updateMany(
+        { _id: { $in: enrollmentIds } },
+        { $pull: { enrollmentStudents: { $in: enrollmentStudentIds } } },
+        { session }
+      );
+      await EnrollmentStudent.deleteMany({ _id: { $in: enrollmentStudentIds } }).session(session);
+    }
+
+    if (enrollmentIds.length) {
+      const remainingByEnrollment = await EnrollmentStudent.aggregate([
+        { $match: { enrollmentId: { $in: enrollmentIds } } },
+        { $group: { _id: '$enrollmentId', count: { $sum: 1 } } },
+      ]).session(session);
+      const remainingMap = new Map(remainingByEnrollment.map((row) => [String(row._id), Number(row.count || 0)]));
+      const emptyEnrollmentIds = enrollmentIds.filter((id) => !remainingMap.get(String(id)));
+      if (emptyEnrollmentIds.length) {
+        await Enrollment.deleteMany({ _id: { $in: emptyEnrollmentIds } }).session(session);
+      }
+    }
+
+    if (student.personId) {
+      await User.deleteMany({ personId: student.personId }).session(session);
+    }
+
+    await Student.deleteOne({ _id: studentObjectId }).session(session);
+
+    if (student.personId) {
+      await Person.deleteOne({ _id: student.personId }).session(session);
+    }
+  });
+
+  if (actor) {
+    try {
+      await registerAuditLog({
+        entityType: 'TRANSFER',
+        entityId: new mongoose.Types.ObjectId(studentId),
+        action: 'STUDENT_DELETED',
+        performedBy: actor,
+        payloadSnapshot: preview,
+      });
+    } catch (_error) {
+      // Evita bloquear la eliminación si el audit log falla por enum o reglas futuras.
+    }
+  }
+
+  return {
+    ok: true,
+    deletedStudentId: studentId,
+    summary: preview,
+  };
 }

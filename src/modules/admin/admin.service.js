@@ -48,6 +48,28 @@ export async function listClassrooms() {
   return Classroom.find().populate('campusId').populate('cycleId');
 }
 
+export async function updateClassroom(classroomId, data) {
+  const classroom = await Classroom.findById(classroomId);
+  if (!classroom) throw new ApiError(404, 'Salon no encontrado');
+
+  const nextValues = {
+    campusId: data.campusId ?? classroom.campusId,
+    cycleId: data.cycleId ?? classroom.cycleId,
+    level: data.level ?? classroom.level,
+    grade: data.grade ?? classroom.grade,
+    section: data.section ?? classroom.section,
+    capacity: data.capacity ?? classroom.capacity,
+    displayName: data.displayName ?? classroom.displayName,
+    isActive: data.isActive ?? classroom.isActive,
+    notes: data.notes ?? classroom.notes ?? '',
+  };
+
+  classroom.set(nextValues);
+  await classroom.save();
+
+  return Classroom.findById(classroom._id).populate('campusId').populate('cycleId');
+}
+
 export async function createBillingConcept(data) {
   const concept = new BillingConcept(data);
   return concept.save();

@@ -5,7 +5,7 @@ import {
   getDebtorsService,
   getDailyPaymentSummaryService,
   getDailyPaymentTransactionsService,
-  updatePaymentReceiptService,
+  updatePaymentReceiptServiceV2,
 } from './payments.service.js';
 
 export const createPayment = asyncHandler(async (req, res) => {
@@ -67,10 +67,11 @@ export const getDailyPaymentTransactions = asyncHandler(async (req, res) => {
 });
 
 export const updatePaymentReceipt = asyncHandler(async (req, res) => {
-  const result = await updatePaymentReceiptService({
+  const result = await updatePaymentReceiptServiceV2({
     paymentId: req.params.id,
     payload: req.validated,
     userId: req.user.id,
+    userRoles: req.user?.roles || [],
   });
   res.json(result);
 });

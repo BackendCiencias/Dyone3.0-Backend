@@ -9,8 +9,11 @@ export async function findActiveSchoolYearCycleIds() {
 export async function findClassroomsByFilters({ level, grade, campus, cycleIds }) {
   const filters = {
     isActive: true,
-    level,
   };
+
+  if (level) {
+    filters.level = level;
+  }
 
   if (grade !== null && grade !== undefined) {
     filters.grade = String(grade);

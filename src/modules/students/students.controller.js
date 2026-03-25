@@ -13,6 +13,8 @@ import {
   updateStudentIdentityService,
   updateStudentInternalNotesService,
   updateStudentBankCodeService,
+  getStudentDeletionPreviewService,
+  deleteStudentService,
   searchUnassignedStudentsService,
   searchUnassignedStudentsByQueryService,
   getStudentsPrintCardsService,
@@ -115,6 +117,16 @@ export const updateStudentBankCode = asyncHandler(async (req, res) => {
     req.validated.bankCode,
     req.user?.id
   );
+  res.json(data);
+});
+
+export const getStudentDeletionPreview = asyncHandler(async (req, res) => {
+  const data = await getStudentDeletionPreviewService(req.validatedParams.id);
+  res.json(data);
+});
+
+export const deleteStudent = asyncHandler(async (req, res) => {
+  const data = await deleteStudentService(req.validatedParams.id, req.user?.id);
   res.json(data);
 });
 

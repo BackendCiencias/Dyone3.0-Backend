@@ -32,7 +32,7 @@ router.use(authMiddleware);
 router.post('/', requireRoles(PAYMENT_WRITE_ROLES), validate(paymentCreateSchema), createPayment);
 router.patch(
   '/:id/receipt',
-  requireRoles(['SECRETARY']),
+  requireRoles(['SECRETARY', 'ADMIN']),
   authorizeByCampusScope(async (req) => findPaymentCampusById(req.params.id)),
   validateRequest({ params: paymentIdParamsSchema, body: paymentReceiptCorrectionSchema }),
   updatePaymentReceipt,

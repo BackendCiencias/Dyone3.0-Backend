@@ -10,6 +10,7 @@ import {
   postCycle,
   getClassrooms,
   postClassroom,
+  patchClassroom,
   getBillingConcepts,
   postBillingConcept,
   postBillingSchedule,
@@ -24,6 +25,7 @@ import {
   campusCreateSchema,
   cycleCreateSchema,
   classroomCreateSchema,
+  classroomUpdateSchema,
   billingConceptCreateSchema,
   billingScheduleUpsertSchema,
   billingScheduleQuerySchema,
@@ -49,6 +51,7 @@ router.post('/cycles', validate(cycleCreateSchema), postCycle);
 // Classrooms
 router.get('/classrooms', getClassrooms);
 router.post('/classrooms', validate(classroomCreateSchema), postClassroom);
+router.patch('/classrooms/:id', validate(classroomUpdateSchema), patchClassroom);
 
 // Billing concepts
 router.get('/billing-concepts', getBillingConcepts);

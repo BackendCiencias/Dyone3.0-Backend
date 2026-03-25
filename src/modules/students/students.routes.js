@@ -35,6 +35,8 @@ import {
   updateStudentIdentity,
   updateStudentInternalNotes,
   updateStudentBankCode,
+  getStudentDeletionPreview,
+  deleteStudent,
   listUnassignedStudents,
   searchUnassigned,
   printStudentCards,
@@ -101,6 +103,18 @@ router.patch(
   requireRoles(['ADMIN', 'SECRETARY']),
   validateRequest({ params: studentIdParamsSchema, body: studentBankCodeSchema }),
   updateStudentBankCode
+);
+router.get(
+  '/:id/deletion-preview',
+  requireRoles(['ADMIN']),
+  validateRequest({ params: studentIdParamsSchema }),
+  getStudentDeletionPreview
+);
+router.delete(
+  '/:id',
+  requireRoles(['ADMIN']),
+  validateRequest({ params: studentIdParamsSchema }),
+  deleteStudent
 );
 router.post('/intake', requireRoles(STUDENT_WRITE_ROLES), validate(studentIntakeCreateSchema), createStudentIntake);
 router.post('/', requireRoles(STUDENT_WRITE_ROLES), validate(studentCreateSchema), createStudent);

@@ -89,7 +89,10 @@ export const studentIdentitySchema = z.object({
     z.string().trim().regex(/^\d{8}$/, 'DNI inválido. Debe tener 8 dígitos'),
     z.literal(''),
   ]).optional(),
-  birthDate: z.string().datetime().optional(),
+  bankCode: z.union([
+    z.string().trim().regex(/^\d{10}$/, 'Cod. Caja Arequipa inválido. Debe tener 10 dígitos'),
+    z.literal(''),
+  ]).optional(),
   gender: z.enum(['M', 'F']).optional(),
   phone: z.string().trim().min(1).optional(),
   address: z.string().trim().min(1).optional(),

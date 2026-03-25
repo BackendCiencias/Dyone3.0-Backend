@@ -5,6 +5,7 @@ import {
   listCycles,
   createClassroom,
   listClassrooms,
+  updateClassroom,
   createBillingConcept,
   listBillingConcepts,
   upsertBillingSchedule,
@@ -47,6 +48,11 @@ export const getClassrooms = asyncHandler(async (_req, res) => {
 export const postClassroom = asyncHandler(async (req, res) => {
   const classroom = await createClassroom(req.validated);
   res.status(201).json(classroom);
+});
+
+export const patchClassroom = asyncHandler(async (req, res) => {
+  const classroom = await updateClassroom(req.params.id, req.validated);
+  res.json(classroom);
 });
 
 export const getBillingConcepts = asyncHandler(async (_req, res) => {

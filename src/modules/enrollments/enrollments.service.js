@@ -1457,6 +1457,29 @@ export async function listEnrollmentsService({ q, campus, cycleId, status, class
 
     if (!matchedStudents.length) return { items: [], nextCursor: null };
     qStudentIds = new Set(matchedStudents.map((row) => String(row._id)));
+
+    const matchedEnrollmentStudents = await EnrollmentStudent.find({
+      studentId: { $in: [...qStudentIds].map((id) => new mongoose.Types.ObjectId(id)) },
+    })
+      .select('enrollmentId')
+      .lean();
+
+    const matchedEnrollmentIds = [...new Set(
+      matchedEnrollmentStudents
+        .map((row) => String(row.enrollmentId || ''))
+        .filter(Boolean)
+    )];
+
+    if (!matchedEnrollmentIds.length) return { items: [], nextCursor: null };
+
+    if (where._id && typeof where._id === 'object' && !Array.isArray(where._id)) {
+      where._id = {
+        ...where._id,
+        $in: matchedEnrollmentIds.map((id) => new mongoose.Types.ObjectId(id)),
+      };
+    } else {
+      where._id = { $in: matchedEnrollmentIds.map((id) => new mongoose.Types.ObjectId(id)) };
+    }
   }
 
   const rows = await Enrollment.find(where)

@@ -13,6 +13,7 @@
     "import:students": "node scripts/importStudents.js",
     "drop:db": "node scripts/dropDatabase.js",
     "import:tutors": "node scripts/importTutors.js",
+    "import:historical-payments": "node scripts/importHistoricalPhysicalPayments.js",
     "import:bank-codes": "node scripts/importStudentBankCodes.js",
     "backfill:charges-campus": "node scripts/backfillChargesCampus.js",
     "fix:payments-paid-at": "node scripts/fixPaymentPaidAtFromAudit.js"

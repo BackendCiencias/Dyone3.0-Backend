@@ -6,8 +6,10 @@ import { Tutor } from '../../models/tutor.model.js';
 import { Charge } from '../../models/charge.model.js';
 import { Enrollment } from '../../models/enrollment.model.js';
 import { EnrollmentStudent } from '../../models/enrollmentStudent.model.js';
+import { Vacancy } from '../../models/vacancy.model.js';
 import { Payment } from '../../models/payment.model.js';
 import { PaymentAllocation } from '../../models/paymentAllocation.model.js';
+import { Classroom } from '../../models/classroom.model.js';
 import { ApiError } from '../../utils/errors.js';
 import { getEnrollmentContextMapByStudentIds } from '../../shared/enrollmentCurrent.js';
 import { resolveOperationalDay } from '../../shared/operationalDay.js';
@@ -268,6 +270,47 @@ async function getRecentPaymentActivity({ campusIds, limit = 4 }) {
       to: student?._id ? `/dashboard/payments/${student._id}` : '/dashboard/payments',
     };
   });
+}
+
+async function getOverCapacityClassrooms({ cycleId, campusIds = [] }) {
+  const classroomMatch = { cycleId };
+  if (campusIds.length) classroomMatch.campusId = { $in: campusIds };
+
+  const classrooms = await Classroom.find(classroomMatch)
+    .select('_id displayName capacity campusId')
+    .lean();
+
+  if (!classrooms.length) return [];
+
+  const vacancyMatch = {
+    cycleId,
+    classroomId: { $in: classrooms.map((row) => row._id) },
+  };
+
+  const occupancy = await Vacancy.aggregate([
+    { $match: vacancyMatch },
+    { $group: { _id: '$classroomId', students: { $sum: 1 } } },
+  ]);
+
+  const occupiedByClassroomId = new Map(occupancy.map((row) => [String(row._id), Number(row.students || 0)]));
+
+  return classrooms
+    .map((classroom) => {
+      const occupied = occupiedByClassroomId.get(String(classroom._id)) || 0;
+      const capacity = Number(classroom.capacity || 0);
+      const overflow = occupied - capacity;
+
+      return {
+        classroomId: String(classroom._id),
+        displayName: classroom.displayName || 'Salon',
+        occupied,
+        capacity,
+        overflow,
+      };
+    })
+    .filter((row) => row.overflow > 0)
+    .sort((a, b) => b.overflow - a.overflow)
+    .slice(0, 5);
 }
 
 async function getCashTodaySummary({ campusIds = [] }) {
@@ -708,5 +751,139 @@ export async function getSecretaryOverviewService({ campus, campusScope = [] }) 
     upcomingDue,
     recentActivity,
     cashToday,
+  };
+}
+
+export async function getAdminOverviewService({ campus, campusScope = [] }) {
+  const currentCycle = await resolveCurrentCycle();
+  if (!currentCycle) throw new ApiError(404, 'No se encontro un ciclo activo para construir el dashboard');
+
+  const scopedCampus = await resolveScopedCampusFilter({ campus, campusScope });
+  const campusIds = scopedCampus.campusIds || [];
+
+  const enrollments = await getScopedEnrollments({ cycleId: currentCycle._id, campusIds });
+  const enrollmentStudents = await EnrollmentStudent.find({
+    enrollmentId: { $in: enrollments.map((row) => row._id) },
+  })
+    .select('enrollmentId studentId classroomId')
+    .lean();
+
+  const studentIds = [...new Set(enrollmentStudents.map((row) => String(row.studentId)).filter(Boolean))]
+    .map((id) => new mongoose.Types.ObjectId(id));
+
+  const [studentMap, tutors, overdueCharges, recentEnrollments, recentPayments, overCapacityClassrooms, paymentsToday] = await Promise.all([
+    getStudentMap(studentIds),
+    studentIds.length
+      ? Tutor.find({ studentId: { $in: studentIds } }).select('studentId').lean()
+      : [],
+    Charge.find({
+      ...(campusIds.length ? { campusId: { $in: campusIds } } : {}),
+      cycleId: currentCycle._id,
+      dueDate: { $lt: new Date() },
+      outstandingAmount: { $gt: 0 },
+      status: { $in: ['OPEN', 'PARTIAL'] },
+    }).select('_id studentId outstandingAmount dueDate').lean(),
+    getRecentEnrollmentActivity({ cycleId: currentCycle._id, campusIds, limit: 4 }),
+    getRecentPaymentActivity({ campusIds, limit: 4 }),
+    getOverCapacityClassrooms({ cycleId: currentCycle._id, campusIds }),
+    getCashTodaySummary({ campusIds }),
+  ]);
+
+  const tutorsByStudentId = new Map();
+  for (const tutor of tutors) {
+    const key = String(tutor.studentId);
+    tutorsByStudentId.set(key, (tutorsByStudentId.get(key) || 0) + 1);
+  }
+
+  const absentEnrollments = enrollments.filter((row) => String(row.status || '').toUpperCase() === 'ABSENT');
+  const absentEnrollmentIds = new Set(absentEnrollments.map((row) => String(row._id)));
+
+  const studentsWithoutTutorItems = [];
+  const studentsWithoutBankCodeItems = [];
+  const absentEnrollmentItems = [];
+  let studentsWithoutTutorsCount = 0;
+  let studentsWithoutBankCodeCount = 0;
+
+  for (const row of enrollmentStudents) {
+    const student = studentMap.get(String(row.studentId));
+    if (!student?.personId) continue;
+
+    const fullName = buildFullName(student.personId);
+    const campusCode = String(student?.previousCampus || '').trim() || null;
+
+    if (!tutorsByStudentId.get(String(row.studentId))) {
+      studentsWithoutTutorsCount += 1;
+      if (studentsWithoutTutorItems.length < 5) {
+        studentsWithoutTutorItems.push({
+          studentId: String(row.studentId),
+          fullName,
+          code: student.internalCode || null,
+          dni: student.personId?.dni || null,
+          campus: campusCode,
+        });
+      }
+    }
+
+    if (!student.bankCode) {
+      studentsWithoutBankCodeCount += 1;
+      if (studentsWithoutBankCodeItems.length < 5) {
+        studentsWithoutBankCodeItems.push({
+          studentId: String(row.studentId),
+          fullName,
+          code: student.internalCode || null,
+          dni: student.personId?.dni || null,
+          campus: campusCode,
+        });
+      }
+    }
+
+    if (absentEnrollmentIds.has(String(row.enrollmentId)) && absentEnrollmentItems.length < 5) {
+      absentEnrollmentItems.push({
+        studentId: String(row.studentId),
+        fullName,
+        code: student.internalCode || null,
+        dni: student.personId?.dni || null,
+        campus: campusCode,
+      });
+    }
+  }
+
+  const recentActivity = [...recentPayments, ...recentEnrollments]
+    .sort((a, b) => new Date(b.at || 0).getTime() - new Date(a.at || 0).getTime())
+    .slice(0, 6);
+
+  const totalOverdueAmount = overdueCharges.reduce((sum, row) => sum + toMoney(row.outstandingAmount), 0);
+
+  return {
+    cycle: {
+      id: String(currentCycle._id),
+      name: currentCycle.name,
+      year: currentCycle.year,
+    },
+    summary: {
+      activeStudents: studentIds.length,
+      absentEnrollments: absentEnrollments.length,
+      paymentsToday: paymentsToday.paymentsCount || 0,
+      overdueCharges: overdueCharges.length,
+      overdueAmount: roundMoney(totalOverdueAmount),
+    },
+    alerts: {
+      studentsWithoutTutorsCount,
+      studentsWithoutBankCodeCount,
+      overCapacityClassroomsCount: overCapacityClassrooms.length,
+      absentEnrollmentsCount: absentEnrollments.length,
+    },
+    studentsWithoutTutors: studentsWithoutTutorItems,
+    studentsWithoutBankCode: studentsWithoutBankCodeItems,
+    absentEnrollmentStudents: absentEnrollmentItems,
+    overCapacityClassrooms,
+    recentActivity,
+    quickAccess: [
+      { key: 'admin-settings', label: 'Configuracion', to: '/dashboard/admin/settings' },
+      { key: 'classrooms', label: 'Salones', to: '/dashboard/classrooms' },
+      { key: 'payments', label: 'Pagos', to: '/dashboard/payments' },
+      { key: 'enrollments', label: 'Matriculas', to: '/dashboard/enrollments' },
+      { key: 'caja-arequipa', label: 'Caja Arequipa', to: '/dashboard/admin/settings' },
+    ],
   };
 }

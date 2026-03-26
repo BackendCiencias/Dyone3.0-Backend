@@ -1082,6 +1082,17 @@ async function buildStudentFinancialSnapshot(studentId) {
 
   const student = await Student.findById(studentId).populate('personId').lean();
   if (!student) throw new ApiError(404, 'Estudiante no encontrado');
+  const activeCycle = await resolveCurrentCycle();
+  const enrollmentContext = activeCycle
+    ? await getEnrollmentContextForStudent(studentId, { cycleId: activeCycle._id })
+    : await getEnrollmentContextForStudent(studentId);
+  const vacancy = activeCycle
+    ? await Vacancy.findOne({ studentId: student._id, cycleId: activeCycle._id }).lean()
+    : null;
+  const vacancyClassroom = vacancy?.classroomId
+    ? await Classroom.findById(vacancy.classroomId).select('displayName').lean()
+    : null;
+  const gradeDisplayName = enrollmentContext?.classroom?.displayName || vacancyClassroom?.displayName || null;
 
   const chargesDb = await Charge.find({ studentId: student._id, status: { $ne: 'CANCELLED' } })
     .populate('conceptId', 'name')
@@ -1160,8 +1171,12 @@ async function buildStudentFinancialSnapshot(studentId) {
       names: student.personId?.names || null,
       lastNames: student.personId?.lastNames || null,
       dni: student.personId?.dni || null,
+      internalCode: student.internalCode || null,
       code: student.internalCode || null,
       bankCode: student.bankCode || null,
+      classroomDisplayName: gradeDisplayName,
+      gradeDisplayName,
+      cycleName: enrollmentContext?.cycle?.name || activeCycle?.name || null,
     },
     totals,
     charges,
@@ -1305,6 +1320,10 @@ async function buildStudentDeletionSummary(studentId) {
 
   const student = await Student.findById(studentId).populate('personId').lean();
   if (!student) throw new ApiError(404, 'Estudiante no encontrado');
+  const activeCycle = await resolveCurrentCycle();
+  const enrollmentContext = activeCycle
+    ? await getEnrollmentContextForStudent(studentId, { cycleId: activeCycle._id })
+    : await getEnrollmentContextForStudent(studentId);
 
   const [
     tutorRows,
@@ -1356,7 +1375,11 @@ async function buildStudentDeletionSummary(studentId) {
     student: {
       id: String(student._id),
       internalCode: student.internalCode || null,
+      code: student.internalCode || null,
       bankCode: student.bankCode || null,
+      classroomDisplayName: enrollmentContext?.classroom?.displayName || null,
+      gradeDisplayName: enrollmentContext?.classroom?.displayName || null,
+      cycleName: enrollmentContext?.cycle?.name || null,
       names: student.personId?.names || null,
       lastNames: student.personId?.lastNames || null,
       dni: student.personId?.dni || null,

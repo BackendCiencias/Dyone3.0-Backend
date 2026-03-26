@@ -3,6 +3,26 @@ const DASHBOARD_READ_ROLES = ['ADMIN', 'SECRETARY', 'DIRECTOR', 'PROMOTER', 'SEC
 export const moduleEndpointMetadata = [
   {
     method: 'GET',
+    path: '/api/dashboard/admin/overview',
+    module: 'dashboard',
+    authRequired: true,
+    rolesAllowed: ['ADMIN'],
+    description: 'Resumen operativo del inicio para Admin',
+    requestSchema: { query: { campus: 'string?' } },
+    responseSchema: {
+      cycle: 'object',
+      summary: 'object',
+      alerts: 'object',
+      studentsWithoutTutors: 'array',
+      studentsWithoutBankCode: 'array',
+      absentEnrollmentStudents: 'array',
+      overCapacityClassrooms: 'array',
+      recentActivity: 'array',
+      quickAccess: 'array',
+    },
+  },
+  {
+    method: 'GET',
     path: '/api/dashboard/secretary/overview',
     module: 'dashboard',
     authRequired: true,

@@ -17,6 +17,7 @@ import chargesRouter from './modules/charges/charges.routes.js';
 import enrollmentsRouter from './modules/enrollments/enrollments.routes.js';
 import classroomsRouter from './modules/classrooms/classrooms.routes.js';
 import dashboardRouter from './modules/dashboard/dashboard.routes.js';
+import activitiesRouter from './modules/activities/activities.routes.js';
 // Empty modules export routers but currently they are TODO
 import attendanceRouter from './modules/attendance/attendance.routes.js';
 import gradesRouter from './modules/grades/grades.routes.js';
@@ -49,7 +50,11 @@ function isAllowedOrigin(origin) {
 
   // Previews de Vercel: https://<algo>.vercel.app
   const vercelPreview = /^https:\/\/.*\.vercel\.app$/;
-  return vercelPreview.test(origin);
+  if (vercelPreview.test(origin)) return true;
+
+  // Red local para pruebas desde celular o dispositivos dentro de la misma Wi-Fi
+  const localNetworkOrigin = /^https?:\/\/(localhost|127\.0\.0\.1|10(?:\.\d{1,3}){3}|192\.168(?:\.\d{1,3}){2}|172\.(1[6-9]|2\d|3[0-1])(?:\.\d{1,3}){2})(:\d+)?$/;
+  return localNetworkOrigin.test(origin);
 }
 
 app.use(
@@ -60,7 +65,7 @@ app.use(
     },
     credentials: true,
     methods: ['GET', 'POST', 'PUT', 'PATCH', 'DELETE', 'OPTIONS'],
-    allowedHeaders: ['Content-Type', 'Authorization'],
+    allowedHeaders: ['Content-Type', 'Authorization', 'X-Active-Role'],
   })
 );
 
@@ -116,6 +121,7 @@ const routeCatalogMounts = [
   { basePath: '/api/enrollments', module: 'enrollments', router: enrollmentsRouter, authRequired: true, rolesAllowed: null },
   { basePath: '/api/classrooms', module: 'classrooms', router: classroomsRouter, authRequired: true, rolesAllowed: null },
   { basePath: '/api/dashboard', module: 'dashboard', router: dashboardRouter, authRequired: true, rolesAllowed: null },
+  { basePath: '/api/activities', module: 'activities', router: activitiesRouter, authRequired: true, rolesAllowed: null },
   { basePath: '/api/attendance', module: 'attendance', router: attendanceRouter, authRequired: true, rolesAllowed: null },
   { basePath: '/api/grades', module: 'grades', router: gradesRouter, authRequired: true, rolesAllowed: null },
   { basePath: '/api/club', module: 'club', router: clubRouter, authRequired: true, rolesAllowed: null },

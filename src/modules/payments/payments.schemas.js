@@ -43,6 +43,8 @@ export const paymentIdParamsSchema = z.object({
 
 export const paymentReceiptCorrectionSchema = z.object({
   method: z.enum(['CASH', 'YAPE', 'TRANSFER']),
+  amount: z.number().positive().optional(),
+  paidAt: z.string().trim().min(1).optional(),
   receiptNumber: z.string().trim().max(6).optional().or(z.literal('')),
   voucherNumber: z.string().trim().max(64).optional().or(z.literal('')),
   notes: z.string().trim().max(500).optional().or(z.literal('')),

@@ -554,11 +554,100 @@ export async function updatePaymentReceiptServiceV2({ paymentId, payload, userId
 
   const isAdmin = hasRole(userRoles, 'ADMIN');
   const wantsReassignment = Boolean(payload.reassignStudentId || (Array.isArray(payload.reassignAllocations) && payload.reassignAllocations.length));
+  const wantsAmountChange = payload.amount !== undefined && payload.amount !== null;
+  const wantsPaidAtChange = Boolean(String(payload.paidAt || '').trim());
   if (wantsReassignment && !isAdmin) {
     throw new ApiError(403, 'Solo admin puede reasignar el pago a otro alumno');
   }
+  if (wantsAmountChange && !isAdmin) {
+    throw new ApiError(403, 'Solo admin puede modificar el monto del recibo');
+  }
+  if (wantsPaidAtChange && !isAdmin) {
+    throw new ApiError(403, 'Solo admin puede modificar la fecha del recibo');
+  }
 
   const correctionResult = await runInTransaction(async (session) => {
+    const restoreAllocationsToCharges = async (allocations) => {
+      for (const allocation of allocations) {
+        const charge = allocation.chargeId;
+        if (!charge?._id) continue;
+
+        const currentOutstanding = roundMoney(toMoney(charge.outstandingAmount));
+        const totalAmountCharge = roundMoney(toMoney(charge.totalAmount));
+        const restoredOutstanding = roundMoney(currentOutstanding + roundMoney(toMoney(allocation.amount)));
+        charge.outstandingAmount = toDecimal(restoredOutstanding);
+        charge.status = computeChargeStatus(totalAmountCharge, restoredOutstanding);
+        await charge.save({ session });
+      }
+    };
+
+    const applyAllocationsToCharges = async ({ allocations, allowedStudentId = null }) => {
+      const targetCharges = await Charge.find({
+        _id: { $in: allocations.map((item) => item.chargeId) },
+        status: { $ne: 'CANCELLED' },
+      }).session(session);
+      const targetChargeMap = new Map(targetCharges.map((row) => [String(row._id), row]));
+
+      let resolvedCampusId = null;
+      for (const allocation of allocations) {
+        const charge = targetChargeMap.get(allocation.chargeId);
+        if (!charge) throw new ApiError(404, `Cargo destino no encontrado: ${allocation.chargeId}`);
+        if (allowedStudentId && String(charge.studentId) !== String(allowedStudentId)) {
+          throw new ApiError(400, `El cargo ${allocation.chargeId} no pertenece al alumno seleccionado`);
+        }
+
+        const currentOutstanding = roundMoney(toMoney(charge.outstandingAmount));
+        if (allocation.amount > currentOutstanding + 0.001) {
+          throw new ApiError(400, `La asignación excede el saldo pendiente del cargo ${allocation.chargeId}`);
+        }
+
+        const nextOutstanding = Math.max(0, roundMoney(currentOutstanding - allocation.amount));
+        const totalAmountCharge = roundMoney(toMoney(charge.totalAmount));
+        charge.outstandingAmount = toDecimal(nextOutstanding);
+        charge.status = computeChargeStatus(totalAmountCharge, nextOutstanding);
+        await charge.save({ session });
+
+        if (!resolvedCampusId && charge.campusId) resolvedCampusId = charge.campusId;
+
+        await PaymentAllocation.create([
+          {
+            paymentId: payment._id,
+            chargeId: charge._id,
+            amount: toDecimal(allocation.amount),
+          },
+        ], { session });
+      }
+
+      return resolvedCampusId;
+    };
+
+    const rebuildAllocationsForAmount = (allocations, targetAmount) => {
+      const normalizedTargetAmount = roundMoney(targetAmount);
+      let remaining = normalizedTargetAmount;
+      const rebuilt = [];
+
+      for (const allocation of allocations) {
+        if (remaining <= 0) break;
+        const currentOutstanding = roundMoney(toMoney(allocation.chargeId?.outstandingAmount));
+        const previousAmount = roundMoney(toMoney(allocation.amount));
+        const maxApplicableAmount = roundMoney(currentOutstanding + previousAmount);
+        const appliedAmount = Math.min(maxApplicableAmount, remaining);
+        if (appliedAmount > 0) {
+          rebuilt.push({
+            chargeId: allocation.chargeId?._id ? String(allocation.chargeId._id) : String(allocation.chargeId || ''),
+            amount: roundMoney(appliedAmount),
+          });
+          remaining = roundMoney(remaining - appliedAmount);
+        }
+      }
+
+      if (remaining > 0.001) {
+        throw new ApiError(400, 'El nuevo monto excede la suma de los cargos actualmente afectados por el pago');
+      }
+
+      return rebuilt;
+    };
+
     const payment = await Payment.findById(paymentId)
       .populate('studentId')
       .populate('campusId')
@@ -571,6 +660,8 @@ export async function updatePaymentReceiptServiceV2({ paymentId, payload, userId
 
     const previous = {
       studentId: payment.studentId?._id ? String(payment.studentId._id) : String(payment.studentId || ''),
+      amount: roundMoney(toMoney(payment.totalAmount)),
+      paidAt: payment.paidAt || null,
       method: payment.method,
       receiptNumber: payment.receiptNumber || null,
       voucherNumber: payment.voucherNumber || null,
@@ -596,23 +687,15 @@ export async function updatePaymentReceiptServiceV2({ paymentId, payload, userId
         throw new ApiError(400, 'Se requiere al menos un cargo destino para reasignar el pago');
       }
 
-      const paymentTotal = roundMoney(toMoney(payment.totalAmount));
+      const paymentTotal = wantsAmountChange
+        ? roundMoney(toMoney(payload.amount))
+        : roundMoney(toMoney(payment.totalAmount));
       const reassignedTotal = roundMoney(reassignmentAllocations.reduce((acc, item) => acc + item.amount, 0));
       if (roundMoney(paymentTotal - reassignedTotal) !== 0) {
         throw new ApiError(400, 'La suma de los cargos destino debe coincidir exactamente con el total del pago');
       }
 
-      for (const allocation of currentAllocations) {
-        const charge = allocation.chargeId;
-        if (!charge?._id) continue;
-
-        const currentOutstanding = roundMoney(toMoney(charge.outstandingAmount));
-        const totalAmountCharge = roundMoney(toMoney(charge.totalAmount));
-        const restoredOutstanding = roundMoney(currentOutstanding + roundMoney(toMoney(allocation.amount)));
-        charge.outstandingAmount = toDecimal(restoredOutstanding);
-        charge.status = computeChargeStatus(totalAmountCharge, restoredOutstanding);
-        await charge.save({ session });
-      }
+      await restoreAllocationsToCharges(currentAllocations);
 
       await PaymentAllocation.deleteMany({ paymentId: payment._id }).session(session);
 
@@ -655,9 +738,30 @@ export async function updatePaymentReceiptServiceV2({ paymentId, payload, userId
       payment.studentId = targetStudent._id;
       payment.studentIds = [targetStudent._id];
       if (resolvedCampusId) payment.campusId = resolvedCampusId;
+      payment.totalAmount = toDecimal(paymentTotal);
+    } else if (wantsAmountChange) {
+      const correctedAmount = roundMoney(toMoney(payload.amount));
+      if (!currentAllocations.length) {
+        payment.totalAmount = toDecimal(correctedAmount);
+      } else {
+        const rebuiltAllocations = rebuildAllocationsForAmount(currentAllocations, correctedAmount);
+
+        await restoreAllocationsToCharges(currentAllocations);
+        await PaymentAllocation.deleteMany({ paymentId: payment._id }).session(session);
+        await applyAllocationsToCharges({ allocations: rebuiltAllocations });
+
+        payment.totalAmount = toDecimal(correctedAmount);
+      }
     }
 
     payment.method = payload.method;
+    if (wantsPaidAtChange) {
+      const parsedPaidAt = new Date(String(payload.paidAt).trim());
+      if (Number.isNaN(parsedPaidAt.getTime())) {
+        throw new ApiError(400, 'paidAt inválido');
+      }
+      payment.paidAt = parsedPaidAt;
+    }
     payment.receiptNumber = normalizeReceiptNumber(payload.receiptNumber || '') || null;
     payment.voucherNumber = normalizeVoucherNumber(payload.voucherNumber || '') || payment.internalCode;
     payment.notes = String(payload.notes || '').trim() || undefined;
@@ -685,6 +789,8 @@ export async function updatePaymentReceiptServiceV2({ paymentId, payload, userId
       previous: correctionResult.previous,
       next: {
         studentId: correctionResult.payment.studentId?._id ? String(correctionResult.payment.studentId._id) : String(correctionResult.payment.studentId || ''),
+        amount: roundMoney(toMoney(correctionResult.payment.totalAmount)),
+        paidAt: correctionResult.payment.paidAt || null,
         method: correctionResult.payment.method,
         receiptNumber: correctionResult.payment.receiptNumber || null,
         voucherNumber: correctionResult.payment.voucherNumber || null,
@@ -696,6 +802,7 @@ export async function updatePaymentReceiptServiceV2({ paymentId, payload, userId
 
   return {
     ...correctionResult.payment.toObject(),
+    amount: roundMoney(toMoney(correctionResult.payment.totalAmount)),
     affectedStudentIds: correctionResult.affectedStudentIds,
   };
 }

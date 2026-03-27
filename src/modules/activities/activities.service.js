@@ -126,13 +126,13 @@ async function resolveCurrentCycle() {
 }
 
 async function ensureUniqueSlug(slug, excludeId = null, session = null) {
-  if (!slug) throw new ApiError(400, 'No se pudo generar slug para la activity');
+  if (!slug) throw new ApiError(400, 'No se pudo generar slug para la actividad');
   const where = { slug };
   if (excludeId) where._id = { $ne: excludeId };
   const query = Activity.findOne(where).select('_id');
   if (session) query.session(session);
   const existing = await query.lean();
-  if (existing) throw new ApiError(409, 'Ya existe una activity con nombre similar');
+  if (existing) throw new ApiError(409, 'Ya existe una actividad con nombre similar');
 }
 
 async function nextActivityReceiptInternalCode(session) {
@@ -217,26 +217,26 @@ async function assertStudentMatchesAudience({ activity, studentId }) {
     .lean();
 
   if (!vacancy?.classroomId) {
-    throw new ApiError(400, 'El alumno no pertenece al alcance de esta activity');
+    throw new ApiError(400, 'El alumno no pertenece al alcance de esta actividad');
   }
 
   const classroom = vacancy.classroomId;
   if (String(classroom.campusId) !== String(activity.campusId)) {
-    throw new ApiError(400, 'El alumno no pertenece al campus de esta activity');
+    throw new ApiError(400, 'El alumno no pertenece al campus de esta actividad');
   }
 
   if (activity.audienceType === 'LEVEL' && classroom.level !== activity.targetLevel) {
-    throw new ApiError(400, 'El alumno no pertenece al alcance de esta activity');
+    throw new ApiError(400, 'El alumno no pertenece al alcance de esta actividad');
   }
 
   if (activity.audienceType === 'GRADE' && (classroom.level !== activity.targetLevel || Number(classroom.grade) !== Number(activity.targetGrade))) {
-    throw new ApiError(400, 'El alumno no pertenece al alcance de esta activity');
+    throw new ApiError(400, 'El alumno no pertenece al alcance de esta actividad');
   }
 
   if (activity.audienceType === 'CLASSROOMS') {
     const classroomIds = (activity.classroomIds || []).map((value) => String(value));
     if (!classroomIds.includes(String(classroom._id))) {
-      throw new ApiError(400, 'El alumno no pertenece al alcance de esta activity');
+      throw new ApiError(400, 'El alumno no pertenece al alcance de esta actividad');
     }
   }
 }
@@ -311,13 +311,13 @@ async function buildActivitySummary(activityId) {
 
 async function getActivityOrThrow(activityId) {
   const activity = await Activity.findById(activityId).lean();
-  if (!activity) throw new ApiError(404, 'Activity no encontrada');
+  if (!activity) throw new ApiError(404, 'Actividad no encontrada');
   return activity;
 }
 
 function assertManageAllowed(effectiveRole) {
   if (effectiveRole !== 'ADMIN') {
-    throw new ApiError(403, 'Solo admin puede gestionar activities');
+  throw new ApiError(403, 'Solo admin puede gestionar actividades');
   }
 }
 
@@ -330,7 +330,7 @@ function assertCollectionAllowed(activity, effectiveRole) {
   if (effectiveRole === 'SECRETARY' && activity.allowSecretaryCollection) return;
   if (effectiveRole === 'AUXILIAR' && activity.allowAuxiliarCollection) return;
 
-  throw new ApiError(403, 'Tu rol activo no puede cobrar esta activity');
+  throw new ApiError(403, 'Tu rol activo no puede cobrar esta actividad');
 }
 
 export async function createActivityService({ payload, user, activeRole, campusScope = [] }) {
@@ -401,7 +401,7 @@ export async function updateActivityService({ activityId, payload, user, activeR
   assertManageAllowed(effectiveRole);
 
   const current = await Activity.findById(activityId);
-  if (!current) throw new ApiError(404, 'Activity no encontrada');
+  if (!current) throw new ApiError(404, 'Actividad no encontrada');
 
   const campus = payload.campusCode
     ? await resolveCampusByCode(payload.campusCode)
@@ -463,7 +463,7 @@ export async function updateActivityService({ activityId, payload, user, activeR
 
 export async function listActivitiesService({ filters, user, activeRole, campusScope = [] }) {
   const effectiveRole = resolveEffectiveRole(user, activeRole);
-  if (!effectiveRole) throw new ApiError(403, 'Rol no autorizado para activities');
+  if (!effectiveRole) throw new ApiError(403, 'Rol no autorizado para actividades');
 
   const scoped = getScopedCampusCodes(campusScope);
   const where = {};
@@ -510,7 +510,7 @@ export async function listActivitiesService({ filters, user, activeRole, campusS
   };
 }
 
-async function buildParticipantCards(activityId, participants) {
+async function buildParticipantCards(activity, participants) {
   const studentIds = participants.map((row) => row.studentId).filter(Boolean);
   const collectionIds = participants.map((row) => row.latestCollectionId).filter(Boolean);
 
@@ -538,15 +538,28 @@ async function buildParticipantCards(activityId, participants) {
     : [];
   const collectorMap = new Map(collectors.map((row) => [String(row._id), row]));
 
+  const vacancies = studentIds.length
+    ? await Vacancy.find({
+      studentId: { $in: studentIds },
+      cycleId: activity.cycleId,
+    })
+      .populate({ path: 'classroomId', select: '_id displayName level grade section' })
+      .select('studentId classroomId')
+      .lean()
+    : [];
+  const vacancyMap = new Map(vacancies.map((row) => [String(row.studentId), row]));
+
   return participants.map((participant) => {
     const student = studentMap.get(String(participant.studentId)) || {};
     const person = student.personId || {};
+    const vacancy = vacancyMap.get(String(participant.studentId));
+    const classroom = vacancy?.classroomId || null;
     const latestCollection = participant.latestCollectionId ? collectionMap.get(String(participant.latestCollectionId)) : null;
     const collector = latestCollection?.collectorUserId ? collectorMap.get(String(latestCollection.collectorUserId)) : null;
 
     return {
       id: String(participant._id),
-      activityId: String(activityId),
+      activityId: String(activity._id),
       status: participant.status,
       notes: participant.notes || null,
       registeredAt: participant.registeredAt || null,
@@ -560,6 +573,8 @@ async function buildParticipantCards(activityId, participants) {
         names: person.names || null,
         lastNames: person.lastNames || null,
         dni: person.dni || null,
+        classroomId: classroom?._id ? String(classroom._id) : null,
+        classroomDisplayName: classroom?.displayName || null,
       },
       latestCollection: latestCollection
         ? {
@@ -757,17 +772,17 @@ async function buildCollectionsList(activityId) {
 
 export async function getActivityDetailService({ activityId, user, activeRole, campusScope = [] }) {
   const effectiveRole = resolveEffectiveRole(user, activeRole);
-  if (!effectiveRole) throw new ApiError(403, 'Rol no autorizado para activities');
+  if (!effectiveRole) throw new ApiError(403, 'Rol no autorizado para actividades');
 
   const activity = await getActivityOrThrow(activityId);
   const campus = await Campus.findById(activity.campusId).select('_id code name').lean();
   await assertCampusAllowed(campus.code, campusScope);
 
   if (effectiveRole === 'AUXILIAR' && !activity.allowAuxiliarCollection) {
-    throw new ApiError(403, 'Tu rol activo no puede operar esta activity');
+    throw new ApiError(403, 'Tu rol activo no puede operar esta actividad');
   }
   if (effectiveRole === 'SECRETARY' && !activity.allowSecretaryCollection && activity.status === 'ACTIVE') {
-    throw new ApiError(403, 'Tu rol activo no puede operar esta activity');
+    throw new ApiError(403, 'Tu rol activo no puede operar esta actividad');
   }
 
   const [summary, participantsRaw, collections, collectorReport, registrationReport] = await Promise.all([
@@ -778,7 +793,7 @@ export async function getActivityDetailService({ activityId, user, activeRole, c
     buildRegistrationReport(activity._id),
   ]);
 
-  const participants = await buildParticipantCards(activity._id, participantsRaw);
+  const participants = await buildParticipantCards(activity, participantsRaw);
 
   return {
     activity: buildActivityCard(activity, campus),
@@ -799,7 +814,7 @@ export async function getActivityDetailService({ activityId, user, activeRole, c
 
 export async function getActivityParticipantsService({ activityId, filters, user, activeRole, campusScope = [] }) {
   const effectiveRole = resolveEffectiveRole(user, activeRole);
-  if (!effectiveRole) throw new ApiError(403, 'Rol no autorizado para activities');
+  if (!effectiveRole) throw new ApiError(403, 'Rol no autorizado para actividades');
 
   const activity = await getActivityOrThrow(activityId);
   const campus = await Campus.findById(activity.campusId).select('_id code').lean();
@@ -813,7 +828,7 @@ export async function getActivityParticipantsService({ activityId, filters, user
     .limit(filters.limit || 50)
     .lean();
 
-  let cards = await buildParticipantCards(activity._id, participantRows);
+  let cards = await buildParticipantCards(activity, participantRows);
   if (filters.q) {
     const normalized = normalizeSearchTerm(filters.q);
     cards = cards.filter((item) => {
@@ -834,11 +849,11 @@ export async function getActivityParticipantsService({ activityId, filters, user
 export async function addActivityParticipantService({ activityId, payload, user, activeRole, campusScope = [] }) {
   const effectiveRole = resolveEffectiveRole(user, activeRole);
   if (!['ADMIN', 'SECRETARY'].includes(effectiveRole)) {
-    throw new ApiError(403, 'Tu rol activo no puede inscribir alumnos en activities');
+    throw new ApiError(403, 'Tu rol activo no puede inscribir alumnos en actividades');
   }
 
   const activity = await Activity.findById(activityId);
-  if (!activity) throw new ApiError(404, 'Activity no encontrada');
+  if (!activity) throw new ApiError(404, 'Actividad no encontrada');
 
   const campus = await Campus.findById(activity.campusId).select('_id code name').lean();
   await assertCampusAllowed(campus.code, campusScope);
@@ -878,16 +893,16 @@ export async function addActivityParticipantService({ activityId, payload, user,
     return created;
   });
 
-  const cards = await buildParticipantCards(activity._id, [participant.toObject ? participant.toObject() : participant]);
+  const cards = await buildParticipantCards(activity, [participant.toObject ? participant.toObject() : participant]);
   return { participant: cards[0] || null };
 }
 
 export async function createActivityCollectionService({ activityId, payload, user, activeRole, campusScope = [] }) {
   const effectiveRole = resolveEffectiveRole(user, activeRole);
-  if (!effectiveRole) throw new ApiError(403, 'Rol no autorizado para activities');
+  if (!effectiveRole) throw new ApiError(403, 'Rol no autorizado para actividades');
 
   const activity = await Activity.findById(activityId);
-  if (!activity) throw new ApiError(404, 'Activity no encontrada');
+  if (!activity) throw new ApiError(404, 'Actividad no encontrada');
 
   const campus = await Campus.findById(activity.campusId).select('_id code name').lean();
   await assertCampusAllowed(campus.code, campusScope);
@@ -1101,7 +1116,7 @@ export async function getActivityCollectionReceiptService({ collectionId, user, 
   if (!collection) throw new ApiError(404, 'Cobro no encontrado');
 
   const activity = await Activity.findById(collection.activityId).lean();
-  if (!activity) throw new ApiError(404, 'Activity no encontrada');
+  if (!activity) throw new ApiError(404, 'Actividad no encontrada');
 
   const campus = await Campus.findById(collection.campusId).select('_id code name').lean();
   await assertCampusAllowed(campus.code, campusScope);

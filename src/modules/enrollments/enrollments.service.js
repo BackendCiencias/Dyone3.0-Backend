@@ -1169,6 +1169,100 @@ export async function updateEnrollmentStatusService({ enrollmentId, status, reas
   };
 }
 
+export async function updateEnrollmentContractService({ enrollmentId, payload, userId }) {
+  const contractDate = new Date(`${payload.contractDate}T12:00:00.000Z`);
+  if (Number.isNaN(contractDate.getTime())) {
+    throw new ApiError(400, 'Fecha de contrato inválida');
+  }
+
+  const result = await runInTransaction(async (session) => {
+    const enrollment = await Enrollment.findById(enrollmentId).session(session);
+    if (!enrollment) throw new ApiError(404, 'Matrícula no encontrada');
+
+    const enrollmentStudents = await EnrollmentStudent.find({ enrollmentId: enrollment._id }).session(session);
+    const studentIds = enrollmentStudents.map((row) => row.studentId);
+
+    const tutorRows = studentIds.length
+      ? await Tutor.find({ studentId: { $in: studentIds } }).session(session).lean()
+      : [];
+
+    const tutorPersonIds = [...new Set(tutorRows.map((row) => String(row.tutorPersonId)).filter(Boolean))]
+      .map((id) => new mongoose.Types.ObjectId(id));
+
+    if (tutorPersonIds.length) {
+      await Person.updateMany(
+        { _id: { $in: tutorPersonIds } },
+        { $set: { address: payload.address } },
+        { session }
+      );
+    }
+
+    const students = await Student.find({ _id: { $in: studentIds } })
+      .populate('personId')
+      .select('_id personId internalCode previousCampus')
+      .session(session);
+    const studentsById = new Map(students.map((row) => [String(row._id), row]));
+
+    const classroomIds = [...new Set(enrollmentStudents.map((row) => String(row.classroomId)).filter(Boolean))]
+      .map((id) => new mongoose.Types.ObjectId(id));
+    const classrooms = await Classroom.find({ _id: { $in: classroomIds } })
+      .select('_id displayName campusId')
+      .session(session)
+      .lean();
+    const classroomsById = new Map(classrooms.map((row) => [String(row._id), row]));
+
+    const snapshotData = buildContractSnapshot({
+      enrollment: enrollment.toObject(),
+      enrollmentStudents,
+      studentsById,
+      classroomsById,
+      userId,
+      notes: payload.notes || '',
+    });
+    snapshotData.confirmedAt = contractDate;
+    snapshotData.notes = payload.notes || undefined;
+
+    const existingSnapshot = await ContractSnapshot.findOne({ $or: [{ enrollmentId: enrollment._id }, { matriculaId: enrollment._id }] }).session(session);
+    if (!existingSnapshot) {
+      await new ContractSnapshot(snapshotData).save({ session });
+    } else {
+      await ContractSnapshot.updateOne({ _id: existingSnapshot._id }, { $set: snapshotData }, { session });
+    }
+
+    await Enrollment.updateOne(
+      { _id: enrollment._id },
+      {
+        $set: {
+          confirmedAt: contractDate,
+          updatedBy: userId,
+        },
+      },
+      { session }
+    );
+
+    return {
+      enrollmentId: String(enrollment._id),
+      address: payload.address,
+      notes: payload.notes || '',
+      confirmedAt: contractDate,
+    };
+  });
+
+  await registerAuditLog({
+    entityType: 'ENROLLMENT',
+    entityId: result.enrollmentId,
+    action: 'ENROLLMENT_CONTRACT_UPDATED',
+    performedBy: userId,
+    payloadSnapshot: {
+      addressUpdated: true,
+      hasNotes: Boolean(result.notes),
+      confirmedAt: result.confirmedAt,
+    },
+  });
+
+  return result;
+}
+
 export async function confirmEnrollmentService({ enrollmentId, payload, userId }) {
   const result = await runInTransaction(async (session) => {
     const enrollment = await Enrollment.findById(enrollmentId).session(session);
@@ -1447,7 +1541,13 @@ export async function listEnrollmentsService({ q, campus, cycleId, status, class
   let qStudentIds = null;
   if (q) {
     const regex = new RegExp(escapeRegExp(String(q).trim()), 'i');
-    const matchedPeople = await Person.find({ dni: regex }).select('_id').lean();
+    const matchedPeople = await Person.find({
+      $or: [
+        { dni: regex },
+        { names: regex },
+        { lastNames: regex },
+      ],
+    }).select('_id').lean();
     const matchedStudents = await Student.find({
       $or: [
         { internalCode: regex },

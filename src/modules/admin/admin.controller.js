@@ -15,6 +15,13 @@ import {
   getAttendancePolicy,
   upsertAttendancePolicy,
   buildCajaArequipaExport,
+  createProgram,
+  listPrograms,
+  getProgramDetail,
+  getProgramSessionDetail,
+  addStudentToProgram,
+  createProgramSession,
+  upsertProgramSessionEntry,
 } from './admin.service.js';
 import { asyncHandler } from '../../utils/asyncHandler.js';
 
@@ -113,4 +120,43 @@ export const getCajaArequipaExport = asyncHandler(async (req, res) => {
   res.setHeader('Content-Disposition', `attachment; filename="${result.fileName}"`);
   res.setHeader('X-Export-Count', String(result.rowCount));
   res.send(result.content);
+});
+
+export const getPrograms = asyncHandler(async (_req, res) => {
+  const items = await listPrograms();
+  res.json({ items });
+});
+
+export const postProgram = asyncHandler(async (req, res) => {
+  const item = await createProgram(req.validated);
+  res.status(201).json(item);
+});
+
+export const getProgramById = asyncHandler(async (req, res) => {
+  const data = await getProgramDetail(req.validatedParams.id);
+  res.json(data);
+});
+
+export const postProgramStudent = asyncHandler(async (req, res) => {
+  const data = await addStudentToProgram(req.validatedParams.id, req.validated);
+  res.status(201).json(data);
+});
+
+export const postProgramSession = asyncHandler(async (req, res) => {
+  const data = await createProgramSession(req.validatedParams.id, req.validated);
+  res.status(201).json(data);
+});
+
+export const getProgramSessionById = asyncHandler(async (req, res) => {
+  const data = await getProgramSessionDetail(req.validatedParams.id, req.validatedParams.sessionId);
+  res.json(data);
+});
+
+export const putProgramSessionEntry = asyncHandler(async (req, res) => {
+  const data = await upsertProgramSessionEntry(
+    req.validatedParams.id,
+    req.validatedParams.sessionId,
+    req.validated
+  );
+  res.json(data);
 });

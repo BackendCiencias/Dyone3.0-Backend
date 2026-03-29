@@ -79,3 +79,82 @@ export const cajaArequipaExportQuerySchema = z.object({
   campus: z.enum(['CIENCIAS', 'CIENCIAS_APLICADAS', 'CIMAS']).optional(),
   cycleId: z.string().min(1).optional(),
 });
+
+const objectIdSchema = z.string().regex(/^[a-fA-F0-9]{24}$/, 'ObjectId inválido');
+
+export const programCreateSchema = z.object({
+  name: z.string().trim().min(1).max(120),
+  notes: z.string().trim().max(1000).optional().default(''),
+  cycleId: objectIdSchema,
+});
+
+export const programIdParamsSchema = z.object({
+  id: objectIdSchema,
+});
+
+export const programEnrollmentCreateSchema = z.object({
+  existingStudentId: objectIdSchema.optional(),
+  newStudent: z.object({
+    names: z.string().trim().min(1),
+    lastNames: z.string().trim().min(1),
+    classroomId: objectIdSchema.optional(),
+    otherSchoolName: z.string().trim().max(160).optional().default(''),
+    grade: z.string().trim().max(40).optional().default(''),
+  }).optional(),
+  sessionId: objectIdSchema.optional(),
+  attended: z.boolean().optional().default(true),
+  paymentAmount: z.coerce.number().min(0),
+  paymentMethod: z.enum(['CASH', 'YAPE', 'TRANSFER']),
+  receivedBy: z.enum(['Juan Carlos', 'Juan Manuel', 'Maricarmen', 'Diego', 'Angie']).nullable().optional().default(null),
+  paymentDate: z.string().refine((value) => !Number.isNaN(Date.parse(value)), { message: 'Fecha de pago inválida' }),
+  notes: z.string().trim().max(1000).optional().default(''),
+}).superRefine((data, ctx) => {
+  if (!data.existingStudentId && !data.newStudent) {
+    ctx.addIssue({ code: z.ZodIssueCode.custom, message: 'Debe enviar existingStudentId o newStudent' });
+  }
+  if (data.newStudent && !data.newStudent.classroomId) {
+    const hasOtherSchool = Boolean(String(data.newStudent.otherSchoolName || '').trim());
+    const hasGrade = Boolean(String(data.newStudent.grade || '').trim());
+    if (!hasOtherSchool || !hasGrade) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        message: 'Para alumno externo debes indicar colegio y grado',
+        path: ['newStudent'],
+      });
+    }
+  }
+  if (Number(data.paymentAmount || 0) > 0 && !data.receivedBy) {
+    ctx.addIssue({
+      code: z.ZodIssueCode.custom,
+      message: 'Debe indicar quién recibió el pago',
+      path: ['receivedBy'],
+    });
+  }
+});
+
+export const programSessionCreateSchema = z.object({
+  date: z.string().refine((value) => !Number.isNaN(Date.parse(value)), { message: 'Fecha de sesión inválida' }),
+  notes: z.string().trim().max(1000).optional().default(''),
+});
+
+export const programSessionParamsSchema = z.object({
+  id: objectIdSchema,
+  sessionId: objectIdSchema,
+});
+
+export const programSessionEntryUpsertSchema = z.object({
+  programEnrollmentId: objectIdSchema,
+  attended: z.boolean(),
+  paymentAmount: z.coerce.number().min(0).optional().default(0),
+  paymentMethod: z.enum(['CASH', 'YAPE', 'TRANSFER', 'PENDING']).optional().default('PENDING'),
+  receivedBy: z.enum(['Juan Carlos', 'Juan Manuel', 'Maricarmen', 'Diego', 'Angie']).nullable().optional().default(null),
+  notes: z.string().trim().max(1000).optional().default(''),
+}).superRefine((data, ctx) => {
+  if (Number(data.paymentAmount || 0) > 0 && !data.receivedBy) {
+    ctx.addIssue({
+      code: z.ZodIssueCode.custom,
+      message: 'Debe indicar quién recibió el pago',
+      path: ['receivedBy'],
+    });
+  }
+});

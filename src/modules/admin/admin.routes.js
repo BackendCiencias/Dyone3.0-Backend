@@ -20,6 +20,13 @@ import {
   getAttendancePolicyConfig,
   putAttendancePolicyConfig,
   getCajaArequipaExport,
+  getPrograms,
+  postProgram,
+  getProgramById,
+  postProgramStudent,
+  postProgramSession,
+  getProgramSessionById,
+  putProgramSessionEntry,
 } from './admin.controller.js';
 import {
   campusCreateSchema,
@@ -32,6 +39,12 @@ import {
   attendancePolicyUpsertSchema,
   attendancePolicyQuerySchema,
   cajaArequipaExportQuerySchema,
+  programCreateSchema,
+  programEnrollmentCreateSchema,
+  programIdParamsSchema,
+  programSessionCreateSchema,
+  programSessionEntryUpsertSchema,
+  programSessionParamsSchema,
 } from './admin.schemas.js';
 
 const router = Router();
@@ -61,6 +74,13 @@ router.get('/billing-schedule', validateRequest({ query: billingScheduleQuerySch
 router.get('/attendance-policy', validateRequest({ query: attendancePolicyQuerySchema }), getAttendancePolicyConfig);
 router.put('/attendance-policy', validateRequest({ body: attendancePolicyUpsertSchema }), putAttendancePolicyConfig);
 router.get('/exports/caja-arequipa', validateRequest({ query: cajaArequipaExportQuerySchema }), getCajaArequipaExport);
+router.get('/programs', getPrograms);
+router.post('/programs', validate(programCreateSchema), postProgram);
+router.get('/programs/:id', validateRequest({ params: programIdParamsSchema }), getProgramById);
+router.post('/programs/:id/students', validateRequest({ params: programIdParamsSchema, body: programEnrollmentCreateSchema }), postProgramStudent);
+router.post('/programs/:id/sessions', validateRequest({ params: programIdParamsSchema, body: programSessionCreateSchema }), postProgramSession);
+router.get('/programs/:id/sessions/:sessionId', validateRequest({ params: programSessionParamsSchema }), getProgramSessionById);
+router.put('/programs/:id/sessions/:sessionId/entry', validateRequest({ params: programSessionParamsSchema, body: programSessionEntryUpsertSchema }), putProgramSessionEntry);
 
 router.get('/endpoints', requireRoles(['ADMIN']), getEndpointsCatalog);
 router.get('/models', requireRoles(['ADMIN']), getModelsCatalog);

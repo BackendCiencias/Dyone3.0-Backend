@@ -32,6 +32,12 @@ export const enrollmentStatusUpdateSchema = z.object({
   reason: z.string().trim().min(1).optional(),
 });
 
+export const enrollmentContractUpdateSchema = z.object({
+  address: z.string().trim().min(1, 'La dirección de contacto es obligatoria'),
+  notes: z.string().trim().optional(),
+  contractDate: z.string().regex(/^\d{4}-\d{2}-\d{2}$/, 'Fecha de contrato inválida'),
+});
+
 export const enrollmentConfirmSchema = z.object({
   cycleId: objectIdSchema.optional(),
   campusId: objectIdSchema.optional(),

@@ -1141,10 +1141,6 @@ export async function mergeEnrollmentsService({ targetEnrollmentId, sourceEnroll
       throw new ApiError(409, 'Solo se pueden fusionar matrículas del mismo ciclo');
     }
 
-    if (String(targetEnrollment.campusId) !== String(sourceEnrollment.campusId)) {
-      throw new ApiError(409, 'Solo se pueden fusionar matrículas del mismo campus');
-    }
-
     const [targetRows, sourceRows] = await Promise.all([
       EnrollmentStudent.find({ enrollmentId: targetEnrollment._id }).session(session),
       EnrollmentStudent.find({ enrollmentId: sourceEnrollment._id }).session(session),
@@ -1203,6 +1199,8 @@ export async function mergeEnrollmentsService({ targetEnrollmentId, sourceEnroll
     return {
       targetEnrollmentId: String(targetEnrollment._id),
       sourceEnrollmentId: String(sourceEnrollment._id),
+      targetCampusId: targetEnrollment.campusId ? String(targetEnrollment.campusId) : null,
+      sourceCampusId: sourceEnrollment.campusId ? String(sourceEnrollment.campusId) : null,
       movedStudents: sourceRows.length,
       mergedStudents: mergedRows.length,
       status: finalStatus,
@@ -1216,6 +1214,8 @@ export async function mergeEnrollmentsService({ targetEnrollmentId, sourceEnroll
     performedBy: userId,
     payloadSnapshot: {
       sourceEnrollmentId: result.sourceEnrollmentId,
+      sourceCampusId: result.sourceCampusId,
+      targetCampusId: result.targetCampusId,
       movedStudents: result.movedStudents,
       mergedStudents: result.mergedStudents,
       status: result.status,

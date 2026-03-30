@@ -775,11 +775,7 @@ export async function finalizeEnrollmentService(payload, userId) {
 
         const providedDni = normalizeDni(draftStudent.dni);
         const currentDni = normalizeDni(studentDoc.personId?.dni);
-        if (!currentDni) {
-          if (!providedDni) {
-            throw new ApiError(400, 'El alumno existente debe completar su DNI antes de matricular');
-          }
-
+        if (!currentDni && providedDni) {
           const conflictingPerson = await Person.findOne({ dni: providedDni }).session(session);
           if (conflictingPerson && String(conflictingPerson._id) !== String(studentDoc.personId?._id)) {
             throw new ApiError(409, `El DNI ${providedDni} ya pertenece a otra persona registrada`);

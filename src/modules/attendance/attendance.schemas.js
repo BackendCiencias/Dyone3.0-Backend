@@ -5,19 +5,37 @@ const dateSchema = z.string().regex(/^\d{4}-\d{2}-\d{2}$/, 'Fecha inválida. Usa
 const timeSchema = z.string().regex(/^([01]\d|2[0-3]):([0-5]\d)$/, 'Hora inválida. Usa HH:mm');
 
 export const attendanceSessionOpenSchema = z.object({
-  campusId: objectIdSchema,
-  cycleId: objectIdSchema,
+  campusId: objectIdSchema.optional(),
+  campusCode: z.enum(['CIENCIAS', 'CIENCIAS_APLICADAS', 'CIMAS']).optional(),
+  cycleId: objectIdSchema.optional(),
   date: dateSchema,
   expectedStartTime: timeSchema.optional(),
   onTimeUntil: timeSchema.optional(),
   lateUntil: timeSchema.optional(),
   notes: z.string().trim().max(1000).optional(),
+}).superRefine((data, ctx) => {
+  if (!data.campusId && !data.campusCode) {
+    ctx.addIssue({
+      code: z.ZodIssueCode.custom,
+      message: 'Debe indicar campusId o campusCode',
+      path: ['campusId'],
+    });
+  }
 });
 
 export const attendanceSessionCurrentQuerySchema = z.object({
-  campusId: objectIdSchema,
-  cycleId: objectIdSchema,
+  campusId: objectIdSchema.optional(),
+  campusCode: z.enum(['CIENCIAS', 'CIENCIAS_APLICADAS', 'CIMAS']).optional(),
+  cycleId: objectIdSchema.optional(),
   date: dateSchema,
+}).superRefine((data, ctx) => {
+  if (!data.campusId && !data.campusCode) {
+    ctx.addIssue({
+      code: z.ZodIssueCode.custom,
+      message: 'Debe indicar campusId o campusCode',
+      path: ['campusId'],
+    });
+  }
 });
 
 export const attendanceSessionIdParamsSchema = z.object({

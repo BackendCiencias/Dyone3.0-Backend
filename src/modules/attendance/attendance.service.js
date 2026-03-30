@@ -79,6 +79,46 @@ async function ensureCampusInScope({ campusId, campusScope = [] }) {
   }
 }
 
+async function resolveCampusId({ campusId, campusCode }) {
+  if (campusId) return campusId;
+  const campus = await Campus.findOne({ code: String(campusCode || '').trim().toUpperCase() }).select('_id').lean();
+  if (!campus) {
+    throw new ApiError(404, 'Campus no encontrado', 'ATTENDANCE_CAMPUS_NOT_FOUND');
+  }
+  return campus._id;
+}
+
+async function resolveOperationalCycle(cycleId = null) {
+  if (cycleId) {
+    const cycle = await Cycle.findById(cycleId).select('_id').lean();
+    if (!cycle) throw new ApiError(404, 'Ciclo no encontrado', 'ATTENDANCE_CYCLE_NOT_FOUND');
+    return cycle._id;
+  }
+
+  const now = new Date();
+  const activeCycle = await Cycle.findOne({
+    isActive: true,
+    type: 'SCHOOL_YEAR',
+    startDate: { $lte: now },
+    endDate: { $gte: now },
+  })
+    .sort({ startDate: -1, _id: -1 })
+    .select('_id')
+    .lean();
+
+  if (activeCycle?._id) return activeCycle._id;
+
+  const fallbackCycle = await Cycle.findOne({ isActive: true, type: 'SCHOOL_YEAR' })
+    .sort({ year: -1, startDate: -1, _id: -1 })
+    .select('_id')
+    .lean();
+
+  if (!fallbackCycle?._id) {
+    throw new ApiError(404, 'No existe un ciclo escolar activo', 'ATTENDANCE_ACTIVE_CYCLE_NOT_FOUND');
+  }
+  return fallbackCycle._id;
+}
+
 async function resolveCampusScopeIds(campusScope = []) {
   if (Array.isArray(campusScope) && campusScope.includes('ALL')) {
     const campuses = await Campus.find({}).select('_id code name').lean();
@@ -430,15 +470,17 @@ function buildRecordSummaryPayload(updated) {
   };
 }
 
-export async function getCurrentAttendanceSessionService({ campusId, cycleId, date }, user) {
+export async function getCurrentAttendanceSessionService({ campusId, campusCode, cycleId, date }, user) {
   ensureAuxiliar(user);
-  await ensureCampusInScope({ campusId, campusScope: user.campusScope || [] });
+  const effectiveCampusId = await resolveCampusId({ campusId, campusCode });
+  await ensureCampusInScope({ campusId: effectiveCampusId, campusScope: user.campusScope || [] });
+  const effectiveCycleId = await resolveOperationalCycle(cycleId || null);
 
   const normalizedDate = normalizeDateOnly(date);
   const session = await AttendanceSession.findOne({
     scopeType: 'REGULAR_STUDENT',
-    campusId,
-    cycleId,
+    campusId: effectiveCampusId,
+    cycleId: effectiveCycleId,
     classroomId: null,
     programId: null,
     programSessionId: null,
@@ -454,18 +496,15 @@ export async function getCurrentAttendanceSessionService({ campusId, cycleId, da
 
 export async function openAttendanceSessionService(input, user) {
   ensureAuxiliar(user);
-  await ensureCampusInScope({ campusId: input.campusId, campusScope: user.campusScope || [] });
-
-  const cycle = await Cycle.findById(input.cycleId).select('_id').lean();
-  if (!cycle) {
-    throw new ApiError(404, 'Ciclo no encontrado', 'ATTENDANCE_CYCLE_NOT_FOUND');
-  }
+  const effectiveCampusId = await resolveCampusId({ campusId: input.campusId, campusCode: input.campusCode });
+  await ensureCampusInScope({ campusId: effectiveCampusId, campusScope: user.campusScope || [] });
+  const effectiveCycleId = await resolveOperationalCycle(input.cycleId || null);
 
   const normalizedDate = normalizeDateOnly(input.date);
   const existing = await AttendanceSession.findOne({
     scopeType: 'REGULAR_STUDENT',
-    campusId: input.campusId,
-    cycleId: input.cycleId,
+    campusId: effectiveCampusId,
+    cycleId: effectiveCycleId,
     classroomId: null,
     programId: null,
     programSessionId: null,
@@ -480,15 +519,15 @@ export async function openAttendanceSessionService(input, user) {
   }
 
   const schedule = await resolveEffectiveAttendanceSchedule({
-    campusId: input.campusId,
-    cycleId: input.cycleId,
+    campusId: effectiveCampusId,
+    cycleId: effectiveCycleId,
     overrides: input,
   });
 
   const created = await AttendanceSession.create({
     scopeType: 'REGULAR_STUDENT',
-    campusId: input.campusId,
-    cycleId: input.cycleId,
+    campusId: effectiveCampusId,
+    cycleId: effectiveCycleId,
     date: normalizedDate,
     expectedStartTime: schedule.expectedStartTime,
     onTimeUntil: schedule.onTimeUntil,

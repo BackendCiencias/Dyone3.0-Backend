@@ -19,6 +19,8 @@ import {
   getModelsCatalog,
   getAttendancePolicyConfig,
   putAttendancePolicyConfig,
+  getAttendanceSessionsConfig,
+  deleteAttendanceSessionConfig,
   getCajaArequipaExport,
   getPrograms,
   postProgram,
@@ -38,6 +40,8 @@ import {
   billingScheduleQuerySchema,
   attendancePolicyUpsertSchema,
   attendancePolicyQuerySchema,
+  adminAttendanceSessionsQuerySchema,
+  adminAttendanceSessionParamsSchema,
   cajaArequipaExportQuerySchema,
   programCreateSchema,
   programEnrollmentCreateSchema,
@@ -73,6 +77,8 @@ router.post('/billing-schedule', validate(billingScheduleUpsertSchema), postBill
 router.get('/billing-schedule', validateRequest({ query: billingScheduleQuerySchema }), getBillingScheduleByCycle);
 router.get('/attendance-policy', validateRequest({ query: attendancePolicyQuerySchema }), getAttendancePolicyConfig);
 router.put('/attendance-policy', validateRequest({ body: attendancePolicyUpsertSchema }), putAttendancePolicyConfig);
+router.get('/attendance-sessions', requireRoles(['ADMIN']), validateRequest({ query: adminAttendanceSessionsQuerySchema }), getAttendanceSessionsConfig);
+router.delete('/attendance-sessions/:sessionId', requireRoles(['ADMIN']), validateRequest({ params: adminAttendanceSessionParamsSchema }), deleteAttendanceSessionConfig);
 router.get('/exports/caja-arequipa', validateRequest({ query: cajaArequipaExportQuerySchema }), getCajaArequipaExport);
 router.get('/programs', getPrograms);
 router.post('/programs', validate(programCreateSchema), postProgram);

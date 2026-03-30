@@ -15,12 +15,14 @@ import {
   attendanceRecentJustificationsQuerySchema,
   attendanceScanSchema,
   attendanceSessionIdParamsSchema,
+  attendanceSessionCurrentQuerySchema,
   attendanceSessionOpenSchema,
   attendanceSessionUpdateSchema,
   attendanceStudentMonthlySummaryParamsSchema,
 } from './attendance.schemas.js';
 import {
   closeAttendanceSession,
+  getCurrentAttendanceSession,
   getAttendanceClassroomOptions,
   getAttendanceIntakeView,
   getClassroomDailyReport,
@@ -41,6 +43,7 @@ router.use(requireRoles(['AUXILIAR']));
 router.use(attachCampusScope());
 
 router.get('/classrooms/options', getAttendanceClassroomOptions);
+router.get('/sessions/current', validateRequest({ query: attendanceSessionCurrentQuerySchema }), getCurrentAttendanceSession);
 router.post('/sessions/open', validateRequest({ body: attendanceSessionOpenSchema }), openAttendanceSession);
 router.get('/sessions/:sessionId/intake-view', validateRequest({ params: attendanceSessionIdParamsSchema, query: attendanceIntakeViewQuerySchema }), getAttendanceIntakeView);
 router.patch('/sessions/:sessionId', validateRequest({ params: attendanceSessionIdParamsSchema, body: attendanceSessionUpdateSchema }), updateAttendanceSession);

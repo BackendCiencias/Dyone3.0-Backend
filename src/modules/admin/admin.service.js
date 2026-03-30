@@ -8,8 +8,12 @@ import { Classroom } from '../../models/classroom.model.js';
 import { BillingConcept } from '../../models/billingConcept.model.js';
 import { BillingSchedule } from '../../models/billingSchedule.model.js';
 import { AttendancePolicy } from '../../models/attendancePolicy.model.js';
+import { AttendanceSession } from '../../models/attendanceSession.model.js';
+import { AttendanceRecord } from '../../models/attendanceRecord.model.js';
+import { AttendanceMonthlySummary } from '../../models/attendanceMonthlySummary.model.js';
 import { Student } from '../../models/student.model.js';
 import { Person } from '../../models/person.model.js';
+import { Vacancy } from '../../models/vacancy.model.js';
 import { Program } from '../../models/program.model.js';
 import { ProgramEnrollment } from '../../models/programEnrollment.model.js';
 import { ProgramSession } from '../../models/programSession.model.js';
@@ -906,6 +910,251 @@ export async function buildCajaArequipaExport({ query, user }) {
       year: cycle.year,
     },
     campus: campusDoc ? { id: String(campusDoc._id), code: campusDoc.code, name: campusDoc.name } : null,
+  };
+}
+
+function parseDateOnlyStart(value) {
+  const [year, month, day] = String(value).split('-').map(Number);
+  return new Date(Date.UTC(year, month - 1, day, 0, 0, 0, 0));
+}
+
+function parseDateOnlyEndExclusive(value) {
+  const [year, month, day] = String(value).split('-').map(Number);
+  return new Date(Date.UTC(year, month - 1, day + 1, 0, 0, 0, 0));
+}
+
+function getYearMonth(value) {
+  const date = new Date(value);
+  return {
+    year: date.getUTCFullYear(),
+    month: date.getUTCMonth() + 1,
+  };
+}
+
+function buildSummaryDelta(record) {
+  const status = String(record?.status || '').toUpperCase();
+  const justificationStatus = String(record?.justificationStatus || '').toUpperCase();
+  return {
+    presentCount: status === 'PRESENT' ? 1 : 0,
+    lateCount: status === 'LATE' ? 1 : 0,
+    absentCount: status === 'ABSENT' ? 1 : 0,
+    justifiedLateCount: status === 'LATE' && justificationStatus === 'JUSTIFIED' ? 1 : 0,
+    justifiedAbsentCount: status === 'ABSENT' && justificationStatus === 'JUSTIFIED' ? 1 : 0,
+  };
+}
+
+function toSessionStatusSummaryMap(rows = []) {
+  const map = new Map();
+  rows.forEach((row) => {
+    map.set(String(row._id), {
+      recordsCount: Number(row.recordsCount || 0),
+      presentCount: Number(row.presentCount || 0),
+      lateCount: Number(row.lateCount || 0),
+      absentCount: Number(row.absentCount || 0),
+      justifiedCount: Number(row.justifiedCount || 0),
+    });
+  });
+  return map;
+}
+
+export async function listAttendanceSessionsForAdmin(query = {}) {
+  const limit = Number(query.limit || 80);
+  const filters = {};
+
+  if (query.campusId) filters.campusId = query.campusId;
+  if (query.cycleId) filters.cycleId = query.cycleId;
+  if (query.status) filters.status = query.status;
+
+  if (query.dateFrom || query.dateTo) {
+    filters.date = {};
+    if (query.dateFrom) filters.date.$gte = parseDateOnlyStart(query.dateFrom);
+    if (query.dateTo) filters.date.$lt = parseDateOnlyEndExclusive(query.dateTo);
+  }
+
+  const sessions = await AttendanceSession.find(filters)
+    .populate('campusId', '_id code name')
+    .populate('cycleId', '_id name year')
+    .sort({ date: -1, openedAt: -1, _id: -1 })
+    .limit(limit)
+    .lean();
+
+  const sessionIds = sessions.map((session) => session._id);
+  const grouped = sessionIds.length
+    ? await AttendanceRecord.aggregate([
+      { $match: { sessionId: { $in: sessionIds } } },
+      {
+        $group: {
+          _id: '$sessionId',
+          recordsCount: { $sum: 1 },
+          presentCount: { $sum: { $cond: [{ $eq: ['$status', 'PRESENT'] }, 1, 0] } },
+          lateCount: { $sum: { $cond: [{ $eq: ['$status', 'LATE'] }, 1, 0] } },
+          absentCount: { $sum: { $cond: [{ $eq: ['$status', 'ABSENT'] }, 1, 0] } },
+          justifiedCount: { $sum: { $cond: [{ $eq: ['$justificationStatus', 'JUSTIFIED'] }, 1, 0] } },
+        },
+      },
+    ])
+    : [];
+
+  const summaryBySession = toSessionStatusSummaryMap(grouped);
+  return {
+    items: sessions.map((session) => {
+      const summary = summaryBySession.get(String(session._id)) || {
+        recordsCount: 0,
+        presentCount: 0,
+        lateCount: 0,
+        absentCount: 0,
+        justifiedCount: 0,
+      };
+      return {
+        id: String(session._id),
+        scopeType: session.scopeType,
+        status: session.status,
+        date: session.date,
+        expectedStartTime: session.expectedStartTime || null,
+        onTimeUntil: session.onTimeUntil || null,
+        lateUntil: session.lateUntil || null,
+        openedAt: session.openedAt || null,
+        closedAt: session.closedAt || null,
+        notes: session.notes || '',
+        campus: session.campusId ? {
+          id: String(session.campusId._id),
+          code: session.campusId.code || null,
+          name: session.campusId.name || session.campusId.code || null,
+        } : null,
+        cycle: session.cycleId ? {
+          id: String(session.cycleId._id),
+          name: session.cycleId.name || null,
+          year: session.cycleId.year || null,
+        } : null,
+        records: summary,
+      };
+    }),
+    meta: {
+      total: sessions.length,
+      limit,
+      filters: {
+        campusId: query.campusId || null,
+        cycleId: query.cycleId || null,
+        status: query.status || null,
+        dateFrom: query.dateFrom || null,
+        dateTo: query.dateTo || null,
+      },
+    },
+  };
+}
+
+export async function deleteAttendanceSessionForAdmin(sessionId, user) {
+  const session = await AttendanceSession.findById(sessionId).lean();
+  if (!session) {
+    throw new ApiError(404, 'Sesión de asistencia no encontrada');
+  }
+
+  const records = await AttendanceRecord.find({ sessionId: session._id })
+    .select('_id studentId status justificationStatus')
+    .lean();
+
+  const studentIds = [...new Set(records.map((row) => String(row.studentId)).filter(Boolean))];
+  const vacancies = studentIds.length
+    ? await Vacancy.find({ cycleId: session.cycleId, studentId: { $in: studentIds } })
+      .select('studentId classroomId')
+      .lean()
+    : [];
+  const classroomByStudentId = new Map(vacancies.map((row) => [String(row.studentId), row.classroomId ? String(row.classroomId) : null]));
+
+  const { year, month } = getYearMonth(session.date);
+  const summaryOpsByKey = new Map();
+
+  records.forEach((record) => {
+    const classroomId = classroomByStudentId.get(String(record.studentId)) || null;
+    const key = [
+      String(record.studentId),
+      String(session.campusId),
+      String(session.cycleId),
+      String(year),
+      String(month),
+      classroomId || 'null',
+    ].join('|');
+    const current = summaryOpsByKey.get(key) || {
+      studentId: record.studentId,
+      campusId: session.campusId,
+      cycleId: session.cycleId,
+      year,
+      month,
+      classroomId: classroomId ? new mongoose.Types.ObjectId(classroomId) : null,
+      presentCount: 0,
+      lateCount: 0,
+      absentCount: 0,
+      justifiedLateCount: 0,
+      justifiedAbsentCount: 0,
+    };
+
+    const delta = buildSummaryDelta(record);
+    current.presentCount += delta.presentCount;
+    current.lateCount += delta.lateCount;
+    current.absentCount += delta.absentCount;
+    current.justifiedLateCount += delta.justifiedLateCount;
+    current.justifiedAbsentCount += delta.justifiedAbsentCount;
+    summaryOpsByKey.set(key, current);
+  });
+
+  const summaryOps = Array.from(summaryOpsByKey.values());
+  if (summaryOps.length) {
+    await AttendanceMonthlySummary.bulkWrite(
+      summaryOps.map((item) => ({
+        updateOne: {
+          filter: {
+            studentId: item.studentId,
+            campusId: item.campusId,
+            cycleId: item.cycleId,
+            year: item.year,
+            month: item.month,
+            classroomId: item.classroomId,
+          },
+          update: {
+            $inc: {
+              presentCount: -item.presentCount,
+              lateCount: -item.lateCount,
+              absentCount: -item.absentCount,
+              justifiedLateCount: -item.justifiedLateCount,
+              justifiedAbsentCount: -item.justifiedAbsentCount,
+            },
+            $set: { updatedAt: new Date() },
+          },
+          upsert: false,
+        },
+      })),
+      { ordered: false }
+    );
+
+    await Promise.all(summaryOps.map((item) => AttendanceMonthlySummary.deleteMany({
+      studentId: item.studentId,
+      campusId: item.campusId,
+      cycleId: item.cycleId,
+      year: item.year,
+      month: item.month,
+      classroomId: item.classroomId,
+      presentCount: { $lte: 0 },
+      lateCount: { $lte: 0 },
+      absentCount: { $lte: 0 },
+      justifiedLateCount: { $lte: 0 },
+      justifiedAbsentCount: { $lte: 0 },
+    })));
+  }
+
+  const [recordsDeleteResult, sessionDeleteResult] = await Promise.all([
+    AttendanceRecord.deleteMany({ sessionId: session._id }),
+    AttendanceSession.deleteOne({ _id: session._id }),
+  ]);
+
+  return {
+    message: 'Sesión eliminada correctamente',
+    deletedSessionId: String(session._id),
+    deletedByUserId: user?.id || (user?._id ? String(user._id) : null),
+    stats: {
+      deletedRecords: Number(recordsDeleteResult.deletedCount || 0),
+      deletedSessions: Number(sessionDeleteResult.deletedCount || 0),
+      adjustedSummaryRows: summaryOps.length,
+    },
   };
 }
 

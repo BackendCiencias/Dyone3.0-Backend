@@ -7,6 +7,7 @@ import {
   getClassroomDailyReportService,
   getClassroomMonthlySummaryService,
   getStudentMonthlySummaryService,
+  getCurrentAttendanceSessionService,
   justifyAttendanceRecordsBatchService,
   justifyAttendanceRecordService,
   openAttendanceSessionService,
@@ -17,6 +18,11 @@ import {
 export const openAttendanceSession = asyncHandler(async (req, res) => {
   const result = await openAttendanceSessionService(req.validated, req.user);
   res.status(result.meta.wasCreated ? 201 : 200).json(result);
+});
+
+export const getCurrentAttendanceSession = asyncHandler(async (req, res) => {
+  const result = await getCurrentAttendanceSessionService(req.validatedQuery, req.user);
+  res.json(result);
 });
 
 export const getAttendanceClassroomOptions = asyncHandler(async (req, res) => {

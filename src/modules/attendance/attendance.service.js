@@ -430,6 +430,28 @@ function buildRecordSummaryPayload(updated) {
   };
 }
 
+export async function getCurrentAttendanceSessionService({ campusId, cycleId, date }, user) {
+  ensureAuxiliar(user);
+  await ensureCampusInScope({ campusId, campusScope: user.campusScope || [] });
+
+  const normalizedDate = normalizeDateOnly(date);
+  const session = await AttendanceSession.findOne({
+    scopeType: 'REGULAR_STUDENT',
+    campusId,
+    cycleId,
+    classroomId: null,
+    programId: null,
+    programSessionId: null,
+    date: normalizedDate,
+    status: 'OPEN',
+  }).lean();
+
+  return {
+    session: session ? buildSessionPayload(session) : null,
+    meta: { found: Boolean(session) },
+  };
+}
+
 export async function openAttendanceSessionService(input, user) {
   ensureAuxiliar(user);
   await ensureCampusInScope({ campusId: input.campusId, campusScope: user.campusScope || [] });

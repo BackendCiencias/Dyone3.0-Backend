@@ -1,6 +1,7 @@
 import { z } from 'zod';
 
 // Esquemas de validación para el módulo de administración
+const objectIdSchema = z.string().regex(/^[a-fA-F0-9]{24}$/, 'ObjectId inválido');
 
 export const campusCreateSchema = z.object({
   code: z.enum(['CIENCIAS', 'CIENCIAS_APLICADAS', 'CIMAS']),
@@ -75,12 +76,23 @@ export const attendancePolicyQuerySchema = z.object({
   level: z.enum(['INITIAL', 'PRIMARY', 'SECONDARY']),
 });
 
+export const adminAttendanceSessionsQuerySchema = z.object({
+  campusId: objectIdSchema.optional(),
+  cycleId: objectIdSchema.optional(),
+  status: z.enum(['OPEN', 'CLOSED', 'CANCELLED']).optional(),
+  dateFrom: z.string().regex(/^\d{4}-\d{2}-\d{2}$/, 'Fecha inválida. Usa YYYY-MM-DD').optional(),
+  dateTo: z.string().regex(/^\d{4}-\d{2}-\d{2}$/, 'Fecha inválida. Usa YYYY-MM-DD').optional(),
+  limit: z.coerce.number().int().min(1).max(200).optional().default(80),
+});
+
+export const adminAttendanceSessionParamsSchema = z.object({
+  sessionId: objectIdSchema,
+});
+
 export const cajaArequipaExportQuerySchema = z.object({
   campus: z.enum(['CIENCIAS', 'CIENCIAS_APLICADAS', 'CIMAS']).optional(),
   cycleId: z.string().min(1).optional(),
 });
-
-const objectIdSchema = z.string().regex(/^[a-fA-F0-9]{24}$/, 'ObjectId inválido');
 
 export const programCreateSchema = z.object({
   name: z.string().trim().min(1).max(120),

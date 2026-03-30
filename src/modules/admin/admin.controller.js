@@ -14,7 +14,9 @@ import {
   listModelsCatalog,
   getAttendancePolicy,
   upsertAttendancePolicy,
+  deleteAttendanceSessionForAdmin,
   buildCajaArequipaExport,
+  listAttendanceSessionsForAdmin,
   createProgram,
   listPrograms,
   getProgramDetail,
@@ -107,6 +109,16 @@ export const getAttendancePolicyConfig = asyncHandler(async (req, res) => {
 
 export const putAttendancePolicyConfig = asyncHandler(async (req, res) => {
   const data = await upsertAttendancePolicy(req.validated, req.user);
+  res.json(data);
+});
+
+export const getAttendanceSessionsConfig = asyncHandler(async (req, res) => {
+  const data = await listAttendanceSessionsForAdmin(req.validatedQuery || {});
+  res.json(data);
+});
+
+export const deleteAttendanceSessionConfig = asyncHandler(async (req, res) => {
+  const data = await deleteAttendanceSessionForAdmin(req.validatedParams.sessionId, req.user);
   res.json(data);
 });
 

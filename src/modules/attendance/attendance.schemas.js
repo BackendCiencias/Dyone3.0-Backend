@@ -14,6 +14,12 @@ export const attendanceSessionOpenSchema = z.object({
   notes: z.string().trim().max(1000).optional(),
 });
 
+export const attendanceSessionCurrentQuerySchema = z.object({
+  campusId: objectIdSchema,
+  cycleId: objectIdSchema,
+  date: dateSchema,
+});
+
 export const attendanceSessionIdParamsSchema = z.object({
   sessionId: objectIdSchema,
 });

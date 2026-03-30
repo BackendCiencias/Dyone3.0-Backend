@@ -8,6 +8,7 @@ import {
   listEnrollmentsService,
   mergeEnrollmentsService,
   updateEnrollmentContractService,
+  updateEnrollmentStudentCostsService,
   updateEnrollmentStatusService,
 } from './enrollments.service.js';
 
@@ -68,6 +69,15 @@ export const updateEnrollmentStatus = asyncHandler(async (req, res) => {
 
 export const updateEnrollmentContract = asyncHandler(async (req, res) => {
   const data = await updateEnrollmentContractService({
+    enrollmentId: req.validatedParams.id,
+    payload: req.validated,
+    userId: req.user.id,
+  });
+  res.json(data);
+});
+
+export const updateEnrollmentStudentCosts = asyncHandler(async (req, res) => {
+  const data = await updateEnrollmentStudentCostsService({
     enrollmentId: req.validatedParams.id,
     payload: req.validated,
     userId: req.user.id,

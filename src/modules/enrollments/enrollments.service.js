@@ -130,6 +130,99 @@ function buildChargePayload({ studentId, cycleId, campusId, conceptId, concept, 
   };
 }
 
+function toMoney(value) {
+  if (value === null || value === undefined) return 0;
+  if (typeof value === 'number') return value;
+  if (typeof value === 'string') return Number(value);
+  if (typeof value === 'object' && value.toString) return Number(value.toString());
+  return 0;
+}
+
+function toDecimalAmount(amount) {
+  return mongoose.Types.Decimal128.fromString(Number(amount || 0).toFixed(2));
+}
+
+function normalizeGeneralPensionAmounts(current = [], amount = 0) {
+  const normalizedAmount = Number(amount || 0);
+  if (Array.isArray(current) && current.length === SCHOOL_MONTHS) {
+    return current.map((value) => (Number(value) < 0 ? NO_APLICA_PENSION : normalizedAmount));
+  }
+  return Array(SCHOOL_MONTHS).fill(normalizedAmount);
+}
+
+async function syncEnrollmentChargeAmount({
+  session,
+  existingCharge = null,
+  nextAmount,
+  studentId,
+  cycleId,
+  campusId,
+  conceptId,
+  concept,
+  monthIndex = null,
+  description,
+  dueDate = null,
+  notes = '',
+}) {
+  const normalizedNextAmount = Number(nextAmount || 0);
+
+  if (existingCharge) {
+    const totalAmount = toMoney(existingCharge.totalAmount);
+    const outstandingAmount = toMoney(existingCharge.outstandingAmount);
+    const paidAmount = Math.max(totalAmount - outstandingAmount, 0);
+
+    if (normalizedNextAmount <= 0) {
+      if (paidAmount > 0.001) {
+        throw new ApiError(409, 'No se puede eliminar o dejar en cero un cargo que ya tiene pagos registrados');
+      }
+
+      existingCharge.totalAmount = toDecimalAmount(0);
+      existingCharge.outstandingAmount = toDecimalAmount(0);
+      existingCharge.status = 'CANCELLED';
+      existingCharge.notes = notes || existingCharge.notes || undefined;
+      await existingCharge.save({ session });
+      return existingCharge;
+    }
+
+    if (normalizedNextAmount + 0.001 < paidAmount) {
+      throw new ApiError(409, 'No se puede fijar un monto menor al ya pagado');
+    }
+
+    const nextOutstanding = Math.max(normalizedNextAmount - paidAmount, 0);
+    existingCharge.totalAmount = toDecimalAmount(normalizedNextAmount);
+    existingCharge.outstandingAmount = toDecimalAmount(nextOutstanding);
+    existingCharge.status = nextOutstanding <= 0
+      ? 'PAID'
+      : nextOutstanding < normalizedNextAmount
+        ? 'PARTIAL'
+        : 'OPEN';
+    existingCharge.campusId = campusId;
+    existingCharge.conceptId = conceptId;
+    existingCharge.dueDate = dueDate;
+    existingCharge.description = description;
+    existingCharge.notes = notes || undefined;
+    await existingCharge.save({ session });
+    return existingCharge;
+  }
+
+  if (normalizedNextAmount <= 0) return null;
+
+  const [created] = await Charge.create([buildChargePayload({
+    studentId,
+    cycleId,
+    campusId,
+    conceptId,
+    concept,
+    amount: normalizedNextAmount,
+    monthIndex,
+    dueDate,
+    notes,
+  })], { session });
+  created.description = description;
+  await created.save({ session });
+  return created;
+}
+
 function buildChargeConflictKey({ studentId, cycleId, concept, monthIndex = null }) {
   return `${String(studentId)}:${String(cycleId)}:${String(concept)}:${monthIndex ?? 'NONE'}`;
 }
@@ -1364,6 +1457,187 @@ export async function updateEnrollmentContractService({ enrollmentId, payload, u
       addressUpdated: true,
       hasNotes: Boolean(result.notes),
       confirmedAt: result.confirmedAt,
+    },
+  });
+
+  return result;
+}
+
+export async function updateEnrollmentStudentCostsService({ enrollmentId, payload, userId }) {
+  const result = await runInTransaction(async (session) => {
+    const enrollment = await Enrollment.findById(enrollmentId).session(session);
+    if (!enrollment) throw new ApiError(404, 'Matrícula no encontrada');
+
+    const updates = Array.isArray(payload?.students) ? payload.students : [];
+    if (!updates.length) throw new ApiError(400, 'No se enviaron alumnos para actualizar');
+
+    const enrollmentStudentIds = updates.map((row) => new mongoose.Types.ObjectId(row.enrollmentStudentId));
+    const enrollmentStudents = await EnrollmentStudent.find({
+      _id: { $in: enrollmentStudentIds },
+      enrollmentId: enrollment._id,
+    }).session(session);
+    if (enrollmentStudents.length !== updates.length) {
+      throw new ApiError(404, 'Uno o más alumnos de la matrícula no fueron encontrados');
+    }
+
+    const rowById = new Map(enrollmentStudents.map((row) => [String(row._id), row]));
+    const studentIds = enrollmentStudents.map((row) => row.studentId);
+    const students = await Student.find({ _id: { $in: studentIds } })
+      .populate('personId')
+      .select('_id personId internalCode previousCampus')
+      .session(session);
+    const studentsById = new Map(students.map((row) => [String(row._id), row]));
+
+    const classroomIds = [...new Set(enrollmentStudents.map((row) => String(row.classroomId || '')).filter(Boolean))]
+      .map((id) => new mongoose.Types.ObjectId(id));
+    const classrooms = classroomIds.length
+      ? await Classroom.find({ _id: { $in: classroomIds } })
+        .select('_id displayName campusId')
+        .session(session)
+        .lean()
+      : [];
+    const classroomsById = new Map(classrooms.map((row) => [String(row._id), row]));
+
+    const {
+      byCode,
+      tuitionDueDatesByMonth,
+      admissionDueDate,
+      enrollmentDueDate,
+    } = await loadBillingSetup({ session, cycleId: enrollment.cycleId });
+
+    const charges = await Charge.find({
+      studentId: { $in: studentIds },
+      cycleId: enrollment.cycleId,
+      concept: { $in: ['ADMISSION', 'ENROLLMENT', 'TUITION'] },
+      status: { $ne: 'CANCELLED' },
+    }).session(session);
+
+    const chargeMap = new Map(charges.map((charge) => [
+      `${String(charge.studentId)}|${charge.concept}|${charge.monthIndex === null ? 'null' : String(charge.monthIndex)}`,
+      charge,
+    ]));
+
+    for (const incoming of updates) {
+      const row = rowById.get(String(incoming.enrollmentStudentId));
+      const student = studentsById.get(String(row.studentId));
+      if (!row || !student) continue;
+
+      row.admissionFee = {
+        ...(row.admissionFee?.toObject?.() || row.admissionFee || {}),
+        applies: Number(incoming.admissionFeeAmount || 0) > 0,
+        isExempt: Number(incoming.admissionFeeAmount || 0) <= 0,
+        amount: Number(incoming.admissionFeeAmount || 0),
+      };
+      row.enrollmentFee = {
+        ...(row.enrollmentFee?.toObject?.() || row.enrollmentFee || {}),
+        isExempt: Number(incoming.enrollmentFeeAmount || 0) <= 0,
+        amount: Number(incoming.enrollmentFeeAmount || 0),
+      };
+      row.pensionMonthlyAmounts = normalizeGeneralPensionAmounts(row.pensionMonthlyAmounts, incoming.pensionAmount);
+      row.agreedBy = userId;
+      row.agreedAt = new Date();
+      await row.save({ session });
+
+      const studentCampusId = row.classroomId
+        ? (classroomsById.get(String(row.classroomId))?.campusId || enrollment.campusId)
+        : enrollment.campusId;
+
+      await syncEnrollmentChargeAmount({
+        session,
+        existingCharge: chargeMap.get(`${String(row.studentId)}|ADMISSION|null`) || null,
+        nextAmount: row.admissionFee?.applies && !row.admissionFee?.isExempt ? row.admissionFee?.amount : 0,
+        studentId: row.studentId,
+        cycleId: enrollment.cycleId,
+        campusId: studentCampusId,
+        conceptId: byCode.get('ADMISSION_FEE'),
+        concept: 'ADMISSION',
+        description: 'Derecho de ingreso',
+        dueDate: admissionDueDate,
+        notes: row.admissionFee?.reason || '',
+      });
+
+      await syncEnrollmentChargeAmount({
+        session,
+        existingCharge: chargeMap.get(`${String(row.studentId)}|ENROLLMENT|null`) || null,
+        nextAmount: row.enrollmentFee?.isExempt ? 0 : row.enrollmentFee?.amount,
+        studentId: row.studentId,
+        cycleId: enrollment.cycleId,
+        campusId: studentCampusId,
+        conceptId: byCode.get('ENROLLMENT_FEE'),
+        concept: 'ENROLLMENT',
+        description: 'Matrícula',
+        dueDate: enrollmentDueDate,
+        notes: row.enrollmentFee?.reason || '',
+      });
+
+      for (let monthIndex = 0; monthIndex < SCHOOL_MONTHS; monthIndex += 1) {
+        await syncEnrollmentChargeAmount({
+          session,
+          existingCharge: chargeMap.get(`${String(row.studentId)}|TUITION|${monthIndex}`) || null,
+          nextAmount: Number(row.pensionMonthlyAmounts?.[monthIndex] || 0),
+          studentId: row.studentId,
+          cycleId: enrollment.cycleId,
+          campusId: studentCampusId,
+          conceptId: byCode.get('TUITION'),
+          concept: 'TUITION',
+          monthIndex,
+          description: `Pensión mes ${monthIndex + 1}`,
+          dueDate: tuitionDueDatesByMonth.get(monthIndex) || null,
+          notes: '',
+        });
+      }
+    }
+
+    const refreshedRows = await EnrollmentStudent.find({ enrollmentId: enrollment._id }).session(session);
+    const refreshedStudentIds = [...new Set(refreshedRows.map((row) => String(row.studentId)).filter(Boolean))]
+      .map((id) => new mongoose.Types.ObjectId(id));
+    const refreshedClassroomIds = [...new Set(refreshedRows.map((row) => String(row.classroomId || '')).filter(Boolean))]
+      .map((id) => new mongoose.Types.ObjectId(id));
+    const [refreshedStudents, refreshedClassrooms] = await Promise.all([
+      Student.find({ _id: { $in: refreshedStudentIds } })
+        .populate('personId')
+        .select('_id personId internalCode previousCampus')
+        .session(session),
+      refreshedClassroomIds.length
+        ? Classroom.find({ _id: { $in: refreshedClassroomIds } })
+          .select('_id displayName campusId')
+          .session(session)
+          .lean()
+        : [],
+    ]);
+    const refreshedStudentsById = new Map(refreshedStudents.map((row) => [String(row._id), row]));
+    const refreshedClassroomsById = new Map(refreshedClassrooms.map((row) => [String(row._id), row]));
+    const snapshotData = buildContractSnapshot({
+      enrollment: enrollment.toObject(),
+      enrollmentStudents: refreshedRows,
+      studentsById: refreshedStudentsById,
+      classroomsById: refreshedClassroomsById,
+      userId,
+      notes: enrollment.notes || '',
+    });
+
+    const existingSnapshot = await ContractSnapshot.findOne({
+      $or: [{ enrollmentId: enrollment._id }, { matriculaId: enrollment._id }],
+    }).session(session);
+    if (existingSnapshot) {
+      snapshotData.confirmedAt = existingSnapshot.confirmedAt || enrollment.confirmedAt || new Date();
+      snapshotData.notes = existingSnapshot.notes || snapshotData.notes;
+      await ContractSnapshot.updateOne({ _id: existingSnapshot._id }, { $set: snapshotData }, { session });
+    }
+
+    return {
+      enrollmentId: String(enrollment._id),
+      updatedStudents: updates.length,
+    };
+  });
+
+  await registerAuditLog({
+    entityType: 'ENROLLMENT',
+    entityId: result.enrollmentId,
+    action: 'ENROLLMENT_STUDENT_COSTS_UPDATED',
+    performedBy: userId,
+    payloadSnapshot: {
+      updatedStudents: result.updatedStudents,
     },
   });
 

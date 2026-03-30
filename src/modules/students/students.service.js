@@ -725,6 +725,8 @@ export async function getStudentSummaryService(studentId) {
     campusCode: currentEnrollment?.campus?.code || null,
     previousCampus: student?.previousCampus || null,
     activeStatus: student.activeStatus,
+    notes: student?.notes || null,
+    internalNotes: student?.internalNotes || null,
   }
   const tutorLink = {
     address: null,
@@ -884,6 +886,8 @@ export async function getStudentDetailService(studentId, cycleId) {
 
   return {
     student,
+    notes: student.notes || null,
+    internalNotes: student.internalNotes || null,
     person: student.personId || null,
     tutors,
     currentCycle: cycle ? {
@@ -1269,16 +1273,16 @@ export async function updateStudentIdentityService(studentId, payload, actor = n
 }
 
 export async function updateStudentInternalNotesService(studentId, internalNotes, actor = null) {
-  const student = await updateStudentById(studentId, { $set: { internalNotes } });
+  const student = await updateStudentById(studentId, { $set: { notes: internalNotes } });
   if (!student) throw new ApiError(404, 'Estudiante no encontrado');
 
   if (actor) {
     await registerAuditLog({
       entityType: 'STUDENT',
       entityId: student._id,
-      action: 'STUDENT_INTERNAL_NOTES_UPDATED',
+      action: 'STUDENT_NOTES_UPDATED',
       performedBy: actor,
-      payloadSnapshot: { studentId, internalNotes },
+      payloadSnapshot: { studentId, notes: internalNotes },
     });
   }
 

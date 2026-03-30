@@ -231,8 +231,9 @@ async function resolveEnrollmentForSession({ studentId, cycleId, campusId }) {
     throw new ApiError(409, 'Alumno fuera del campus de la sesión', 'ATTENDANCE_STUDENT_CAMPUS_MISMATCH');
   }
 
-  if (studentCycle.enrollment.status !== 'ENROLLED') {
-    throw new ApiError(409, 'Alumno no apto para asistencia', 'ATTENDANCE_ENROLLMENT_NOT_ACTIVE');
+  const enrollmentStatus = String(studentCycle.enrollment.status || '').toUpperCase();
+  if (enrollmentStatus === 'TRANSFERRED') {
+    throw new ApiError(409, 'Alumno transferido. No apto para asistencia en este campus', 'ATTENDANCE_ENROLLMENT_TRANSFERRED');
   }
 
   return studentCycle;

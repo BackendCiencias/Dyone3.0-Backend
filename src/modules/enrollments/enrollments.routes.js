@@ -5,7 +5,7 @@ import { validate } from '../../middlewares/validate.js';
 import { validateRequest } from '../../middlewares/validateRequest.js';
 import { attachCampusScope, authorizeByCampusScope } from '../../shared/authorization.middleware.js';
 import { findEnrollmentCampusById } from './repositories/enrollments.repository.js';
-import { enrollmentConfirmSchema, enrollmentContractUpdateSchema, enrollmentFinalizeSchema, enrollmentIdParamsSchema, enrollmentListQuerySchema, enrollmentStatusUpdateSchema } from './enrollments.schemas.js';
+import { enrollmentConfirmSchema, enrollmentContractUpdateSchema, enrollmentFinalizeSchema, enrollmentIdParamsSchema, enrollmentListQuerySchema, enrollmentMergeSchema, enrollmentStatusUpdateSchema } from './enrollments.schemas.js';
 import {
   getEnrollmentById,
   getClassroomCapacity,
@@ -13,6 +13,7 @@ import {
   confirmEnrollment,
   finalizeEnrollment,
   listEnrollments,
+  mergeEnrollments,
   updateEnrollmentContract,
   updateEnrollmentStatus,
 } from './enrollments.controller.js';
@@ -41,6 +42,11 @@ router.post('/:id/confirm',
   authorizeByCampusScope(async (req) => findEnrollmentCampusById(req.params.id)),
   validateRequest({ params: enrollmentIdParamsSchema, body: enrollmentConfirmSchema }),
   confirmEnrollment
+);
+router.post('/:id/merge',
+  requireRoles(['ADMIN']),
+  validateRequest({ params: enrollmentIdParamsSchema, body: enrollmentMergeSchema }),
+  mergeEnrollments
 );
 router.get('/', requireRoles(ENROLLMENT_READ_ROLES), attachCampusScope(), validateRequest({ query: enrollmentListQuerySchema }), listEnrollments);
 router.get('/classrooms/:classroomId/capacity', requireRoles(ENROLLMENT_READ_ROLES), getClassroomCapacity);

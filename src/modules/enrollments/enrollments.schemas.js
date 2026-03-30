@@ -38,6 +38,11 @@ export const enrollmentContractUpdateSchema = z.object({
   contractDate: z.string().regex(/^\d{4}-\d{2}-\d{2}$/, 'Fecha de contrato inválida'),
 });
 
+export const enrollmentMergeSchema = z.object({
+  sourceEnrollmentId: objectIdSchema,
+  notes: z.string().trim().max(600).optional(),
+});
+
 export const enrollmentConfirmSchema = z.object({
   cycleId: objectIdSchema.optional(),
   campusId: objectIdSchema.optional(),

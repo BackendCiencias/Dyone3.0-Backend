@@ -1117,6 +1117,117 @@ export async function getCampusCapacityService({ campusId, cycleId }) {
   });
 }
 
+export async function mergeEnrollmentsService({ targetEnrollmentId, sourceEnrollmentId, notes = '', userId }) {
+  if (String(targetEnrollmentId) === String(sourceEnrollmentId)) {
+    throw new ApiError(400, 'No se puede fusionar una matrícula consigo misma');
+  }
+
+  const result = await runInTransaction(async (session) => {
+    const [targetEnrollment, sourceEnrollment] = await Promise.all([
+      Enrollment.findById(targetEnrollmentId).session(session),
+      Enrollment.findById(sourceEnrollmentId).session(session),
+    ]);
+
+    if (!targetEnrollment) throw new ApiError(404, 'Matrícula destino no encontrada');
+    if (!sourceEnrollment) throw new ApiError(404, 'Matrícula origen no encontrada');
+
+    const targetStatus = String(targetEnrollment.status || '').trim().toUpperCase();
+    const sourceStatus = String(sourceEnrollment.status || '').trim().toUpperCase();
+    if (targetStatus === 'TRANSFERRED' || sourceStatus === 'TRANSFERRED') {
+      throw new ApiError(409, 'No se pueden fusionar matrículas trasladadas');
+    }
+
+    if (String(targetEnrollment.cycleId) !== String(sourceEnrollment.cycleId)) {
+      throw new ApiError(409, 'Solo se pueden fusionar matrículas del mismo ciclo');
+    }
+
+    if (String(targetEnrollment.campusId) !== String(sourceEnrollment.campusId)) {
+      throw new ApiError(409, 'Solo se pueden fusionar matrículas del mismo campus');
+    }
+
+    const [targetRows, sourceRows] = await Promise.all([
+      EnrollmentStudent.find({ enrollmentId: targetEnrollment._id }).session(session),
+      EnrollmentStudent.find({ enrollmentId: sourceEnrollment._id }).session(session),
+    ]);
+
+    if (!sourceRows.length) throw new ApiError(409, 'La matrícula origen no tiene alumnos para fusionar');
+
+    const targetStudentIds = new Set(targetRows.map((row) => String(row.studentId)));
+    const duplicated = sourceRows.find((row) => targetStudentIds.has(String(row.studentId)));
+    if (duplicated) {
+      throw new ApiError(409, 'La matrícula destino ya contiene uno de los alumnos de la matrícula origen');
+    }
+
+    await EnrollmentStudent.updateMany(
+      { enrollmentId: sourceEnrollment._id },
+      { $set: { enrollmentId: targetEnrollment._id } },
+      { session }
+    );
+
+    const mergedRows = await EnrollmentStudent.find({ enrollmentId: targetEnrollment._id }).session(session);
+    const mergedStudentIds = mergedRows.map((row) => row._id);
+
+    const finalStatus = [targetStatus, sourceStatus].includes('ENROLLED') ? 'ENROLLED' : 'ABSENT';
+    const mergedAt = new Date();
+    const sourceNote = `[${mergedAt.toISOString()}] MERGED_INTO:${targetEnrollment._id}${notes ? ` | ${String(notes).trim()}` : ''}`;
+    const targetNote = `[${mergedAt.toISOString()}] MERGED_FROM:${sourceEnrollment._id}${notes ? ` | ${String(notes).trim()}` : ''}`;
+
+    await Enrollment.updateOne(
+      { _id: targetEnrollment._id },
+      {
+        $set: {
+          enrollmentStudents: mergedStudentIds,
+          status: finalStatus,
+          confirmedAt: finalStatus === 'ENROLLED' ? (targetEnrollment.confirmedAt || sourceEnrollment.confirmedAt || mergedAt) : null,
+          updatedBy: userId,
+          notes: [targetEnrollment.notes, targetNote].filter(Boolean).join('\n'),
+        },
+      },
+      { session }
+    );
+
+    await Enrollment.updateOne(
+      { _id: sourceEnrollment._id },
+      {
+        $set: {
+          enrollmentStudents: [],
+          status: 'ABSENT',
+          confirmedAt: null,
+          updatedBy: userId,
+          notes: [sourceEnrollment.notes, sourceNote].filter(Boolean).join('\n'),
+        },
+      },
+      { session }
+    );
+
+    return {
+      targetEnrollmentId: String(targetEnrollment._id),
+      sourceEnrollmentId: String(sourceEnrollment._id),
+      movedStudents: sourceRows.length,
+      mergedStudents: mergedRows.length,
+      status: finalStatus,
+    };
+  });
+
+  await registerAuditLog({
+    entityType: 'ENROLLMENT',
+    entityId: result.targetEnrollmentId,
+    action: 'ENROLLMENT_MERGED',
+    performedBy: userId,
+    payloadSnapshot: {
+      sourceEnrollmentId: result.sourceEnrollmentId,
+      movedStudents: result.movedStudents,
+      mergedStudents: result.mergedStudents,
+      status: result.status,
+    },
+  });
+
+  return {
+    ok: true,
+    ...result,
+  };
+}
+
 export async function updateEnrollmentStatusService({ enrollmentId, status, reason, userId }) {
   const enrollment = await Enrollment.findById(enrollmentId).lean();
   if (!enrollment) throw new ApiError(404, 'Matrícula no encontrada');

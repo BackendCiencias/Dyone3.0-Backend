@@ -68,7 +68,10 @@ export const enrollmentConfirmSchema = z.object({
 });
 
 const stringOrNumber = z.union([z.string(), z.number()]);
-const optionalDniSchema = z.string().trim().regex(/^\d{8}$/, 'DNI inválido. Debe tener exactamente 8 dígitos').optional();
+const optionalDniSchema = z.union([
+  z.string().trim().regex(/^\d{8}$/, 'DNI inválido. Debe tener exactamente 8 dígitos'),
+  z.literal(''),
+]).optional();
 
 const finalStudentSchema = z.object({
   localId: z.string().optional(),

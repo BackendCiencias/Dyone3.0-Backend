@@ -138,6 +138,41 @@ function toMoney(value) {
   return 0;
 }
 
+function buildSnapshotTutorsFromRows(tutorRows = []) {
+  const tutorsByPerson = new Map();
+
+  for (const row of tutorRows) {
+    const person = row?.tutorPersonId || {};
+    const personId = person?._id ? String(person._id) : String(row?.tutorPersonId || '');
+    if (!personId) continue;
+
+    if (!tutorsByPerson.has(personId)) {
+      tutorsByPerson.set(personId, {
+        personId: person._id || row?.tutorPersonId || null,
+        names: person.names || null,
+        lastNames: person.lastNames || null,
+        dni: person.dni || null,
+        phone: person.phone || null,
+        address: person.address || null,
+        relationship: row.relationship || 'Apoderado',
+        includeInContract: true,
+        linkedStudentIds: [],
+      });
+    }
+
+    const current = tutorsByPerson.get(personId);
+    const studentId = row?.studentId?._id || row?.studentId || null;
+    if (studentId && !current.linkedStudentIds.some((value) => String(value) === String(studentId))) {
+      current.linkedStudentIds.push(studentId);
+    }
+    if (!current.relationship && row?.relationship) current.relationship = row.relationship;
+    if (!current.phone && person?.phone) current.phone = person.phone;
+    if (!current.address && person?.address) current.address = person.address;
+  }
+
+  return [...tutorsByPerson.values()];
+}
+
 function toDecimalAmount(amount) {
   return mongoose.Types.Decimal128.fromString(Number(amount || 0).toFixed(2));
 }
@@ -145,6 +180,10 @@ function toDecimalAmount(amount) {
 function normalizeGeneralPensionAmounts(current = [], amount = 0) {
   const normalizedAmount = Number(amount || 0);
   if (Array.isArray(current) && current.length === SCHOOL_MONTHS) {
+    const hasApplicableMonth = current.some((value) => Number(value) >= 0);
+    if (!hasApplicableMonth) {
+      return Array(SCHOOL_MONTHS).fill(normalizedAmount);
+    }
     return current.map((value) => (Number(value) < 0 ? NO_APLICA_PENSION : normalizedAmount));
   }
   return Array(SCHOOL_MONTHS).fill(normalizedAmount);
@@ -1105,12 +1144,19 @@ export async function getEnrollmentService(id) {
     };
   });
 
+  const snapshotTutorsByPerson = new Map(
+    (Array.isArray(snapshot?.tutors) ? snapshot.tutors : [])
+      .map((row) => [String(row?.personId || ''), row])
+      .filter(([key]) => Boolean(key))
+  );
+
   const tutorsByPerson = new Map();
   for (const row of tutorRows) {
     const person = row?.tutorPersonId;
     if (!person?._id) continue;
 
     const key = String(person._id);
+    const snapshotTutor = snapshotTutorsByPerson.get(key) || null;
     if (!tutorsByPerson.has(key)) {
       tutorsByPerson.set(key, {
         personId: key,
@@ -1121,6 +1167,7 @@ export async function getEnrollmentService(id) {
         phone: person.phone || null,
         address: person.address || null,
         relationship: row.relationship || 'Apoderado',
+        includeInContract: snapshotTutor?.includeInContract !== false,
       });
     }
   }
@@ -1224,6 +1271,9 @@ export async function mergeEnrollmentsService({ targetEnrollmentId, sourceEnroll
     const sourceStatus = String(sourceEnrollment.status || '').trim().toUpperCase();
     if (targetStatus === 'TRANSFERRED' || sourceStatus === 'TRANSFERRED') {
       throw new ApiError(409, 'No se pueden fusionar matrículas trasladadas');
+    }
+    if (targetStatus !== 'ENROLLED' || sourceStatus !== 'ENROLLED') {
+      throw new ApiError(409, 'Solo se pueden fusionar matrículas previamente matriculadas');
     }
 
     if (String(targetEnrollment.cycleId) !== String(sourceEnrollment.cycleId)) {
@@ -1383,7 +1433,11 @@ export async function updateEnrollmentContractService({ enrollmentId, payload, u
     const studentIds = enrollmentStudents.map((row) => row.studentId);
 
     const tutorRows = studentIds.length
-      ? await Tutor.find({ studentId: { $in: studentIds } }).session(session).lean()
+      ? await Tutor.find({ studentId: { $in: studentIds } })
+        .populate('studentId', '_id')
+        .populate('tutorPersonId', 'names lastNames dni phone address')
+        .session(session)
+        .lean()
       : [];
 
     const tutorPersonIds = [...new Set(tutorRows.map((row) => String(row.tutorPersonId)).filter(Boolean))]
@@ -1418,6 +1472,7 @@ export async function updateEnrollmentContractService({ enrollmentId, payload, u
       classroomsById,
       userId,
       notes: payload.notes || '',
+      tutors: buildSnapshotTutorsFromRows(tutorRows),
     });
     snapshotData.confirmedAt = contractDate;
     snapshotData.notes = payload.notes || undefined;
@@ -1457,6 +1512,105 @@ export async function updateEnrollmentContractService({ enrollmentId, payload, u
       addressUpdated: true,
       hasNotes: Boolean(result.notes),
       confirmedAt: result.confirmedAt,
+    },
+  });
+
+  return result;
+}
+
+export async function updateEnrollmentContractSignersService({ enrollmentId, payload, userId }) {
+  const result = await runInTransaction(async (session) => {
+    const enrollment = await Enrollment.findById(enrollmentId).session(session);
+    if (!enrollment) throw new ApiError(404, 'Matrícula no encontrada');
+
+    const enrollmentStudents = await EnrollmentStudent.find({ enrollmentId: enrollment._id }).session(session);
+    const studentIds = enrollmentStudents.map((row) => row.studentId);
+
+    const tutorRows = studentIds.length
+      ? await Tutor.find({ studentId: { $in: studentIds } })
+        .populate('studentId', '_id')
+        .populate('tutorPersonId', 'names lastNames dni phone address')
+        .session(session)
+        .lean()
+      : [];
+
+    const availableSnapshotTutors = buildSnapshotTutorsFromRows(tutorRows);
+    const availablePersonIds = new Set(availableSnapshotTutors.map((row) => String(row.personId || '')).filter(Boolean));
+    const requestedPersonIds = [...new Set((Array.isArray(payload?.signerPersonIds) ? payload.signerPersonIds : []).map((id) => String(id || '')).filter(Boolean))];
+
+    if (!requestedPersonIds.length) {
+      throw new ApiError(400, 'Debe quedar al menos un tutor firmante');
+    }
+
+    const invalidSignerId = requestedPersonIds.find((personId) => !availablePersonIds.has(personId));
+    if (invalidSignerId) {
+      throw new ApiError(400, 'Uno de los tutores firmantes no pertenece a esta matrícula');
+    }
+
+    const students = await Student.find({ _id: { $in: studentIds } })
+      .populate('personId')
+      .select('_id personId internalCode previousCampus')
+      .session(session);
+    const studentsById = new Map(students.map((row) => [String(row._id), row]));
+
+    const classroomIds = [...new Set(enrollmentStudents.map((row) => String(row.classroomId || '')).filter(Boolean))]
+      .map((id) => new mongoose.Types.ObjectId(id));
+    const classrooms = await Classroom.find({ _id: { $in: classroomIds } })
+      .select('_id displayName campusId')
+      .session(session)
+      .lean();
+    const classroomsById = new Map(classrooms.map((row) => [String(row._id), row]));
+
+    const existingSnapshot = await ContractSnapshot.findOne({ $or: [{ enrollmentId: enrollment._id }, { matriculaId: enrollment._id }] }).session(session);
+    const snapshotData = buildContractSnapshot({
+      enrollment: enrollment.toObject(),
+      enrollmentStudents,
+      studentsById,
+      classroomsById,
+      userId,
+      notes: existingSnapshot?.notes || enrollment.notes || '',
+      tutors: availableSnapshotTutors.map((tutor) => ({
+        ...tutor,
+        includeInContract: requestedPersonIds.includes(String(tutor.personId || '')),
+      })),
+    });
+
+    if (existingSnapshot?.confirmedAt) {
+      snapshotData.confirmedAt = existingSnapshot.confirmedAt;
+    } else if (enrollment.confirmedAt) {
+      snapshotData.confirmedAt = enrollment.confirmedAt;
+    }
+    if (existingSnapshot?.notes) {
+      snapshotData.notes = existingSnapshot.notes;
+    }
+    if (existingSnapshot?.contractNumber) {
+      snapshotData.contractNumber = existingSnapshot.contractNumber;
+    }
+    if (existingSnapshot?.isSigned === true) {
+      snapshotData.isSigned = true;
+    }
+
+    if (!existingSnapshot) {
+      await new ContractSnapshot(snapshotData).save({ session });
+    } else {
+      await ContractSnapshot.updateOne({ _id: existingSnapshot._id }, { $set: snapshotData }, { session });
+    }
+
+    return {
+      enrollmentId: String(enrollment._id),
+      signerPersonIds: requestedPersonIds,
+      signerCount: requestedPersonIds.length,
+    };
+  });
+
+  await registerAuditLog({
+    entityType: 'ENROLLMENT',
+    entityId: result.enrollmentId,
+    action: 'ENROLLMENT_CONTRACT_SIGNERS_UPDATED',
+    performedBy: userId,
+    payloadSnapshot: {
+      signerCount: result.signerCount,
+      signerPersonIds: result.signerPersonIds,
     },
   });
 

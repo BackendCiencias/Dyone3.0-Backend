@@ -5,7 +5,7 @@ import { validate } from '../../middlewares/validate.js';
 import { validateRequest } from '../../middlewares/validateRequest.js';
 import { attachCampusScope, authorizeByCampusScope } from '../../shared/authorization.middleware.js';
 import { findEnrollmentCampusById } from './repositories/enrollments.repository.js';
-import { enrollmentConfirmSchema, enrollmentContractUpdateSchema, enrollmentFinalizeSchema, enrollmentIdParamsSchema, enrollmentListQuerySchema, enrollmentMergeSchema, enrollmentStatusUpdateSchema, enrollmentStudentCostsUpdateSchema } from './enrollments.schemas.js';
+import { enrollmentConfirmSchema, enrollmentContractSignersUpdateSchema, enrollmentContractUpdateSchema, enrollmentFinalizeSchema, enrollmentIdParamsSchema, enrollmentListQuerySchema, enrollmentMergeSchema, enrollmentStatusUpdateSchema, enrollmentStudentCostsUpdateSchema } from './enrollments.schemas.js';
 import {
   getEnrollmentById,
   getClassroomCapacity,
@@ -14,6 +14,7 @@ import {
   finalizeEnrollment,
   listEnrollments,
   mergeEnrollments,
+  updateEnrollmentContractSigners,
   updateEnrollmentContract,
   updateEnrollmentStudentCosts,
   updateEnrollmentStatus,
@@ -37,6 +38,12 @@ router.patch('/:id/contract',
   authorizeByCampusScope(async (req) => findEnrollmentCampusById(req.params.id)),
   validateRequest({ params: enrollmentIdParamsSchema, body: enrollmentContractUpdateSchema }),
   updateEnrollmentContract
+);
+router.patch('/:id/contract-signers',
+  requireRoles(ENROLLMENT_WRITE_ROLES),
+  authorizeByCampusScope(async (req) => findEnrollmentCampusById(req.params.id)),
+  validateRequest({ params: enrollmentIdParamsSchema, body: enrollmentContractSignersUpdateSchema }),
+  updateEnrollmentContractSigners
 );
 router.patch('/:id/student-costs',
   requireRoles(['ADMIN']),

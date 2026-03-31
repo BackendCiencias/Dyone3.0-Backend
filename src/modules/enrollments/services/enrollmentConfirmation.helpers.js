@@ -115,7 +115,7 @@ export function buildTuitionCharges({ enrollmentStudent, conceptId, cycleId, cam
   return charges;
 }
 
-export function buildContractSnapshot({ enrollment, enrollmentStudents, studentsById, classroomsById, userId, notes }) {
+export function buildContractSnapshot({ enrollment, enrollmentStudents, studentsById, classroomsById, userId, notes, tutors = [] }) {
   return {
     enrollmentId: enrollment._id,
     matriculaId: enrollment._id,
@@ -144,6 +144,6 @@ export function buildContractSnapshot({ enrollment, enrollmentStudents, students
         enrollmentFee: row.enrollmentFee,
       };
     }),
+    tutors,
   };
 }
-

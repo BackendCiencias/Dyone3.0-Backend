@@ -1440,8 +1440,9 @@ export async function updateEnrollmentContractService({ enrollmentId, payload, u
         .lean()
       : [];
 
-    const tutorPersonIds = [...new Set(tutorRows.map((row) => String(row.tutorPersonId)).filter(Boolean))]
-      .map((id) => new mongoose.Types.ObjectId(id));
+    const tutorPersonIds = [...new Set(tutorRows.map((row) => String(row.tutorPersonId || '')).filter(Boolean))]
+      .map((id) => toObjectIdOrNull(id))
+      .filter(Boolean);
 
     if (tutorPersonIds.length) {
       await Person.updateMany(
@@ -1457,8 +1458,9 @@ export async function updateEnrollmentContractService({ enrollmentId, payload, u
       .session(session);
     const studentsById = new Map(students.map((row) => [String(row._id), row]));
 
-    const classroomIds = [...new Set(enrollmentStudents.map((row) => String(row.classroomId)).filter(Boolean))]
-      .map((id) => new mongoose.Types.ObjectId(id));
+    const classroomIds = [...new Set(enrollmentStudents.map((row) => String(row.classroomId || '')).filter(Boolean))]
+      .map((id) => toObjectIdOrNull(id))
+      .filter(Boolean);
     const classrooms = await Classroom.find({ _id: { $in: classroomIds } })
       .select('_id displayName campusId')
       .session(session)
@@ -1554,7 +1556,8 @@ export async function updateEnrollmentContractSignersService({ enrollmentId, pay
     const studentsById = new Map(students.map((row) => [String(row._id), row]));
 
     const classroomIds = [...new Set(enrollmentStudents.map((row) => String(row.classroomId || '')).filter(Boolean))]
-      .map((id) => new mongoose.Types.ObjectId(id));
+      .map((id) => toObjectIdOrNull(id))
+      .filter(Boolean);
     const classrooms = await Classroom.find({ _id: { $in: classroomIds } })
       .select('_id displayName campusId')
       .session(session)
@@ -1643,7 +1646,8 @@ export async function updateEnrollmentStudentCostsService({ enrollmentId, payloa
     const studentsById = new Map(students.map((row) => [String(row._id), row]));
 
     const classroomIds = [...new Set(enrollmentStudents.map((row) => String(row.classroomId || '')).filter(Boolean))]
-      .map((id) => new mongoose.Types.ObjectId(id));
+      .map((id) => toObjectIdOrNull(id))
+      .filter(Boolean);
     const classrooms = classroomIds.length
       ? await Classroom.find({ _id: { $in: classroomIds } })
         .select('_id displayName campusId')
@@ -1744,9 +1748,11 @@ export async function updateEnrollmentStudentCostsService({ enrollmentId, payloa
 
     const refreshedRows = await EnrollmentStudent.find({ enrollmentId: enrollment._id }).session(session);
     const refreshedStudentIds = [...new Set(refreshedRows.map((row) => String(row.studentId)).filter(Boolean))]
-      .map((id) => new mongoose.Types.ObjectId(id));
+      .map((id) => toObjectIdOrNull(id))
+      .filter(Boolean);
     const refreshedClassroomIds = [...new Set(refreshedRows.map((row) => String(row.classroomId || '')).filter(Boolean))]
-      .map((id) => new mongoose.Types.ObjectId(id));
+      .map((id) => toObjectIdOrNull(id))
+      .filter(Boolean);
     const [refreshedStudents, refreshedClassrooms] = await Promise.all([
       Student.find({ _id: { $in: refreshedStudentIds } })
         .populate('personId')

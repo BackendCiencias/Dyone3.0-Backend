@@ -1440,7 +1440,11 @@ export async function updateEnrollmentContractService({ enrollmentId, payload, u
         .lean()
       : [];
 
-    const tutorPersonIds = [...new Set(tutorRows.map((row) => String(row.tutorPersonId || '')).filter(Boolean))]
+    const tutorPersonIds = [...new Set(
+      tutorRows
+        .map((row) => String(row?.tutorPersonId?._id || row?.tutorPersonId || ''))
+        .filter(Boolean)
+    )]
       .map((id) => toObjectIdOrNull(id))
       .filter(Boolean);
 

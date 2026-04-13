@@ -45,7 +45,7 @@ export const listStudents = asyncHandler(async (req, res) => {
 
 export const listStudentsByCampus = asyncHandler(async (req, res) => {
   const { campus } = req.params;
-  const { q, limit, cursor } = req.query;
+  const { q, limit, cursor } = req.validatedQuery || req.query;
 
   if (ENABLE_STUDENTS_BY_CAMPUS_DEBUG) {
     console.log('[studentsByCampus] campus=', campus, 'q=', q, 'limit=', limit, 'cursor=', cursor);

@@ -1,5 +1,5 @@
 const STUDENT_READ_ROLES = ['ADMIN', 'PROMOTER', 'DIRECTOR', 'SECRETARY', 'SECRETARY_VIEWER', 'AUXILIAR'];
-const STUDENT_WRITE_ROLES = ['ADMIN', 'SECRETARY', 'DIRECTOR', 'PROMOTER'];
+const STUDENT_WRITE_ROLES = ['ADMIN', 'SECRETARY', 'DIRECTOR', 'PROMOTER', 'AUXILIAR'];
 
 export const moduleEndpointMetadata = [
   { method: 'GET', path: '/api/students/search', module: 'students', authRequired: true, rolesAllowed: STUDENT_READ_ROLES, description: 'Buscar estudiante por DNI o nombre/apellido (autocompletado)', requestSchema: { query: { q: 'string?', dni: 'string?', limit: 'number?' } }, responseSchema: [{ _id: 'ObjectId', personId: { _id: 'ObjectId', names: 'string', lastNames: 'string', dni: 'string|null' }|null }] },

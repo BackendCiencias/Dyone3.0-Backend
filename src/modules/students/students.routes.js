@@ -15,6 +15,7 @@ import {
   studentIdentitySchema,
   studentInternalNotesSchema,
   studentSearchQuerySchema,
+  studentCampusListQuerySchema,
   studentBankCodeSchema,
   studentUnassignedQuerySchema,
   unassignedSearchQuerySchema,
@@ -46,14 +47,19 @@ import { upsertTutor } from '../tutors/tutors.controller.js';
 
 const router = Router();
 const STUDENT_READ_ROLES = ['ADMIN', 'PROMOTER', 'DIRECTOR', 'SECRETARY', 'SECRETARY_VIEWER', 'AUXILIAR'];
-const STUDENT_WRITE_ROLES = ['ADMIN', 'PROMOTER', 'DIRECTOR', 'SECRETARY'];
+const STUDENT_WRITE_ROLES = ['ADMIN', 'PROMOTER', 'DIRECTOR', 'SECRETARY', 'AUXILIAR'];
 
 router.use(authMiddleware);
 
 router.get('/search', requireRoles(STUDENT_READ_ROLES), validateRequest({ query: studentSearchQuerySchema }), searchStudent);
 router.post('/print-cards', requireRoles(STUDENT_READ_ROLES), validateRequest({ body: studentPrintCardsSchema }), printStudentCards);
 router.get('/', requireRoles(['ADMIN', 'PROMOTER']), listStudents);
-router.get('/campus/:campus', requireRoles(STUDENT_READ_ROLES), listStudentsByCampus);
+router.get(
+  '/campus/:campus',
+  requireRoles(STUDENT_READ_ROLES),
+  validateRequest({ query: studentCampusListQuerySchema }),
+  listStudentsByCampus
+);
 router.get('/unassigned/search', requireRoles(STUDENT_READ_ROLES), validateRequest({ query: unassignedSearchQuerySchema }), searchUnassigned);
 router.get('/unassigned', requireRoles(['ADMIN', 'SECRETARY', 'SECRETARY_VIEWER', 'PROMOTER']), validateRequest({ query: studentUnassignedQuerySchema }), listUnassignedStudents);
 router.get('/:id/summary', requireRoles(STUDENT_READ_ROLES), studentSummary);

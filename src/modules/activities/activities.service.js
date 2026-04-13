@@ -95,6 +95,15 @@ function resolveEffectiveRole(user, activeRoleHeader) {
   return userRoles.find((role) => ['ADMIN', 'SECRETARY', 'AUXILIAR'].includes(role)) || null;
 }
 
+function resolveCollectorRoleFromUser(user, preferredRole = null) {
+  const roles = Array.isArray(user?.roles) ? user.roles.map((role) => String(role).toUpperCase()) : [];
+  const normalizedPreferred = String(preferredRole || '').trim().toUpperCase();
+  if (normalizedPreferred && roles.includes(normalizedPreferred) && ['ADMIN', 'SECRETARY', 'AUXILIAR'].includes(normalizedPreferred)) {
+    return normalizedPreferred;
+  }
+  return roles.find((role) => ['ADMIN', 'SECRETARY', 'AUXILIAR'].includes(role)) || null;
+}
+
 async function assertCampusAllowed(campusCode, campusScope = []) {
   const allowed = getScopedCampusCodes(campusScope);
   if (allowed.includes('ALL')) return;
@@ -1005,6 +1014,142 @@ export async function createActivityCollectionService({ activityId, payload, use
   };
 }
 
+export async function updateActivityCollectionService({ collectionId, payload, user, activeRole, campusScope = [] }) {
+  const effectiveRole = resolveEffectiveRole(user, activeRole);
+  assertManageAllowed(effectiveRole);
+
+  const collection = await ActivityCollection.findById(collectionId);
+  if (!collection) throw new ApiError(404, 'Cobro no encontrado');
+
+  const activity = await Activity.findById(collection.activityId);
+  if (!activity) throw new ApiError(404, 'Actividad no encontrada');
+
+  const campus = await Campus.findById(collection.campusId).select('_id code name').lean();
+  await assertCampusAllowed(campus.code, campusScope);
+  await assertStudentMatchesAudience({ activity, studentId: payload.studentId });
+
+  const collectorUser = await User.findById(payload.collectorUserId)
+    .populate({ path: 'personId', select: 'names lastNames' })
+    .select('_id personId email roles campusScope isActive')
+    .lean();
+
+  if (!collectorUser || !collectorUser.isActive) {
+    throw new ApiError(404, 'Cobrador no encontrado');
+  }
+
+  const collectorRole = resolveCollectorRoleFromUser(collectorUser, collection.collectorRole);
+  if (!collectorRole) {
+    throw new ApiError(400, 'El usuario seleccionado no puede cobrar actividades');
+  }
+
+  const collectorCampusScope = Array.isArray(collectorUser.campusScope) ? collectorUser.campusScope.map(String) : [];
+  if (!collectorCampusScope.includes('ALL') && !collectorCampusScope.includes(campus.code)) {
+    throw new ApiError(400, 'El cobrador no tiene acceso al campus de la actividad');
+  }
+
+  const updated = await runInTransaction(async (session) => {
+    const currentParticipant = await ActivityParticipant.findById(collection.participantId).session(session);
+    if (!currentParticipant) throw new ApiError(404, 'Participante no encontrado');
+
+    let targetParticipant = await ActivityParticipant.findOne({
+      activityId: activity._id,
+      studentId: payload.studentId,
+    }).session(session);
+
+    const movingStudent = String(currentParticipant.studentId) !== String(payload.studentId);
+
+    if (!targetParticipant) {
+      [targetParticipant] = await ActivityParticipant.create([{
+        activityId: activity._id,
+        studentId: payload.studentId,
+        status: 'PENDING',
+        registeredByUserId: user.id,
+        registeredByRole: effectiveRole,
+        registeredAt: new Date(),
+      }], { session });
+    }
+
+    if (movingStudent && String(targetParticipant._id) !== String(currentParticipant._id) && targetParticipant.status === 'PAID') {
+      throw new ApiError(409, 'El alumno seleccionado ya figura como pagado en esta actividad');
+    }
+
+    const amount = roundMoney(payload.amount);
+    if (amount <= 0) throw new ApiError(400, 'Monto de cobro invalido');
+
+    collection.studentId = payload.studentId;
+    collection.participantId = targetParticipant._id;
+    collection.collectorUserId = collectorUser._id;
+    collection.collectorRole = collectorRole;
+    collection.amount = toDecimal(amount);
+    await collection.save({ session });
+
+    targetParticipant.studentId = payload.studentId;
+    targetParticipant.status = 'PAID';
+    targetParticipant.paidAt = collection.collectedAt;
+    targetParticipant.latestCollectionId = collection._id;
+    await targetParticipant.save({ session });
+
+    if (String(currentParticipant._id) !== String(targetParticipant._id)) {
+      currentParticipant.status = 'PENDING';
+      currentParticipant.paidAt = null;
+      currentParticipant.latestCollectionId = null;
+      await currentParticipant.save({ session });
+    }
+
+    await registerAuditLog({
+      entityType: 'ACTIVITY_COLLECTION',
+      entityId: collection._id,
+      action: 'ACTIVITY_COLLECTION_UPDATED',
+      performedBy: user.id,
+      campusId: activity.campusId,
+      payloadSnapshot: {
+        activityId: activity._id,
+        studentId: payload.studentId,
+        collectorUserId: collectorUser._id,
+        collectorRole,
+        amount,
+      },
+    });
+
+    return { collection, targetParticipant };
+  });
+
+  const student = await Student.findById(updated.collection.studentId)
+    .populate({ path: 'personId', select: 'names lastNames dni' })
+    .select('_id internalCode bankCode personId')
+    .lean();
+
+  return {
+    collection: {
+      id: String(updated.collection._id),
+      receiptInternalCode: updated.collection.receiptInternalCode,
+      amount: roundMoney(toMoney(updated.collection.amount)),
+      method: updated.collection.method,
+      methodLabel: mapMethodLabel(updated.collection.method),
+      collectedAt: updated.collection.collectedAt,
+      notes: updated.collection.notes || null,
+      collectorRole,
+      collectorUserId: String(collectorUser._id),
+      collectorName: collectorUser?.personId
+        ? [collectorUser.personId.lastNames, collectorUser.personId.names].filter(Boolean).join(', ')
+        : collectorUser?.email || null,
+      student: {
+        id: String(student?._id || payload.studentId),
+        internalCode: student?.internalCode || null,
+        bankCode: student?.bankCode || null,
+        names: student?.personId?.names || null,
+        lastNames: student?.personId?.lastNames || null,
+        dni: student?.personId?.dni || null,
+      },
+      activity: {
+        id: String(activity._id),
+        name: activity.name,
+        amount: roundMoney(toMoney(activity.amount)),
+      },
+    },
+  };
+}
+
 export async function getActivityReportService({ activityId, user, activeRole, campusScope = [] }) {
   const effectiveRole = resolveEffectiveRole(user, activeRole);
   assertManageAllowed(effectiveRole);
@@ -1101,6 +1246,54 @@ export async function searchActivityStudentsService({ filters, user, activeRole,
       const bNames = String(b.names || '');
       return aNames.localeCompare(bNames, 'es');
     })
+    .slice(0, filters.limit);
+
+  return { items: filtered };
+}
+
+export async function searchActivityCollectorsService({ filters, user, activeRole, campusScope = [] }) {
+  const effectiveRole = resolveEffectiveRole(user, activeRole);
+  assertManageAllowed(effectiveRole);
+
+  if (filters.campus) {
+    await assertCampusAllowed(filters.campus, campusScope);
+  }
+
+  const regex = buildAccentInsensitiveRegex(filters.q);
+  const people = await Person.find({
+    $or: [{ names: regex }, { lastNames: regex }],
+  }).select('_id').limit(filters.limit * 4).lean();
+
+  const users = await User.find({
+    isActive: true,
+    roles: { $in: ['ADMIN', 'SECRETARY', 'AUXILIAR'] },
+    $or: [
+      { email: regex },
+      ...(people.length ? [{ personId: { $in: people.map((row) => row._id) } }] : []),
+    ],
+  })
+    .populate({ path: 'personId', select: 'names lastNames' })
+    .select('_id personId email roles campusScope')
+    .limit(filters.limit * 4)
+    .lean();
+
+  const filtered = users
+    .filter((row) => {
+      const rowCampusScope = Array.isArray(row.campusScope) ? row.campusScope.map(String) : [];
+      if (!filters.campus) return true;
+      return rowCampusScope.includes('ALL') || rowCampusScope.includes(filters.campus);
+    })
+    .map((row) => ({
+      id: String(row._id),
+      name: row?.personId
+        ? [row.personId.lastNames, row.personId.names].filter(Boolean).join(', ')
+        : row.email,
+      email: row.email,
+      collectorRole: resolveCollectorRoleFromUser(row) || null,
+      roles: Array.isArray(row.roles) ? row.roles : [],
+      campusScope: Array.isArray(row.campusScope) ? row.campusScope : [],
+    }))
+    .sort((a, b) => String(a.name || '').localeCompare(String(b.name || ''), 'es'))
     .slice(0, filters.limit);
 
   return { items: filtered };

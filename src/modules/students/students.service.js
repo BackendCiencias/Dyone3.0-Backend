@@ -44,6 +44,58 @@ function normalizeDni(dni) {
   return normalized;
 }
 
+function normalizeBankCodeValue(value) {
+  const normalized = String(value || '').trim();
+  return normalized || null;
+}
+
+function normalizeLegacyBankCodes(values = []) {
+  const seen = new Set();
+  return (Array.isArray(values) ? values : [])
+    .map((value) => normalizeBankCodeValue(value))
+    .filter((value) => {
+      if (!value || seen.has(value)) return false;
+      seen.add(value);
+      return true;
+    });
+}
+
+async function assertBankCodeAvailable(bankCode, currentStudentId = null) {
+  const normalizedBankCode = normalizeBankCodeValue(bankCode);
+  if (!normalizedBankCode) return;
+
+  const duplicatedStudent = await Student.findOne({
+    _id: currentStudentId ? { $ne: currentStudentId } : { $exists: true },
+    $or: [
+      { bankCode: normalizedBankCode },
+      { legacyBankCodes: normalizedBankCode },
+    ],
+  })
+    .select('_id')
+    .lean();
+
+  if (duplicatedStudent) {
+    throw new ApiError(409, 'Cod. Caja Arequipa ya esta asignado a otro estudiante');
+  }
+}
+
+function buildBankCodeUpdateState(student, nextBankCodeInput) {
+  const currentBankCode = normalizeBankCodeValue(student?.bankCode);
+  const nextBankCode = normalizeBankCodeValue(nextBankCodeInput);
+  const nextLegacyBankCodes = normalizeLegacyBankCodes(student?.legacyBankCodes);
+
+  if (currentBankCode && currentBankCode !== nextBankCode) {
+    nextLegacyBankCodes.push(currentBankCode);
+  }
+
+  const dedupedLegacy = normalizeLegacyBankCodes(nextLegacyBankCodes).filter((code) => code !== nextBankCode);
+
+  return {
+    bankCode: nextBankCode,
+    legacyBankCodes: dedupedLegacy,
+  };
+}
+
 function mapTutorLinkSummary(tutor) {
   if (!tutor) return null;
 
@@ -391,8 +443,8 @@ export async function searchStudentAutocompleteService({ q, dni, limit }) {
         .lean()
       : Promise.resolve([]),
     qRegex
-      ? Student.find({ $or: [{ internalCode: qRegex }, { bankCode: qRegex }] })
-        .select('_id personId')
+      ? Student.find({ $or: [{ internalCode: qRegex }, { bankCode: qRegex }, { legacyBankCodes: qRegex }] })
+        .select('_id personId internalCode bankCode legacyBankCodes')
         .limit(peopleFetchLimit)
         .lean()
       : Promise.resolve([]),
@@ -407,13 +459,16 @@ export async function searchStudentAutocompleteService({ q, dni, limit }) {
 
   const orderedPersonIds = Array.from(personIdSet).map((id) => new mongoose.Types.ObjectId(id));
   const students = await Student.find({ personId: { $in: orderedPersonIds } })
-    .select('_id personId')
+    .select('_id personId internalCode bankCode legacyBankCodes')
     .populate({ path: 'personId', select: 'names lastNames dni' })
     .lean();
   const mapped = students
     .filter((student) => student.personId)
     .map((student) => ({
       _id: student._id,
+      internalCode: student.internalCode || null,
+      bankCode: student.bankCode || null,
+      legacyBankCodes: normalizeLegacyBankCodes(student.legacyBankCodes),
       personId: {
         _id: student.personId._id,
         names: student.personId.names,
@@ -1230,7 +1285,8 @@ export async function updateStudentIdentityService(studentId, payload, actor = n
 
   const studentUpdates = {};
   if (payload.bankCode !== undefined) {
-    studentUpdates.bankCode = String(payload.bankCode || '').trim() || null;
+    await assertBankCodeAvailable(payload.bankCode, studentId);
+    Object.assign(studentUpdates, buildBankCodeUpdateState(student, payload.bankCode));
   }
 
   if (!Object.keys(personUpdates).length && !Object.keys(studentUpdates).length) {
@@ -1294,11 +1350,11 @@ export async function updateStudentBankCodeService(studentId, bankCode, actor = 
   const student = await Student.findById(studentId).lean();
   if (!student) throw new ApiError(404, 'Estudiante no encontrado');
 
-  const normalizedBankCode = typeof bankCode === 'string' ? bankCode.trim() : null;
-  const nextBankCode = normalizedBankCode ? normalizedBankCode : null;
+  await assertBankCodeAvailable(bankCode, studentId);
+  const nextState = buildBankCodeUpdateState(student, bankCode);
 
   try {
-    const updated = await updateStudentById(studentId, { $set: { bankCode: nextBankCode } });
+    const updated = await updateStudentById(studentId, { $set: nextState });
 
     if (actor) {
       await registerAuditLog({
@@ -1306,7 +1362,7 @@ export async function updateStudentBankCodeService(studentId, bankCode, actor = 
         entityId: studentId,
         action: 'STUDENT_BANK_CODE_UPDATED',
         performedBy: actor,
-        payloadSnapshot: { studentId, bankCode: nextBankCode },
+        payloadSnapshot: { studentId, bankCode: nextState.bankCode, legacyBankCodes: nextState.legacyBankCodes },
       });
     }
 

@@ -7,6 +7,7 @@ const studentSchema = new mongoose.Schema(
     internalCode: { type: String, required: true, unique: true, index: true },
 
     bankCode: { type: String, unique: true, sparse: true, index: true, trim: true },
+    legacyBankCodes: [{ type: String, trim: true, index: true }],
     previousCampus: { type: String, trim: true },
 
     activeStatus: { type: String, enum: ['ACTIVE', 'INACTIVE', 'GRADUATED'], default: 'ACTIVE', index: true },

@@ -8,7 +8,9 @@ import {
   getActivityParticipantsService,
   getActivityReportService,
   listActivitiesService,
+  searchActivityCollectorsService,
   searchActivityStudentsService,
+  updateActivityCollectionService,
   updateActivityService,
 } from './activities.service.js';
 
@@ -90,6 +92,17 @@ export const createActivityCollection = asyncHandler(async (req, res) => {
   res.status(201).json(data);
 });
 
+export const updateActivityCollection = asyncHandler(async (req, res) => {
+  const data = await updateActivityCollectionService({
+    collectionId: req.validatedParams.collectionId,
+    payload: req.validated,
+    user: req.user,
+    activeRole: getActiveRoleHeader(req),
+    campusScope: req.campusScope,
+  });
+  res.json(data);
+});
+
 export const getActivityReport = asyncHandler(async (req, res) => {
   const data = await getActivityReportService({
     activityId: req.validatedParams.activityId,
@@ -102,6 +115,16 @@ export const getActivityReport = asyncHandler(async (req, res) => {
 
 export const searchActivityStudents = asyncHandler(async (req, res) => {
   const data = await searchActivityStudentsService({
+    filters: req.validatedQuery,
+    user: req.user,
+    activeRole: getActiveRoleHeader(req),
+    campusScope: req.campusScope,
+  });
+  res.json(data);
+});
+
+export const searchActivityCollectors = asyncHandler(async (req, res) => {
+  const data = await searchActivityCollectorsService({
     filters: req.validatedQuery,
     user: req.user,
     activeRole: getActiveRoleHeader(req),

@@ -12,7 +12,7 @@ export const paymentCreateSchema = z.object({
   studentId: z.string().min(1).optional(),
   amount: z.number().positive().optional(),
   paidAt: z.string().optional(),
-  method: z.enum(['CASH', 'YAPE', 'TRANSFER']),
+  method: z.enum(['CASH', 'YAPE', 'TRANSFER', 'CAJA_AREQUIPA']),
   receiptNumber: z.string().trim().min(1).max(6).optional(),
   voucherNumber: z.string().min(1).optional(),
   allocations: z.array(allocationSchema).min(1).optional(),
@@ -42,7 +42,7 @@ export const paymentIdParamsSchema = z.object({
 });
 
 export const paymentReceiptCorrectionSchema = z.object({
-  method: z.enum(['CASH', 'YAPE', 'TRANSFER']),
+  method: z.enum(['CASH', 'YAPE', 'TRANSFER', 'CAJA_AREQUIPA']),
   amount: z.number().positive().optional(),
   paidAt: z.string().trim().min(1).optional(),
   receiptNumber: z.string().trim().max(6).optional().or(z.literal('')),
@@ -74,7 +74,7 @@ export const debtorsQuerySchema = z.object({
   conceptId: z.string().optional(),
   q: z.string().optional(),
   onlyOverdue: z.coerce.boolean().optional(),
-  limit: z.coerce.number().int().min(1).max(50).optional(),
+  limit: z.coerce.number().int().min(1).max(1000).optional(),
   page: z.coerce.number().int().min(1).optional(),
 });
 
@@ -83,7 +83,19 @@ export const debtorsSearchQuerySchema = z.object({
   campusId: z.string().optional(),
   cycleId: z.string().optional(),
   q: z.string().trim().min(2),
-  limit: z.coerce.number().int().min(1).max(60).optional(),
+  limit: z.coerce.number().int().min(1).max(1000).optional(),
+});
+
+export const debtorsPrintBodySchema = z.object({
+  studentIds: z.array(objectIdSchema).min(1, 'Debes seleccionar al menos un alumno'),
+  filters: z.object({
+    campus: z.string().optional(),
+    campusId: z.string().optional(),
+    cycleId: z.string().optional(),
+    conceptId: z.string().optional(),
+    q: z.string().trim().optional(),
+    onlyOverdue: z.coerce.boolean().optional(),
+  }).optional().default({}),
 });
 
 export const paymentsDailySummaryQuerySchema = z.object({
@@ -98,4 +110,18 @@ export const paymentsDailyTransactionsQuerySchema = z.object({
   date: z.string().regex(/^\d{4}-\d{2}-\d{2}$/).optional(),
   page: z.coerce.number().int().min(1).optional(),
   limit: z.coerce.number().int().min(1).max(100).optional(),
+});
+
+export const cajaArequipaProcessBodySchema = z.object({
+  campus: z.string().trim().min(1).optional(),
+  fileName: z.string().trim().min(1).max(200),
+  pdfBase64: z.string().trim().min(32),
+});
+
+export const cajaArequipaImportParamsSchema = z.object({
+  importId: objectIdSchema,
+});
+
+export const cajaArequipaConfirmBodySchema = z.object({
+  importId: objectIdSchema,
 });

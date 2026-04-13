@@ -101,6 +101,7 @@ router.patch(
 router.patch(
   '/:id/bank-code',
   requireRoles(['ADMIN', 'SECRETARY']),
+  authorizeByCampusScope(async (req) => findStudentCampusById(req.params.id)),
   validateRequest({ params: studentIdParamsSchema, body: studentBankCodeSchema }),
   updateStudentBankCode
 );

@@ -3,10 +3,16 @@ import {
   createPaymentService,
   getDebtorsSearchService,
   getDebtorsService,
+  getDebtorsPrintService,
   getDailyPaymentSummaryService,
   getDailyPaymentTransactionsService,
   updatePaymentReceiptServiceV2,
 } from './payments.service.js';
+import {
+  confirmCajaArequipaImportService,
+  getCajaArequipaReviewService,
+  processCajaArequipaPdfService,
+} from './cajaArequipa.service.js';
 
 export const createPayment = asyncHandler(async (req, res) => {
   const result = await createPaymentService({
@@ -54,6 +60,16 @@ export const getDailyPaymentSummary = asyncHandler(async (req, res) => {
   res.json(result);
 });
 
+export const printDebtors = asyncHandler(async (req, res) => {
+  const { studentIds, filters } = req.validated;
+  const result = await getDebtorsPrintService({
+    studentIds,
+    filters,
+    campusScope: req.campusScope,
+  });
+  res.json(result);
+});
+
 export const getDailyPaymentTransactions = asyncHandler(async (req, res) => {
   const { campus, campusId, date, page, limit } = req.validatedQuery || req.query;
   const result = await getDailyPaymentTransactionsService({
@@ -72,6 +88,37 @@ export const updatePaymentReceipt = asyncHandler(async (req, res) => {
     payload: req.validated,
     userId: req.user.id,
     userRoles: req.user?.roles || [],
+  });
+  res.json(result);
+});
+
+export const processCajaArequipa = asyncHandler(async (req, res) => {
+  const { campus, fileName, pdfBase64 } = req.validated;
+  const result = await processCajaArequipaPdfService({
+    campus,
+    fileName,
+    pdfBase64,
+    campusScope: req.campusScope,
+    requestedByUserId: req.user.id,
+  });
+  res.status(202).json(result);
+});
+
+export const getCajaArequipaReview = asyncHandler(async (req, res) => {
+  const { importId } = req.validatedParams || req.params;
+  const result = await getCajaArequipaReviewService({
+    importId,
+    campusScope: req.campusScope,
+  });
+  res.json(result);
+});
+
+export const confirmCajaArequipaImport = asyncHandler(async (req, res) => {
+  const { importId } = req.validated;
+  const result = await confirmCajaArequipaImportService({
+    importId,
+    campusScope: req.campusScope,
+    userId: req.user.id,
   });
   res.json(result);
 });

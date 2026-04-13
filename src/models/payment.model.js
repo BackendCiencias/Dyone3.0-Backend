@@ -6,7 +6,7 @@ const paymentSchema = new mongoose.Schema({
   campusId: { type: mongoose.Schema.Types.ObjectId, ref: 'Campus', required: true },
   paidAt: { type: Date, default: Date.now },
   totalAmount: { type: mongoose.Types.Decimal128, required: true },
-  method: { type: String, enum: ['CASH', 'YAPE', 'TRANSFER'], required: true },
+  method: { type: String, enum: ['CASH', 'YAPE', 'TRANSFER', 'CAJA_AREQUIPA'], required: true },
   internalCode: { type: String, required: true, unique: true, index: true },
   receiptNumber: { type: String, default: null },
   voucherNumber: { type: String, required: true },

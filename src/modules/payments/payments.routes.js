@@ -5,7 +5,11 @@ import { validate } from '../../middlewares/validate.js';
 import { validateRequest } from '../../middlewares/validateRequest.js';
 import { attachCampusScope, authorizeByCampusScope } from '../../shared/authorization.middleware.js';
 import {
+  cajaArequipaConfirmBodySchema,
+  cajaArequipaImportParamsSchema,
+  cajaArequipaProcessBodySchema,
   debtorsQuerySchema,
+  debtorsPrintBodySchema,
   debtorsSearchQuerySchema,
   paymentCreateSchema,
   paymentIdParamsSchema,
@@ -14,10 +18,14 @@ import {
   paymentsDailyTransactionsQuerySchema,
 } from './payments.schemas.js';
 import {
+  confirmCajaArequipaImport,
   createPayment,
+  getCajaArequipaReview,
   getDailyPaymentSummary,
   getDailyPaymentTransactions,
   getDebtors,
+  printDebtors,
+  processCajaArequipa,
   searchDebtors,
   updatePaymentReceipt,
 } from './payments.controller.js';
@@ -39,7 +47,11 @@ router.patch(
 );
 router.get('/daily-summary', requireRoles(PAYMENT_READ_ROLES), attachCampusScope(), validateRequest({ query: paymentsDailySummaryQuerySchema }), getDailyPaymentSummary);
 router.get('/daily-transactions', requireRoles(PAYMENT_READ_ROLES), attachCampusScope(), validateRequest({ query: paymentsDailyTransactionsQuerySchema }), getDailyPaymentTransactions);
+router.post('/caja-arequipa/process', requireRoles(['ADMIN', 'SECRETARY']), attachCampusScope(), validateRequest({ body: cajaArequipaProcessBodySchema }), processCajaArequipa);
+router.get('/caja-arequipa/review/:importId', requireRoles(['ADMIN', 'SECRETARY']), attachCampusScope(), validateRequest({ params: cajaArequipaImportParamsSchema }), getCajaArequipaReview);
+router.post('/caja-arequipa/confirm', requireRoles(['ADMIN', 'SECRETARY']), attachCampusScope(), validateRequest({ body: cajaArequipaConfirmBodySchema }), confirmCajaArequipaImport);
 router.get('/debtors/search', requireRoles(PAYMENT_READ_ROLES), attachCampusScope(), validateRequest({ query: debtorsSearchQuerySchema }), searchDebtors);
 router.get('/debtors', requireRoles(PAYMENT_READ_ROLES), attachCampusScope(), validateRequest({ query: debtorsQuerySchema }), getDebtors);
+router.post('/debtors/print', requireRoles(['ADMIN', 'SECRETARY']), attachCampusScope(), validateRequest({ body: debtorsPrintBodySchema }), printDebtors);
 
 export default router;

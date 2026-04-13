@@ -105,6 +105,12 @@ export const activityCollectionParamsSchema = z.object({
   collectionId: objectIdSchema,
 });
 
+export const updateActivityCollectionBodySchema = z.object({
+  studentId: objectIdSchema,
+  collectorUserId: objectIdSchema,
+  amount: amountSchema,
+});
+
 export const listActivitiesQuerySchema = z.object({
   campus: z.any().optional().transform((value) => {
     if (value === undefined || value === null || value === '') return null;
@@ -151,6 +157,19 @@ export const createCollectionBodySchema = z.object({
 });
 
 export const searchActivityStudentsQuerySchema = z.object({
+  q: z.string().trim().min(1, 'q es requerido'),
+  campus: z.any().optional().transform((value) => {
+    if (value === undefined || value === null || value === '') return null;
+    return normalizeCampus(value);
+  }).refine((value) => value === null || CAMPUS_CODES.includes(value), { message: 'campus invalido' }),
+  limit: z.any().optional().transform((value) => {
+    const parsed = Number(value);
+    if (!Number.isFinite(parsed)) return 10;
+    return Math.max(1, Math.min(25, Math.trunc(parsed)));
+  }),
+});
+
+export const searchActivityCollectorsQuerySchema = z.object({
   q: z.string().trim().min(1, 'q es requerido'),
   campus: z.any().optional().transform((value) => {
     if (value === undefined || value === null || value === '') return null;

@@ -30,6 +30,7 @@ function getMethodLabel(method) {
   if (normalized === 'CASH') return 'Efectivo';
   if (normalized === 'YAPE') return 'Yape';
   if (normalized === 'TRANSFER') return 'Transferencia';
+  if (normalized === 'CAJA_AREQUIPA') return 'Caja Arequipa';
   return method || 'Sin metodo';
 }
 
@@ -198,7 +199,7 @@ async function getLatestCampusCodeMap(studentIds) {
   return result;
 }
 
-async function getPaymentsByOperationalDate({ date, campus, campusScope = [], page = 1, limit = 25 }) {
+async function getPaymentsByOperationalDate({ date, campus, campusScope = [], page = 1, limit = 25, excludeMethods = [] }) {
   const normalizedPage = Math.max(1, Number(page) || 1);
   const normalizedLimit = Math.max(1, Math.min(100, Number(limit) || 25));
   const { campusIds } = await resolveScopedCampusFilter({ campus, campusScope });
@@ -211,6 +212,12 @@ async function getPaymentsByOperationalDate({ date, campus, campusScope = [], pa
     },
   };
   if (campusIds.length) match.campusId = { $in: campusIds };
+  const normalizedExcludeMethods = Array.isArray(excludeMethods)
+    ? excludeMethods.map((value) => String(value || '').trim().toUpperCase()).filter(Boolean)
+    : [];
+  if (normalizedExcludeMethods.length) {
+    match.method = { $nin: normalizedExcludeMethods };
+  }
 
   const payments = await Payment.find(match)
     .sort({ paidAt: -1, _id: -1 })
@@ -298,12 +305,13 @@ function toConceptCodeMap(conceptColumns, conceptStatusById) {
 
 async function buildStudentPaymentRows({ students, cycleId, campusIds = [], conceptId, conceptColumns }) {
   const studentIds = students.map((student) => student._id);
-  const campusMap = await getLatestCampusCodeMap(studentIds);
+  const enrollmentContexts = await getEnrollmentContextMapByStudentIds(studentIds, { cycleId: cycleId || null });
   const chargeSummaryMap = await summarizeChargesForStudentIds({ studentIds, cycleId, campusIds, conceptId });
 
   return students.map((student) => {
     const key = String(student._id);
     const person = student.personId || {};
+    const context = enrollmentContexts.get(key);
     const summary = chargeSummaryMap.get(key) || { totalPending: 0, totalOverdue: 0, conceptStatusByCode: {} };
 
     return {
@@ -312,7 +320,11 @@ async function buildStudentPaymentRows({ students, cycleId, campusIds = [], conc
       lastNames: person.lastNames || null,
       dni: person.dni || null,
       code: student.internalCode || null,
-      campus: campusMap.get(key) || null,
+      campus: context?.campus?.code || null,
+      classroomLabel: context?.classroom?.displayName || null,
+      level: context?.classroom?.level || null,
+      grade: context?.classroom?.grade || null,
+      section: context?.classroom?.section || null,
       totalPending: summary.totalPending,
       totalOverdue: summary.totalOverdue,
       conceptStatusByCode: toConceptCodeMap(conceptColumns, summary.conceptStatusByCode),
@@ -414,7 +426,8 @@ async function createPaymentAtomic({
 
     const resolvedCampusId = campusId || scope.campusId;
     if (!resolvedCampusId) throw new ApiError(400, 'No se pudo resolver campusId para registrar el pago');
-    const normalizedReceiptNumber = normalizeReceiptNumber(receiptNumber || voucherNumber);
+    const normalizedReceiptNumber = normalizeReceiptNumber(receiptNumber || '');
+    const normalizedVoucherNumber = normalizeVoucherNumber(voucherNumber || '') || normalizedReceiptNumber || internalCode;
     const internalCode = await nextPaymentInternalCode(session);
 
     const [createdPayment] = await Payment.create([
@@ -427,7 +440,7 @@ async function createPaymentAtomic({
         method,
         internalCode,
         receiptNumber: normalizedReceiptNumber,
-        voucherNumber: normalizedReceiptNumber || internalCode,
+        voucherNumber: normalizedVoucherNumber,
         createdByUserId,
         notes,
       },
@@ -808,7 +821,7 @@ export async function updatePaymentReceiptServiceV2({ paymentId, payload, userId
 }
 
 export async function getDebtorsService({ cycleId, conceptId, campus, campusScope = [], onlyOverdue = false, limit = 25, page = 1 }) {
-  const normalizedLimit = Math.max(1, Math.min(50, Number(limit) || 25));
+  const normalizedLimit = Math.max(1, Math.min(1000, Number(limit) || 25));
   const normalizedPage = Math.max(1, Number(page) || 1);
   const { campusIds } = await resolveScopedCampusFilter({ campus, campusScope });
   const conceptColumns = await getActiveConceptColumns();
@@ -890,7 +903,7 @@ export async function getDebtorsService({ cycleId, conceptId, campus, campusScop
 }
 
 export async function getDebtorsSearchService({ q, cycleId, campus, campusScope = [], limit = 15 }) {
-  const normalizedLimit = Math.max(1, Math.min(60, Number(limit) || 15));
+  const normalizedLimit = Math.max(1, Math.min(1000, Number(limit) || 15));
   const normalizedQ = normalizeSearchTerm(q);
   const { campusIds, allowedCodes } = await resolveScopedCampusFilter({ campus, campusScope });
   const conceptColumns = await getActiveConceptColumns();
@@ -955,6 +968,75 @@ export async function getDebtorsSearchService({ q, cycleId, campus, campusScope 
   };
 }
 
+export async function getDebtorsPrintService({ studentIds = [], filters = {}, campusScope = [] }) {
+  const normalizedStudentIds = [...new Set(
+    (Array.isArray(studentIds) ? studentIds : [])
+      .map((id) => String(id || '').trim())
+      .filter((id) => mongoose.Types.ObjectId.isValid(id))
+  )];
+
+  if (!normalizedStudentIds.length) {
+    throw new ApiError(400, 'Debes seleccionar al menos un alumno');
+  }
+
+  const cycleId = filters?.cycleId;
+  const conceptId = filters?.conceptId;
+  const campus = filters?.campus || filters?.campusId;
+  const onlyOverdue = Boolean(filters?.onlyOverdue);
+  const { campusIds } = await resolveScopedCampusFilter({ campus, campusScope });
+  const conceptColumns = await getActiveConceptColumns();
+
+  const students = await Student.find({ _id: { $in: normalizedStudentIds } })
+    .populate({ path: 'personId', select: 'names lastNames dni' })
+    .select('_id personId internalCode')
+    .lean();
+
+  const rows = await buildStudentPaymentRows({
+    students,
+    cycleId,
+    campusIds,
+    conceptId,
+    conceptColumns,
+  });
+
+  const rowById = new Map(rows.map((row) => [row.studentId, row]));
+  const items = normalizedStudentIds
+    .map((studentId) => rowById.get(studentId))
+    .filter(Boolean)
+    .filter((row) => row.totalPending > 0)
+    .filter((row) => !onlyOverdue || row.totalOverdue > 0)
+    .map((row) => {
+      const conceptsSummary = conceptColumns
+        .map((column) => {
+          const concept = row.conceptStatusByCode?.[column.code];
+          const pendingAmount = roundMoney(toMoney(concept?.pendingAmount));
+          if (pendingAmount <= 0) return null;
+          return {
+            code: column.code,
+            label: column.name,
+            pendingAmount,
+            overdueAmount: roundMoney(toMoney(concept?.overdueAmount)),
+          };
+        })
+        .filter(Boolean);
+
+      return {
+        ...row,
+        fullName: [row.lastNames, row.names].filter(Boolean).join(', ') || '-',
+        pendingNonOverdue: roundMoney(Math.max(0, roundMoney(row.totalPending) - roundMoney(row.totalOverdue))),
+        totalPending: roundMoney(row.totalPending),
+        totalOverdue: roundMoney(row.totalOverdue),
+        conceptsSummary,
+      };
+    });
+
+  return {
+    generatedAt: new Date().toISOString(),
+    conceptColumns,
+    items,
+  };
+}
+
 export async function getDailyPaymentSummaryService({ date, campus, campusScope = [] }) {
   const { day, items: payments } = await getPaymentsByOperationalDate({
     date,
@@ -962,6 +1044,7 @@ export async function getDailyPaymentSummaryService({ date, campus, campusScope 
     campusScope,
     page: 1,
     limit: 500,
+    excludeMethods: ['CAJA_AREQUIPA'],
   });
 
   const totalsByMethodMap = {
@@ -1006,7 +1089,14 @@ export async function getDailyPaymentSummaryService({ date, campus, campusScope 
 }
 
 export async function getDailyPaymentTransactionsService({ date, campus, page = 1, limit = 25, campusScope = [] }) {
-  const result = await getPaymentsByOperationalDate({ date, campus, campusScope, page, limit });
+  const result = await getPaymentsByOperationalDate({
+    date,
+    campus,
+    campusScope,
+    page,
+    limit,
+    excludeMethods: ['CAJA_AREQUIPA'],
+  });
   const paymentIds = result.items.map((payment) => payment._id);
 
   const allocations = paymentIds.length

@@ -427,8 +427,8 @@ async function createPaymentAtomic({
     const resolvedCampusId = campusId || scope.campusId;
     if (!resolvedCampusId) throw new ApiError(400, 'No se pudo resolver campusId para registrar el pago');
     const normalizedReceiptNumber = normalizeReceiptNumber(receiptNumber || '');
-    const normalizedVoucherNumber = normalizeVoucherNumber(voucherNumber || '') || normalizedReceiptNumber || internalCode;
     const internalCode = await nextPaymentInternalCode(session);
+    const normalizedVoucherNumber = normalizeVoucherNumber(voucherNumber || '') || normalizedReceiptNumber || internalCode;
 
     const [createdPayment] = await Payment.create([
       {

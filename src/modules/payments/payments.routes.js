@@ -14,10 +14,12 @@ import {
   paymentCreateSchema,
   paymentIdParamsSchema,
   paymentReceiptCorrectionSchema,
+  paymentsAccountingQuerySchema,
   paymentsDailySummaryQuerySchema,
   paymentsDailyTransactionsQuerySchema,
 } from './payments.schemas.js';
 import {
+  getAccountingPayments,
   confirmCajaArequipaImport,
   createPayment,
   getCajaArequipaReview,
@@ -45,6 +47,7 @@ router.patch(
   validateRequest({ params: paymentIdParamsSchema, body: paymentReceiptCorrectionSchema }),
   updatePaymentReceipt,
 );
+router.get('/accounting', requireRoles(['ADMIN']), attachCampusScope(), validateRequest({ query: paymentsAccountingQuerySchema }), getAccountingPayments);
 router.get('/daily-summary', requireRoles(PAYMENT_READ_ROLES), attachCampusScope(), validateRequest({ query: paymentsDailySummaryQuerySchema }), getDailyPaymentSummary);
 router.get('/daily-transactions', requireRoles(PAYMENT_READ_ROLES), attachCampusScope(), validateRequest({ query: paymentsDailyTransactionsQuerySchema }), getDailyPaymentTransactions);
 router.post('/caja-arequipa/process', requireRoles(['ADMIN', 'SECRETARY']), attachCampusScope(), validateRequest({ body: cajaArequipaProcessBodySchema }), processCajaArequipa);

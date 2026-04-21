@@ -566,6 +566,7 @@ export async function updatePaymentReceiptServiceV2({ paymentId, payload, userId
   if (!mongoose.Types.ObjectId.isValid(paymentId)) throw new ApiError(400, 'paymentId inválido');
 
   const isAdmin = hasRole(userRoles, 'ADMIN');
+  const isSecretary = hasRole(userRoles, 'SECRETARY');
   const wantsReassignment = Boolean(payload.reassignStudentId || (Array.isArray(payload.reassignAllocations) && payload.reassignAllocations.length));
   const wantsAmountChange = payload.amount !== undefined && payload.amount !== null;
   const wantsPaidAtChange = Boolean(String(payload.paidAt || '').trim());
@@ -574,9 +575,6 @@ export async function updatePaymentReceiptServiceV2({ paymentId, payload, userId
   }
   if (wantsAmountChange && !isAdmin) {
     throw new ApiError(403, 'Solo admin puede modificar el monto del recibo');
-  }
-  if (wantsPaidAtChange && !isAdmin) {
-    throw new ApiError(403, 'Solo admin puede modificar la fecha del recibo');
   }
 
   const correctionResult = await runInTransaction(async (session) => {
@@ -666,6 +664,13 @@ export async function updatePaymentReceiptServiceV2({ paymentId, payload, userId
       .populate('campusId')
       .session(session);
     if (!payment) throw new ApiError(404, 'Pago no encontrado');
+
+    const paymentMethod = String(payment.method || '').trim().toUpperCase();
+    const hasPhysicalReceipt = Boolean(String(payment.receiptNumber || '').trim());
+    const canSecretaryEditPaidAt = isSecretary && (hasPhysicalReceipt || paymentMethod === 'CAJA_AREQUIPA');
+    if (wantsPaidAtChange && !isAdmin && !canSecretaryEditPaidAt) {
+      throw new ApiError(403, 'Solo admin o secretaría en pagos físicos/Caja Arequipa puede modificar la fecha del recibo');
+    }
 
     const currentAllocations = await PaymentAllocation.find({ paymentId: payment._id })
       .populate('chargeId')
@@ -1181,6 +1186,57 @@ export async function getDailyPaymentTransactionsService({ date, campus, page = 
       page: result.page,
       limit: result.limit,
       hasNext: result.hasNext,
+    },
+  };
+}
+
+export async function getAccountingPaymentsService({ campus, method, page = 1, limit = 25, campusScope = [] }) {
+  const normalizedPage = Math.max(1, Number(page) || 1);
+  const normalizedLimit = Math.max(1, Math.min(100, Number(limit) || 25));
+  const { campusIds } = await resolveScopedCampusFilter({ campus, campusScope });
+
+  const match = {};
+  if (campusIds.length) match.campusId = { $in: campusIds };
+  if (method) match.method = String(method).trim().toUpperCase();
+
+  const payments = await Payment.find(match)
+    .sort({ paidAt: -1, _id: -1 })
+    .skip((normalizedPage - 1) * normalizedLimit)
+    .limit(normalizedLimit + 1)
+    .populate({ path: 'studentId', populate: { path: 'personId' } })
+    .populate('campusId', 'code name')
+    .lean();
+
+  const sliced = payments.length > normalizedLimit ? payments.slice(0, normalizedLimit) : payments;
+  const items = sliced.map((payment) => {
+    const student = payment.studentId || {};
+    const person = student.personId || {};
+
+    return {
+      paymentId: String(payment._id),
+      paidAt: payment.paidAt || null,
+      method: payment.method,
+      methodLabel: getMethodLabel(payment.method),
+      amount: roundMoney(toMoney(payment.totalAmount)),
+      internalCode: payment.internalCode || null,
+      receiptNumber: payment.receiptNumber || null,
+      voucherNumber: payment.voucherNumber || null,
+      note: payment.notes || null,
+      campusCode: payment.campusId?.code || null,
+      campusName: payment.campusId?.name || null,
+      studentId: student?._id ? String(student._id) : null,
+      studentName: [person.lastNames, person.names].filter(Boolean).join(', ') || 'Alumno',
+      studentDni: person.dni || null,
+      studentCode: student.internalCode || null,
+    };
+  });
+
+  return {
+    items,
+    pageInfo: {
+      page: normalizedPage,
+      limit: normalizedLimit,
+      hasNext: payments.length > normalizedLimit,
     },
   };
 }

@@ -112,6 +112,14 @@ export const paymentsDailyTransactionsQuerySchema = z.object({
   limit: z.coerce.number().int().min(1).max(100).optional(),
 });
 
+export const paymentsAccountingQuerySchema = z.object({
+  campus: z.string().optional(),
+  campusId: z.string().optional(),
+  method: z.enum(['CASH', 'YAPE', 'TRANSFER', 'CAJA_AREQUIPA']).optional(),
+  page: z.coerce.number().int().min(1).optional(),
+  limit: z.coerce.number().int().min(1).max(100).optional(),
+});
+
 export const cajaArequipaProcessBodySchema = z.object({
   campus: z.string().trim().min(1).optional(),
   fileName: z.string().trim().min(1).max(200),

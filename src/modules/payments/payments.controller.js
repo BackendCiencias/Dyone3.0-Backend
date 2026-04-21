@@ -1,6 +1,7 @@
 import { asyncHandler } from '../../utils/asyncHandler.js';
 import {
   createPaymentService,
+  getAccountingPaymentsService,
   getDebtorsSearchService,
   getDebtorsService,
   getDebtorsPrintService,
@@ -75,6 +76,18 @@ export const getDailyPaymentTransactions = asyncHandler(async (req, res) => {
   const result = await getDailyPaymentTransactionsService({
     campus: campus || campusId,
     date,
+    page,
+    limit,
+    campusScope: req.campusScope,
+  });
+  res.json(result);
+});
+
+export const getAccountingPayments = asyncHandler(async (req, res) => {
+  const { campus, campusId, method, page, limit } = req.validatedQuery || req.query;
+  const result = await getAccountingPaymentsService({
+    campus: campus || campusId,
+    method,
     page,
     limit,
     campusScope: req.campusScope,

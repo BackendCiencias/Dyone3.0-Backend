@@ -1208,16 +1208,54 @@ export async function getAccountingPaymentsService({ campus, method, page = 1, l
     .lean();
 
   const sliced = payments.length > normalizedLimit ? payments.slice(0, normalizedLimit) : payments;
+  const paymentIds = sliced.map((payment) => payment._id);
+  const allocations = paymentIds.length
+    ? await PaymentAllocation.find({ paymentId: { $in: paymentIds } })
+      .populate({
+        path: 'chargeId',
+        populate: { path: 'conceptId', select: 'code name' },
+      })
+      .lean()
+    : [];
+
+  const allocationsByPaymentId = new Map();
+  for (const allocation of allocations) {
+    const key = String(allocation.paymentId || '');
+    if (!allocationsByPaymentId.has(key)) allocationsByPaymentId.set(key, []);
+    allocationsByPaymentId.get(key).push(allocation);
+  }
+
   const items = sliced.map((payment) => {
     const student = payment.studentId || {};
     const person = student.personId || {};
+    const paymentAllocations = allocationsByPaymentId.get(String(payment._id)) || [];
+    const conceptLabels = [...new Set(
+      paymentAllocations
+        .map((allocation) => buildChargeLabel(allocation.chargeId || {}))
+        .map((label) => String(label || '').trim())
+        .filter(Boolean)
+    )];
+    const dueDates = paymentAllocations
+      .map((allocation) => allocation.chargeId?.dueDate || null)
+      .filter(Boolean)
+      .map((value) => new Date(value))
+      .filter((date) => !Number.isNaN(date.getTime()))
+      .sort((a, b) => a.getTime() - b.getTime());
+    const methodKey = String(payment.method || '').trim().toUpperCase();
+    const hasPhysicalReceipt = Boolean(String(payment.receiptNumber || '').trim());
+    const originLabel = methodKey === 'CAJA_AREQUIPA'
+      ? 'Caja Arequipa'
+      : (hasPhysicalReceipt ? 'Pago físico' : 'Pago web');
 
     return {
       paymentId: String(payment._id),
       paidAt: payment.paidAt || null,
       method: payment.method,
       methodLabel: getMethodLabel(payment.method),
+      originLabel,
       amount: roundMoney(toMoney(payment.totalAmount)),
+      conceptLabel: conceptLabels.length > 1 ? `Múltiple: ${conceptLabels.join(' · ')}` : (conceptLabels[0] || '-'),
+      dueDate: dueDates[0] || null,
       internalCode: payment.internalCode || null,
       receiptNumber: payment.receiptNumber || null,
       voucherNumber: payment.voucherNumber || null,

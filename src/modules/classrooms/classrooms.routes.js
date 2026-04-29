@@ -11,6 +11,6 @@ router.use(authMiddleware);
 router.use(requireRoles(['ADMIN', 'DIRECTOR', 'PROMOTER', 'SECRETARY', 'SECRETARY_VIEWER', 'AUXILIAR']));
 
 router.get('/options', validateRequest({ query: classroomOptionsQuerySchema }), getClassroomOptions);
-router.get('/board', requireRoles(['ADMIN']), validateRequest({ query: classroomBoardQuerySchema }), getClassroomBoard);
+router.get('/board', requireRoles(['ADMIN', 'AUXILIAR']), validateRequest({ query: classroomBoardQuerySchema }), getClassroomBoard);
 
 export default router;

@@ -504,14 +504,14 @@ export async function searchStudentAutocompleteService({ q, dni, limit }) {
 
 export async function searchUnassignedStudentsByQueryService({ q, limit = 20 }) {
   const term = String(q || '').trim();
-  const normalizedLimit = Math.max(1, Math.min(50, toNumber(limit, 20)));
+  const normalizedLimit = Math.max(1, Math.min(2500, toNumber(limit, 20)));
   const items = await searchUnassignedStudentsModuleService({ q: term, limit: normalizedLimit, campusScope: 'ALL' });
 
   return { q: term, items };
 }
 
 export async function searchUnassignedStudentsService({ limit = 20, cursor }) {
-  const normalizedLimit = Math.max(1, Math.min(50, toNumber(limit, 20)));
+  const normalizedLimit = Math.max(1, Math.min(2500, toNumber(limit, 20)));
 
   if (cursor && !mongoose.Types.ObjectId.isValid(cursor)) {
     throw new ApiError(400, 'cursor inválido');
@@ -833,7 +833,7 @@ export async function getStudentSummaryService(studentId) {
 export async function listStudentsByCampusService({ campus, q = '', limit = 20, cursor, campusScope = [] }) {
   const { normalized, codes } = resolveCampusCodes(campus);
   ensureCampusAccess({ campus: normalized, campusScope });
-  const normalizedLimit = Math.max(1, Math.min(50, toNumber(limit, 20)));
+  const normalizedLimit = Math.max(1, Math.min(2500, toNumber(limit, 20)));
 
   const campuses = await Campus.find({ code: { $in: codes } }).select('_id').lean();
   if (!campuses.length) {

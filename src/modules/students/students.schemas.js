@@ -145,3 +145,9 @@ export const studentSearchQuerySchema = z.object({
   dni: z.string().trim().optional(),
   limit: z.union([z.string(), z.number()]).optional(),
 });
+
+export const studentCampusListQuerySchema = z.object({
+  q: z.string().trim().optional(),
+  limit: z.coerce.number().int().min(1).max(2500).optional(),
+  cursor: objectIdSchema.optional(),
+});

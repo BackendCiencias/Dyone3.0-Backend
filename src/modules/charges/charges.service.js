@@ -124,6 +124,7 @@ export async function createChargeService({
   billingConceptId,
   conceptName,
   description,
+  customDescription,
   amount,
   dueDate,
   notes,
@@ -139,7 +140,12 @@ export async function createChargeService({
     const campus = await resolveCampus(context.campusId, session);
     const concept = await resolveConcept({ billingConceptId, conceptName }, session);
     const safeDescription = String(description || concept.name || concept.code || 'Cargo').trim();
+    const safeCustomDescription = String(customDescription || '').trim();
     const safeNotes = String(notes || observation || '').trim();
+
+    if (String(concept.code || '').trim().toUpperCase() === 'OTHER' && !safeCustomDescription) {
+      throw new ApiError(400, 'La descripción específica es obligatoria para el concepto Otro');
+    }
 
     const charge = await Charge.create([
       {
@@ -148,6 +154,7 @@ export async function createChargeService({
         campusId: campus._id,
         conceptId: concept._id,
         description: safeDescription,
+        customDescription: safeCustomDescription || undefined,
         totalAmount: mongoose.Types.Decimal128.fromString(amount.toString()),
         outstandingAmount: mongoose.Types.Decimal128.fromString(amount.toString()),
         dueDate: dueDate ? new Date(dueDate) : new Date(),
@@ -174,6 +181,7 @@ export async function createChargeService({
         payloadSnapshot: {
           amount,
           conceptName: concept.name,
+          customDescription: safeCustomDescription || null,
           cycleId: context.cycleId,
           campusId: campus._id,
         },
@@ -206,12 +214,12 @@ function resolveChargeStatus({ totalAmount, outstandingAmount, currentStatus }) 
   return 'OPEN';
 }
 
-export async function updateChargeService(chargeId, { amount, dueDate }, updatedByUserId = null) {
+export async function updateChargeService(chargeId, { amount, dueDate, customDescription }, updatedByUserId = null) {
   if (!mongoose.Types.ObjectId.isValid(chargeId)) {
     throw new ApiError(400, 'chargeId inválido');
   }
 
-  const charge = await Charge.findById(chargeId);
+  const charge = await Charge.findById(chargeId).populate('conceptId', 'code name');
   if (!charge) throw new ApiError(404, 'Cargo no encontrado');
   if (charge.status === 'CANCELLED') {
     throw new ApiError(409, 'No se puede editar un cargo cancelado');
@@ -232,10 +240,18 @@ export async function updateChargeService(chargeId, { amount, dueDate }, updated
 
   const nextOutstanding = Math.max(nextAmount - alreadyPaid, 0);
   const nextDueDate = dueDate ? new Date(dueDate) : new Date();
+  const nextCustomDescription = customDescription === undefined
+    ? String(charge.customDescription || '').trim()
+    : String(customDescription || '').trim();
+
+  if (String(charge.conceptId?.code || '').trim().toUpperCase() === 'OTHER' && !nextCustomDescription) {
+    throw new ApiError(400, 'La descripción específica es obligatoria para el concepto Otro');
+  }
 
   charge.totalAmount = decimal(nextAmount);
   charge.outstandingAmount = decimal(nextOutstanding);
   charge.dueDate = nextDueDate;
+  charge.customDescription = nextCustomDescription || undefined;
   charge.status = resolveChargeStatus({
     totalAmount: nextAmount,
     outstandingAmount: nextOutstanding,
@@ -257,7 +273,7 @@ export async function updateChargeService(chargeId, { amount, dueDate }, updated
       action: 'CHARGE_UPDATED',
       performedBy: updatedByUserId,
       campusId: updatedCharge.campusId?._id || updatedCharge.campusId,
-      payloadSnapshot: { chargeId, amount: nextAmount, dueDate: nextDueDate },
+      payloadSnapshot: { chargeId, amount: nextAmount, dueDate: nextDueDate, customDescription: nextCustomDescription || null },
     });
   }
 

@@ -46,3 +46,20 @@ test('modelo Charge marca campusId como requerido', () => {
 
   assert.ok(err?.errors?.campusId);
 });
+
+test('charge schema acepta una descripción específica compatible con cargos existentes', () => {
+  const basePayload = {
+    studentId: '507f1f77bcf86cd799439011',
+    billingConceptId: '507f1f77bcf86cd799439012',
+    amount: 75,
+  };
+
+  const existingCharge = chargeCreateSchema.parse(basePayload);
+  assert.equal(existingCharge.customDescription, undefined);
+
+  const customCharge = chargeCreateSchema.parse({
+    ...basePayload,
+    customDescription: '  Paseo de promoción  ',
+  });
+  assert.equal(customCharge.customDescription, 'Paseo de promoción');
+});

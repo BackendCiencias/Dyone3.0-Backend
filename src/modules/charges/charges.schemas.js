@@ -10,6 +10,7 @@ export const chargeCreateSchema = z.object({
   billingConceptId: objectIdSchema.optional(),
   conceptName: z.string().min(1).optional(),
   description: z.string().min(1).optional(),
+  customDescription: z.string().trim().max(200, 'customDescription excede el máximo de 200 caracteres').optional(),
   amount: z.number().positive(),
   dueDate: z.string().optional(),
   notes: z.string().optional(),
@@ -39,4 +40,5 @@ export const chargeIdParamsSchema = z.object({
 export const chargeUpdateSchema = z.object({
   amount: z.number().positive(),
   dueDate: z.string().optional(),
+  customDescription: z.string().trim().max(200, 'customDescription excede el máximo de 200 caracteres').optional(),
 });

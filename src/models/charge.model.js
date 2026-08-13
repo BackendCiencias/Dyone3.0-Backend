@@ -8,6 +8,7 @@ const chargeSchema = new mongoose.Schema({
   concept: { type: String, enum: ['ADMISSION', 'ENROLLMENT', 'TUITION'], index: true },
   monthIndex: { type: Number, min: 0, max: 9, default: null, index: true },
   description: { type: String, required: true },
+  customDescription: { type: String, trim: true, maxlength: 200 },
   totalAmount: { type: mongoose.Types.Decimal128, required: true },
   outstandingAmount: { type: mongoose.Types.Decimal128, required: true },
   dueDate: { type: Date },

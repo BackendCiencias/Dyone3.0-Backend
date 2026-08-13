@@ -1129,6 +1129,9 @@ function getTuitionMonthLabel(monthIndex) {
 
 function buildChargeLabel(charge) {
   const baseLabel = charge.conceptId?.name || charge.description || charge.concept || 'Cargo';
+  const conceptCode = String(charge.conceptId?.code || '').trim().toUpperCase();
+  const customDescription = String(charge.customDescription || '').trim();
+  if (conceptCode === 'OTHER' && customDescription) return `${baseLabel} — ${customDescription}`;
   if (charge.concept === 'TUITION') {
     const monthLabel = getTuitionMonthLabel(charge.monthIndex);
     if (monthLabel) return `${baseLabel} - ${monthLabel}`;
@@ -1154,7 +1157,7 @@ async function buildStudentFinancialSnapshot(studentId) {
   const gradeDisplayName = enrollmentContext?.classroom?.displayName || vacancyClassroom?.displayName || null;
 
   const chargesDb = await Charge.find({ studentId: student._id, status: { $ne: 'CANCELLED' } })
-    .populate('conceptId', 'name')
+    .populate('conceptId', 'name code')
     .sort({ dueDate: 1, _id: 1 })
     .lean();
 
@@ -1162,7 +1165,7 @@ async function buildStudentFinancialSnapshot(studentId) {
   const allocations = chargeIds.length
     ? await PaymentAllocation.find({ chargeId: { $in: chargeIds } })
       .populate('paymentId')
-      .populate({ path: 'chargeId', populate: { path: 'conceptId', select: 'name' } })
+      .populate({ path: 'chargeId', populate: { path: 'conceptId', select: 'name code' } })
       .sort({ createdAt: -1, _id: -1 })
       .lean()
     : [];
@@ -1205,8 +1208,9 @@ async function buildStudentFinancialSnapshot(studentId) {
       id: charge._id.toString(),
       concept: buildChargeLabel(charge),
       description: charge.description || null,
+      customDescription: charge.customDescription || null,
       monthIndex: charge.monthIndex ?? null,
-      conceptCode: charge.concept || null,
+      conceptCode: charge.conceptId?.code || charge.concept || null,
       amount,
       outstandingAmount,
       dueDate: charge.dueDate || null,

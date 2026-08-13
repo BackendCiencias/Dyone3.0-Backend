@@ -67,6 +67,10 @@ function buildCategoryMetaFromCharge(charge = {}) {
 
 function buildChargeLabel(charge = {}) {
   const meta = buildCategoryMetaFromCharge(charge);
+  const customDescription = String(charge.customDescription || '').trim();
+  if (meta.code === 'OTHER' && customDescription) {
+    return `${meta.label || charge.description || 'Otro'} — ${customDescription}`;
+  }
   if (meta.code === 'TUITION' && Number.isInteger(charge.monthIndex)) {
     const labels = ['Marzo', 'Abril', 'Mayo', 'Junio', 'Julio', 'Agosto', 'Septiembre', 'Octubre', 'Noviembre', 'Diciembre'];
     const monthLabel = labels[charge.monthIndex] || null;
@@ -1278,4 +1282,3 @@ export async function getAccountingPaymentsService({ campus, method, page = 1, l
     },
   };
 }
-

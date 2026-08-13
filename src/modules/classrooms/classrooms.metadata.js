@@ -15,4 +15,14 @@ export const moduleEndpointMetadata = [
       items: [{ classroomId: 'ObjectId', label: 'string', grade: 'string|number|null', section: 'string', level: 'string', campusCode: 'string|null', capacity: 'number|null', occupied: 'number|null', available: 'number|null', status: 'OK|FULL|LOW|UNKNOWN' }],
     },
   },
+  {
+    method: 'GET',
+    path: '/api/classrooms/board',
+    module: 'classrooms',
+    authRequired: true,
+    rolesAllowed: ['ADMIN', 'SECRETARY', 'AUXILIAR'],
+    description: 'Vista global de salones por campus, nivel y grado',
+    requestSchema: { query: { campus: 'string', level: 'string', grade: 'number' } },
+    responseSchema: { cycleId: 'ObjectId', campus: 'object', columns: 'array', totals: 'object' },
+  },
 ];

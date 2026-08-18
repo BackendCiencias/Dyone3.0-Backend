@@ -20,6 +20,10 @@ function campusSortCode(value) {
   return value;
 }
 
+export function buildClassroomBoardEnrollmentFilter(cycleId) {
+  return cycleId ? { cycleId, status: { $ne: 'TRANSFERRED' } } : null;
+}
+
 export async function listClassroomOptions({ level, grade, campus, includeCapacity = true }) {
   const cycleIds = await findActiveSchoolYearCycleIds();
   const classrooms = await findClassroomsByFilters({ level, grade, campus, cycleIds });
@@ -96,8 +100,10 @@ export async function getClassroomBoardService({ campus, level, grade }) {
   const campusRow = await Campus.findOne({ code: campus }).select('_id code name').lean();
   const classroomIds = validClassrooms.map((row) => row._id);
   const cycleId = validClassrooms[0]?.cycleId || cycleIds[0] || null;
-  const enrollmentFilter = cycleId ? { cycleId, status: { $ne: 'TRANSFERRED' } } : null;
-  if (enrollmentFilter && campusRow?._id) enrollmentFilter.campusId = campusRow._id;
+  // An enrollment can contain students from different campuses after a family
+  // merge. The student's classroom, not the enrollment header, is the source
+  // of truth for the classroom board campus.
+  const enrollmentFilter = buildClassroomBoardEnrollmentFilter(cycleId);
   const enrollments = enrollmentFilter
     ? await Enrollment.find(enrollmentFilter).select('_id status').lean()
     : [];
